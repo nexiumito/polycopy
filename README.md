@@ -1,36 +1,52 @@
+<p align="center">
+  <img src="assets/Company_Logo_Polymarket.png" alt="Polymarket" width="400">
+</p>
+
 # polycopy
 
-Bot de copy trading pour Polymarket. Surveille l'activité on-chain de wallets cibles et réplique leurs trades sur ton propre wallet, avec sizing, filtres et risk management.
+> Bot de copy trading pour [Polymarket](https://polymarket.com). Surveille l'activité on-chain de wallets cibles et réplique leurs trades sur ton propre wallet, avec sizing, filtres marché et risk management.
 
-> **Statut** : prototype personnel. Pas un produit. Pas de garantie. Trade à tes risques.
+⚠️ **Statut : prototype personnel, pas un produit.** Pas de garantie. Trade à tes risques. Lis l'[Avertissement](#avertissement) avant tout usage réel.
 
-## Pourquoi
+---
 
-Polymarket est entièrement on-chain (Polygon). L'activité de chaque wallet est publique et accessible via la Data API. Un bot peut donc détecter en quasi-temps-réel les trades d'un "smart money" wallet et les répliquer.
+## Pourquoi ?
+
+Polymarket est entièrement on-chain (Polygon). L'activité de chaque wallet est publique via la Data API. Un bot peut donc détecter en quasi-temps-réel les trades d'un "smart money" wallet et les répliquer — soumis à des filtres : liquidité minimum, slippage, plafond capital.
 
 ## Architecture
 
-5 couches, faiblement couplées :
+5 couches asynchrones, faiblement couplées via des `asyncio.Queue` :
 
-1. **Sources** — Data API (`/activity`), CLOB WebSocket (prix), Gamma API (métadonnées)
-2. **Watcher** — polling des wallets cibles, déduplication, persistance
-3. **Strategy** — filtres marché, sizing, slippage check, risk manager
-4. **Executor** — construction et signature d'ordres via `py-clob-client`
-5. **Monitoring** — logs structurés, métriques, alertes Telegram
+```
+[Data API]  [Gamma API]  [CLOB read]
+     │           │            │
+     ▼           ▼            ▼
+   Watcher ──> Storage ──> Strategy ──> Executor ──> Polymarket CLOB
+                                                          │
+                                                          ▼
+                                                       Position tracker
+```
 
-Voir `docs/architecture.md` pour le détail.
+1. **Watcher** — polling Data API `/activity`, dédup par tx_hash, persistance.
+2. **Storage** — SQLAlchemy 2.0 async (SQLite par défaut, Postgres possible).
+3. **Strategy** — pipeline `MarketFilter → PositionSizer → SlippageChecker → RiskManager`.
+4. **Executor** — dérive les API creds CLOB (L1/L2), signe et POST les ordres FOK via `py-clob-client`. **Dry-run par défaut.**
+5. **Monitoring** — logs structlog JSON ; Telegram + dashboard à venir (M4).
+
+Détail technique : [docs/architecture.md](docs/architecture.md).
 
 ## Stack
 
-- Python 3.11+ (asyncio)
-- `py-clob-client` (SDK officiel Polymarket)
-- `polymarket-apis` (wrapper unifié CLOB + Gamma + Data + WS, Pydantic)
-- `httpx`, `websockets`
-- SQLite + SQLAlchemy 2.0 (Postgres possible plus tard)
-- Pydantic Settings pour la config
-- pytest pour les tests
+- **Python 3.11+** (asyncio, TaskGroup)
+- `py-clob-client` (SDK officiel Polymarket pour la signature CLOB)
+- `httpx` (async HTTP), `tenacity` (retry exponentiel)
+- `SQLAlchemy 2.0` + `aiosqlite` (Postgres trivial via `DATABASE_URL`)
+- `Pydantic v2` + `pydantic-settings` (validation config + DTOs)
+- `structlog` (logs JSON)
+- `pytest` + `respx` (mock HTTP) + `pytest-asyncio`
 
-## Setup rapide
+## Quickstart
 
 Environnement de référence : **WSL Ubuntu (bash)**, repo cloné en chemin Linux natif (`~/code/polycopy`). Un seul script bootstrape tout (idempotent) :
 
@@ -38,36 +54,75 @@ Environnement de référence : **WSL Ubuntu (bash)**, repo cloné en chemin Linu
 bash scripts/setup.sh
 ```
 
-Il crée le `.venv/`, installe les deps, copie `.env.example` → `.env`, applique le patch config §0.5 de M1, et lance un smoke test `python -m polycopy --dry-run`.
+Il crée le `.venv/`, installe les deps, copie `.env.example` → `.env`, et lance un smoke test `python -m polycopy --dry-run`.
 
-Ensuite, à chaque nouvelle session :
+À chaque nouvelle session :
 
 ```bash
 source .venv/bin/activate
-python -m polycopy --dry-run   # aucun ordre envoyé
-# python -m polycopy           # réel — ATTENTION à ton capital
+python -m polycopy --dry-run     # aucun ordre envoyé
 ```
 
-Guide complet pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.md](docs/setup.md).
+Exemple de logs JSON observés en dry-run :
+
+```json
+{"event": "polycopy_starting", "dry_run": true, "targets": ["0x192..."], ...}
+{"event": "watcher_started", "wallets": ["0x192..."], "interval": 15, ...}
+{"event": "strategy_started", "pipeline_steps": ["MarketFilter", "PositionSizer", ...], ...}
+{"event": "executor_started", "mode": "dry_run"}
+{"event": "trade_detected", "tx_hash": "0xabc...", "side": "BUY", "price": 0.08, ...}
+{"event": "order_approved", "tx_hash": "0xabc...", "my_size": 36.85, "slippage_pct": 0.39}
+{"event": "order_simulated", "side": "BUY", "size": 36.85, "price": 0.08, "neg_risk": false}
+{"event": "order_rejected", "tx_hash": "0xdef...", "reason": "slippage_exceeded", ...}
+```
+
+Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.md](docs/setup.md).
 
 ## Variables d'environnement
 
-| Variable | Description | Exemple |
-|---|---|---|
-| `POLYMARKET_PRIVATE_KEY` | Clé privée du wallet de signature | `0x...` |
-| `POLYMARKET_FUNDER` | Adresse du proxy wallet (si Magic/email) | `0x...` |
-| `POLYMARKET_SIGNATURE_TYPE` | 0 (EOA), 1 (Magic), 2 (Gnosis Safe) | `1` |
-| `TARGET_WALLETS` | Wallets à copier (CSV) | `0xabc...,0xdef...` |
-| `COPY_RATIO` | Fraction du trade à répliquer | `0.01` |
-| `MAX_POSITION_USD` | Plafond par position | `100` |
-| `MIN_MARKET_LIQUIDITY_USD` | Liquidité minimum d'un marché | `5000` |
-| `MIN_HOURS_TO_EXPIRY` | Skip les marchés trop proches de l'expiration | `24` |
-| `MAX_SLIPPAGE_PCT` | Slippage max accepté vs prix original | `2.0` |
-| `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X% | `20` |
-| `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo (stub M2 ; remplacé par lecture wallet à M3) | `1000.0` |
-| `DATABASE_URL` | URL DB | `sqlite:///polycopy.db` |
-| `TELEGRAM_BOT_TOKEN` | Optionnel | |
-| `TELEGRAM_CHAT_ID` | Optionnel | |
+| Variable | Description | Default | Requis |
+|---|---|---|---|
+| `TARGET_WALLETS` | Wallets à copier (CSV ou JSON array) | — | **toujours** |
+| `DRY_RUN` | Mode safe (aucun ordre réel envoyé) | `true` | non |
+| `POLL_INTERVAL_SECONDS` | Fréquence de polling Data API | `5` | non |
+| `COPY_RATIO` | Fraction du trade source à répliquer | `0.01` | non |
+| `MAX_POSITION_USD` | Plafond par position | `100` | non |
+| `MIN_MARKET_LIQUIDITY_USD` | Liquidité CLOB minimum | `5000` | non |
+| `MIN_HOURS_TO_EXPIRY` | Skip marchés trop proches de l'expiration | `24` | non |
+| `MAX_SLIPPAGE_PCT` | Slippage max vs prix source | `2.0` | non |
+| `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X% | `20` | non |
+| `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo stub (M3 partiellement remplacé par lecture wallet) | `1000.0` | non |
+| `POLYMARKET_PRIVATE_KEY` | Clé privée du wallet de signature | — | **si `DRY_RUN=false`** |
+| `POLYMARKET_FUNDER` | Adresse du proxy wallet (Gnosis Safe / Magic) | — | **si `DRY_RUN=false`** |
+| `POLYMARKET_SIGNATURE_TYPE` | `0` EOA, `1` Magic, `2` Gnosis Safe | `1` | non |
+| `DATABASE_URL` | URL DB | `sqlite+aiosqlite:///polycopy.db` | non |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | non |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes (M4 — pas encore actif) | — | non |
+
+## Going live (passage du dry-run au mode réel)
+
+⚠️ **Par défaut `DRY_RUN=true`.** Aucun ordre n'est jamais envoyé sans bascule explicite.
+
+1. **Récupère tes credentials Polymarket** (depuis ton compte connecté à polymarket.com) :
+   - `POLYMARKET_PRIVATE_KEY` : ta clé privée Ethereum (jamais commit, jamais partagée).
+   - `POLYMARKET_FUNDER` : ton **proxy wallet** (Gnosis Safe créé automatiquement par Polymarket quand tu connectes MetaMask). Tu le trouves sur ton profil Polymarket → settings → "Deposit address" ou "Proxy address".
+   - `POLYMARKET_SIGNATURE_TYPE=2` (Gnosis Safe) si tu utilises MetaMask connecté à polymarket.com (cas le plus courant).
+2. **Édite `.env`** avec ces 3 valeurs + force un plafond de sécurité strict :
+   ```
+   POLYMARKET_PRIVATE_KEY=0x<ta_clé_privée>
+   POLYMARKET_FUNDER=0x<ton_proxy_address>
+   POLYMARKET_SIGNATURE_TYPE=2
+   DRY_RUN=false
+   MAX_POSITION_USD=1                  # 1 USD max pour ton 1er run réel
+   ```
+3. **Lance le bot** :
+   ```bash
+   python -m polycopy
+   ```
+4. **Surveille** les logs `order_filled` / `order_rejected` ; vérifie chaque transaction sur polymarket.com (onglet "Activity" de ton profil).
+5. **Augmente progressivement** `MAX_POSITION_USD` quand tu es satisfait.
+
+Si le bot démarre sans `--dry-run` ET sans clés, il **refuse de démarrer** avec un message clair (`RuntimeError`) — par sécurité.
 
 ## Structure du repo
 
@@ -75,53 +130,41 @@ Guide complet pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs
 polycopy/
 ├── src/polycopy/
 │   ├── watcher/          # Détection des trades on-chain
-│   ├── strategy/         # Filtres, sizing, risk
-│   ├── executor/         # CLOB orders
-│   ├── storage/          # SQLAlchemy models, repos
-│   ├── monitoring/       # Logs, metrics, alerts
+│   ├── strategy/         # Filtres, sizing, risk pipeline
+│   ├── executor/         # CLOB orders signés (avec dry-run safeguards)
+│   ├── storage/          # SQLAlchemy models + repositories
+│   ├── monitoring/       # (M4 — alertes Telegram, dashboard)
 │   ├── config.py         # Pydantic Settings
-│   └── __main__.py       # Entrypoint
-├── tests/
-├── scripts/              # Outils ponctuels (backtest, scoring)
-├── docs/
-└── .claude/              # Commands & config Claude Code
+│   └── __main__.py       # Entrypoint asyncio
+├── tests/                # Tests unit (mocks) + integration (opt-in réseau réel)
+├── specs/                # Specs autoritaires par milestone
+├── scripts/              # bash scripts/setup.sh (bootstrap idempotent)
+├── docs/                 # architecture.md, setup.md
+└── assets/               # Logos, screenshots
 ```
 
 ## Commandes utiles
 
 ```bash
-# Tests
-pytest
-
-# Lint + format
-ruff check . && ruff format .
-
-# Type check
-mypy src
-
-# Backtest sur un wallet historique
-python scripts/backtest.py --wallet 0x... --from 2026-01-01
-
-# Scorer les top traders du leaderboard
-python scripts/score_traders.py --window 30d --min-volume 50000
+pytest                                          # tests unitaires (mocks, pas de réseau)
+pytest -m integration                           # tests réseau réels (opt-in, lents)
+ruff check . && ruff format .                   # lint + format
+mypy src                                        # type check strict
+python -m polycopy --dry-run                    # bot en mode safe
 ```
 
 ## Roadmap
 
-- [ ] M1 : Watcher + Storage (détection + persistance, pas d'exécution)
-- [ ] M2 : Strategy Engine (filtres + sizing, dry-run)
-- [ ] M3 : Executor (vrais ordres, mode test sur micro-capital)
-- [ ] M4 : Monitoring (Telegram, dashboard PnL)
-- [ ] M5 : Scoring de traders + sélection automatique
-
-## État d'avancement
-
-- [x] M1 : Watcher + Storage
-- [x] M2 : Strategy Engine
-- [ ] M3 : Executor
-- [ ] M4 : Monitoring
-- [ ] M5 : Scoring
+- [x] **M1** : Watcher + Storage (détection + persistance)
+- [x] **M2** : Strategy Engine (filtres + sizing pipeline)
+- [x] **M3** : Executor (signature CLOB + POST, dry-run par défaut)
+- [ ] **M4** : Monitoring (Telegram, dashboard PnL, snapshots PnL périodiques)
+- [ ] **M5** : Scoring de traders + sélection automatique
 
 ## Avertissement
 
-Les marchés prédictifs sont risqués. Les performances passées d'un trader ne garantissent rien. Polymarket est inaccessible depuis certaines juridictions (US notamment). Renseigne-toi sur le cadre légal applicable chez toi avant de l'utiliser. Ce code est fourni à titre éducatif.
+Les marchés prédictifs sont risqués. Les performances passées d'un trader ne garantissent rien.
+
+Polymarket est inaccessible depuis certaines juridictions (notamment les États-Unis). **Renseigne-toi sur le cadre légal applicable chez toi avant de l'utiliser.**
+
+Ce code est fourni à titre éducatif. **Aucune garantie sur le fonctionnement, la sécurité ou la rentabilité.** Les bugs peuvent coûter du capital réel — toujours commencer en `DRY_RUN=true`, puis avec un `MAX_POSITION_USD` minuscule.

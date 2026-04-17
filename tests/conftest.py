@@ -13,6 +13,8 @@ from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.models import Base
 from polycopy.storage.repositories import (
     DetectedTradeRepository,
+    MyOrderRepository,
+    MyPositionRepository,
     StrategyDecisionRepository,
     TargetTraderRepository,
 )
@@ -59,6 +61,20 @@ async def strategy_decision_repo(
     return StrategyDecisionRepository(session_factory)
 
 
+@pytest_asyncio.fixture
+async def my_order_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> MyOrderRepository:
+    return MyOrderRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def my_position_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> MyPositionRepository:
+    return MyPositionRepository(session_factory)
+
+
 @pytest.fixture
 def sample_activity_payload() -> list[dict[str, Any]]:
     """Réponse réelle Data API capturée pour les tests unitaires."""
@@ -78,5 +94,32 @@ def sample_clob_midpoint() -> dict[str, str]:
     """Réponse CLOB /midpoint capturée."""
     payload: dict[str, str] = json.loads(
         (_FIXTURES_DIR / "clob_midpoint_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
+def sample_tick_size() -> dict[str, float]:
+    """Réponse CLOB /tick-size capturée."""
+    payload: dict[str, float] = json.loads(
+        (_FIXTURES_DIR / "clob_tick_size_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
+def sample_clob_order_response() -> dict[str, Any]:
+    """Réponse CLOB POST /order composée manuellement (basée sur la doc)."""
+    payload: dict[str, Any] = json.loads(
+        (_FIXTURES_DIR / "clob_order_response_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
+def sample_positions() -> list[dict[str, Any]]:
+    """Réponse Data API /positions capturée."""
+    payload: list[dict[str, Any]] = json.loads(
+        (_FIXTURES_DIR / "data_api_positions_sample.json").read_text(),
     )
     return payload

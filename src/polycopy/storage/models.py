@@ -8,7 +8,7 @@ Tables structurelles M3+ : `my_orders`, `my_positions`, `pnl_snapshots`
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -84,36 +84,61 @@ class StrategyDecision(Base):
 
 
 # --- Populated from M3 onwards ----------------------------------------------
+# TODO M4: introduire Alembic ; à M3 toute modif de schéma ici impose un
+# `rm polycopy.db` côté dev (cf. docs/setup.md "Migration de schéma DB").
 
 
 class MyOrder(Base):
-    """Ordre envoyé par notre Executor. Populated from M3 onwards."""
+    """Ordre envoyé (ou simulé en dry-run) par l'Executor. Append-only."""
 
     __tablename__ = "my_orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    clob_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    side: Mapped[str | None] = mapped_column(String(4), nullable=True)
-    size: Mapped[float | None] = mapped_column(Float, nullable=True)
-    price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_tx_hash: Mapped[str] = mapped_column(String(66), index=True, nullable=False)
+    clob_order_id: Mapped[str | None] = mapped_column(String(66), index=True, nullable=True)
+    condition_id: Mapped[str] = mapped_column(String(66), index=True, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)  # BUY | SELL
+    size: Mapped[float] = mapped_column(Float, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    tick_size: Mapped[float] = mapped_column(Float, nullable=False)
+    neg_risk: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    order_type: Mapped[str] = mapped_column(String(4), nullable=False, default="FOK")
+    # status enum strict : SIMULATED | SENT | FILLED | PARTIALLY_FILLED | REJECTED | FAILED
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    taking_amount: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    making_amount: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transaction_hashes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    error_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        nullable=False,
+    )
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MyPosition(Base):
-    """Position courante. Populated from M3 onwards."""
+    """Position courante : 1 ligne par `(condition_id, asset_id)` ouvert."""
 
     __tablename__ = "my_positions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    condition_id: Mapped[str | None] = mapped_column(String(66), nullable=True)
-    asset_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    size: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    condition_id: Mapped[str] = mapped_column(String(66), index=True, nullable=False)
+    asset_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    size: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        nullable=False,
+    )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("condition_id", "asset_id", name="uq_my_positions_condition_asset"),
+    )
 
 
 class PnlSnapshot(Base):

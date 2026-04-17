@@ -1,14 +1,21 @@
 """Repositories SQLAlchemy 2.0 async pour la couche storage."""
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from polycopy.storage.dtos import DetectedTradeDTO, StrategyDecisionDTO
-from polycopy.storage.models import DetectedTrade, StrategyDecision, TargetTrader
+from polycopy.storage.dtos import DetectedTradeDTO, MyOrderDTO, StrategyDecisionDTO
+from polycopy.storage.models import (
+    DetectedTrade,
+    MyOrder,
+    MyPosition,
+    StrategyDecision,
+    TargetTrader,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -142,3 +149,147 @@ class StrategyDecisionRepository:
             ).group_by(StrategyDecision.decision)
             result = await session.execute(stmt)
             return {row[0]: int(row[1]) for row in result.all()}
+
+
+_OrderStatus = Literal["SIMULATED", "SENT", "FILLED", "PARTIALLY_FILLED", "REJECTED", "FAILED"]
+
+
+class MyOrderRepository:
+    """Repository des ordres envoyés (ou simulés) par l'Executor. Append-only."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(self, dto: MyOrderDTO) -> MyOrder:
+        """Persiste un nouvel ordre et retourne l'instance avec son `id`."""
+        record = MyOrder(
+            source_tx_hash=dto.source_tx_hash,
+            clob_order_id=dto.clob_order_id,
+            condition_id=dto.condition_id,
+            asset_id=dto.asset_id,
+            side=dto.side,
+            size=dto.size,
+            price=dto.price,
+            tick_size=dto.tick_size,
+            neg_risk=dto.neg_risk,
+            order_type=dto.order_type,
+            status=dto.status,
+            simulated=dto.simulated,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def update_status(
+        self,
+        order_id: int,
+        status: _OrderStatus,
+        *,
+        clob_order_id: str | None = None,
+        taking_amount: str | None = None,
+        making_amount: str | None = None,
+        transaction_hashes: list[str] | None = None,
+        error_msg: str | None = None,
+        filled_at: datetime | None = None,
+    ) -> None:
+        """Met à jour le statut et les champs d'exécution d'un ordre existant."""
+        async with self._session_factory() as session:
+            order = await session.get(MyOrder, order_id)
+            if order is None:
+                raise ValueError(f"MyOrder id={order_id} not found")
+            order.status = status
+            if clob_order_id is not None:
+                order.clob_order_id = clob_order_id
+            if taking_amount is not None:
+                order.taking_amount = taking_amount
+            if making_amount is not None:
+                order.making_amount = making_amount
+            if transaction_hashes is not None:
+                order.transaction_hashes = transaction_hashes
+            if error_msg is not None:
+                order.error_msg = error_msg
+            if filled_at is not None:
+                order.filled_at = filled_at
+            await session.commit()
+
+    async def list_recent(self, limit: int = 100) -> list[MyOrder]:
+        """Retourne les `limit` ordres les plus récents (par `sent_at` desc)."""
+        async with self._session_factory() as session:
+            stmt = select(MyOrder).order_by(MyOrder.sent_at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+
+class MyPositionRepository:
+    """Repository des positions ouvertes. Mises à jour incrémentales sur fill."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def upsert_on_fill(
+        self,
+        condition_id: str,
+        asset_id: str,
+        side: Literal["BUY", "SELL"],
+        size_filled: float,
+        fill_price: float,
+    ) -> MyPosition:
+        """Met à jour la position après un fill.
+
+        BUY : cumul de size + recalcul de `avg_price` (moyenne pondérée).
+        SELL : décrément de size ; si `size <= 0`, marque la position fermée.
+        """
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(
+                MyPosition.condition_id == condition_id,
+                MyPosition.asset_id == asset_id,
+                MyPosition.closed_at.is_(None),
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                if side == "SELL":
+                    raise ValueError(
+                        f"Cannot SELL {size_filled} on a non-existent position "
+                        f"(condition_id={condition_id}, asset_id={asset_id})"
+                    )
+                position = MyPosition(
+                    condition_id=condition_id,
+                    asset_id=asset_id,
+                    size=size_filled,
+                    avg_price=fill_price,
+                )
+                session.add(position)
+                await session.commit()
+                await session.refresh(position)
+                return position
+            if side == "BUY":
+                new_size = existing.size + size_filled
+                existing.avg_price = (
+                    existing.size * existing.avg_price + size_filled * fill_price
+                ) / new_size
+                existing.size = new_size
+            else:  # SELL
+                existing.size -= size_filled
+                if existing.size <= 0:
+                    existing.closed_at = datetime.now(tz=UTC)
+            await session.commit()
+            await session.refresh(existing)
+            return existing
+
+    async def list_open(self) -> list[MyPosition]:
+        """Retourne toutes les positions ouvertes (`closed_at IS NULL`)."""
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(MyPosition.closed_at.is_(None))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_open(self, condition_id: str) -> MyPosition | None:
+        """Retourne la position ouverte sur le `condition_id`, ou None."""
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(
+                MyPosition.condition_id == condition_id,
+                MyPosition.closed_at.is_(None),
+            )
+            return (await session.execute(stmt)).scalar_one_or_none()

@@ -61,6 +61,10 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+module = "py_clob_client.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [

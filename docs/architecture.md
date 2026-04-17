@@ -68,6 +68,8 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 
 ## Module : Executor
 
+> **Status M3** ✅ — implémenté. Dry-run par défaut (aucun POST CLOB). Mode réel via `py-clob-client` avec L1→L2 auth dérivation au boot. Pipeline : metadata fetch → tick-size round → garde-fou capital → POST → persist + position upsert. Voir `specs/M3-executor.md` et `src/polycopy/executor/`.
+
 - Initialise `ClobClient` au démarrage avec les credentials L2 dérivés
 - Pour chaque `OrderApproved` :
   - Construit un `MarketOrderArgs` (FOK) ou `OrderArgs` (GTC limit)

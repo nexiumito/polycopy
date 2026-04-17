@@ -147,7 +147,9 @@ async def test_position_sizer_position_already_open(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        session.add(MyPosition(condition_id="0xc", size=1.0, avg_price=0.5))
+        session.add(
+            MyPosition(condition_id="0xc", asset_id="123", size=1.0, avg_price=0.5),
+        )
         await session.commit()
     f = PositionSizer(session_factory, _settings())
     result = await f.check(PipelineContext(trade=_trade()))

@@ -160,3 +160,17 @@ bash scripts/setup.sh
 ```
 
 Les deps seront réinstallées, sans toucher à `.venv/` ni `.env`.
+
+## 10. Migration de schéma DB (M3+)
+
+Tant que le projet n'a pas Alembic (prévu à M4), toute modification de
+`src/polycopy/storage/models.py` après un `git pull` impose de recréer la DB
+locale :
+
+```bash
+rm polycopy.db
+python -m polycopy --dry-run   # init_db.create_all recrée tout
+```
+
+Les données dev (detected_trades, strategy_decisions, my_orders) sont perdues —
+acceptable jusqu'à l'introduction d'Alembic.

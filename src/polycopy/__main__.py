@@ -15,6 +15,7 @@ import sys
 import structlog
 
 from polycopy.config import settings
+from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
@@ -109,11 +110,19 @@ async def _run() -> None:
             detected_trades_queue=detected_trades_queue,
             approved_orders_queue=approved_orders_queue,
         )
+        # ExecutorOrchestrator lève RuntimeError si DRY_RUN=false sans clés.
+        # Volontairement instancié AVANT le TaskGroup pour que l'erreur propage clair.
+        executor = ExecutorOrchestrator(
+            session_factory,
+            settings,
+            approved_orders_queue=approved_orders_queue,
+        )
 
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(watcher.run_forever(stop_event))
                 tg.create_task(strategy.run_forever(stop_event))
+                tg.create_task(executor.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:

@@ -70,6 +70,13 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
 - Le mode `--dry-run` doit être respecté partout : si `settings.dry_run is True`, l'executor log l'ordre mais ne l'envoie pas
 - Le kill switch (`KILL_SWITCH_DRAWDOWN_PCT`) coupe tout : ferme le watcher, n'envoie plus d'ordres, alerte Telegram
 - À M2 la strategy est **read-only** (Gamma + CLOB midpoint, pas de signature, pas de POST). `settings.dry_run` n'a pas d'effet sur la strategy. Le garde-fou `dry_run` kicks in à M3 quand l'Executor le lit avant d'envoyer un ordre.
+- **Executor M3** : 4 garde-fous obligatoires :
+  1. Lazy init `ClobClient` (pas instancié si `dry_run=true`).
+  2. `RuntimeError` au démarrage si `dry_run=false` ET clés absentes (lève **avant** TaskGroup).
+  3. Double check par ordre : `assert dry_run is False` juste avant chaque `create_and_post_order`.
+  4. `WalletStateReader` re-fetch wallet state avant POST, reject si exposition + cost > capital.
+- **Creds CLOB L2** (`api_key`, `api_secret`, `api_passphrase`) ne doivent JAMAIS être loggées même partiellement, même en debug. Le seul log lié = `executor_creds_ready` sans aucun champ creds.
+- `signature_type` mismatch = transactions rejetées silencieusement par CLOB. `0` EOA standalone, `1` Magic/Polymarket.com (proxy), `2` Gnosis Safe (MetaMask connecté à polymarket.com — cas le plus fréquent).
 
 ## Tests
 

@@ -33,6 +33,7 @@ class MarketMetadata(BaseModel):
     end_date_iso: str | None = Field(default=None, alias="endDateIso")
     clob_token_ids: list[str] = Field(default_factory=list, alias="clobTokenIds")
     outcomes: list[str] = Field(default_factory=list)
+    neg_risk: bool = Field(default=False, alias="negRisk")
 
     @field_validator("clob_token_ids", "outcomes", mode="before")
     @classmethod
