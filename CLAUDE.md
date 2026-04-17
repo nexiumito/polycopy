@@ -45,6 +45,8 @@ Règle de dépendance : `watcher` → `storage`, `strategy` → `storage`, `exec
 
 ## APIs Polymarket utilisées
 
+Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polymarket`. Capturer toute réponse réelle en fixture (`tests/fixtures/`) avant de rédiger un DTO.
+
 - **Data API** : `https://data-api.polymarket.com/activity` (public, no auth)
   - Doc : https://docs.polymarket.com/api-reference/core/get-user-activity
   - Rate limit : ~100 req/min, prévoir backoff exponentiel sur 429
@@ -60,6 +62,7 @@ Règle de dépendance : `watcher` → `storage`, `strategy` → `storage`, `exec
 
 - **JAMAIS** committer `.env`, clé privée, ou API credentials (vérifier `.gitignore`)
 - La clé privée vit uniquement dans une env var, jamais en dur dans le code, jamais loggée
+- `polymarket_private_key` et `polymarket_funder` sont **optionnels** au niveau config — ils ne sont consommés que par l'Executor (M3), qui devra refuser de démarrer si `DRY_RUN=false` et l'une des deux est absente.
 - Tous les ordres passent par le `RiskManager.check()` avant `OrderExecutor.send()`. Pas d'exception.
 - Le mode `--dry-run` doit être respecté partout : si `settings.dry_run is True`, l'executor log l'ordre mais ne l'envoie pas
 - Le kill switch (`KILL_SWITCH_DRAWDOWN_PCT`) coupe tout : ferme le watcher, n'envoie plus d'ordres, alerte Telegram
@@ -90,7 +93,7 @@ python -m polycopy --dry-run   # lance le bot en mode safe
 
 ## Quand tu hésites
 
-- **Sur la sémantique d'un endpoint Polymarket** : check la doc officielle (https://docs.polymarket.com), ne devine pas la structure de réponse
+- **Sur la sémantique d'un endpoint Polymarket** : invoque d'abord le skill `/polymarket:polymarket`. En dernier recours, https://docs.polymarket.com. Jamais deviner.
 - **Sur un choix d'architecture** : préfère la simplicité. Pas d'abstraction tant qu'il n'y a pas 2 implémentations concrètes (règle "rule of three")
 - **Sur un trade-off perf vs lisibilité** : lisibilité gagne. Ce bot ne fait pas du HFT, 50ms de latence en plus ne changent rien
 - **Sur une feature ambiguë** : demande-moi avant d'implémenter

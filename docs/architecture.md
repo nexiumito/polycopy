@@ -26,6 +26,8 @@
 
 ## Module : Watcher
 
+> **Status M1** ✅ — implémenté. Voir `specs/M1-watcher-storage.md` pour le détail fonctionnel et `src/polycopy/watcher/` pour le code.
+
 **Responsabilité** : détecter les nouveaux trades des wallets cibles.
 
 **Implémentation** :
@@ -38,6 +40,8 @@
 **Pourquoi pas WebSocket pour la détection ?** Le WS de Polymarket est par marché (token_id), pas par wallet. Pour suivre un wallet sur tous ses marchés, il faudrait s'abonner à des dizaines de tokens en parallèle et filtrer côté client — c'est moins efficace que le polling REST sur `/activity`.
 
 ## Module : Storage
+
+> **Status M1** ✅ — `target_traders` et `detected_trades` implémentés. Les autres tables (`my_orders`, `my_positions`, `pnl_snapshots`) sont déclarées en structure mais peuplées à partir de M3.
 
 **Tables principales** :
 

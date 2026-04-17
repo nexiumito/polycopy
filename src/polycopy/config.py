@@ -21,8 +21,14 @@ class Settings(BaseSettings):
     )
 
     # --- Polymarket wallet ---
-    polymarket_private_key: str | None = Field(None, description="Clé privée du wallet de signature (requis à M3)")
-    polymarket_funder: str | None = Field(None, description="Adresse du proxy wallet (requis à M3)")
+    polymarket_private_key: str | None = Field(
+        None,
+        description="Clé privée du wallet de signature (requis à M3)",
+    )
+    polymarket_funder: str | None = Field(
+        None,
+        description="Adresse du proxy wallet (requis à M3)",
+    )
     polymarket_signature_type: int = Field(1, ge=0, le=2)
 
     # --- Cibles ---

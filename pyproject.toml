@@ -59,6 +59,7 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -66,3 +67,4 @@ markers = [
     "integration: tests qui appellent les vraies APIs (lents, opt-in)",
 ]
 testpaths = ["tests"]
+addopts = ["-m", "not integration"]

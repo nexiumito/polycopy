@@ -113,6 +113,14 @@ python scripts/score_traders.py --window 30d --min-volume 50000
 - [ ] M4 : Monitoring (Telegram, dashboard PnL)
 - [ ] M5 : Scoring de traders + sélection automatique
 
+## État d'avancement
+
+- [x] M1 : Watcher + Storage
+- [ ] M2 : Strategy Engine
+- [ ] M3 : Executor
+- [ ] M4 : Monitoring
+- [ ] M5 : Scoring
+
 ## Avertissement
 
 Les marchés prédictifs sont risqués. Les performances passées d'un trader ne garantissent rien. Polymarket est inaccessible depuis certaines juridictions (US notamment). Renseigne-toi sur le cadre légal applicable chez toi avant de l'utiliser. Ce code est fourni à titre éducatif.
