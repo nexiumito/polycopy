@@ -15,7 +15,11 @@ _INITIAL_LOOKBACK_HOURS = 1
 
 
 class WalletPoller:
-    """Poll en boucle un wallet et persiste les trades nouveaux."""
+    """Poll en boucle un wallet et persiste les trades nouveaux.
+
+    Si une `out_queue` est fournie, push chaque `DetectedTradeDTO` nouvellement
+    inséré (consommé par la strategy à M2). Compatible M1 (queue optionnelle).
+    """
 
     def __init__(
         self,
@@ -23,11 +27,13 @@ class WalletPoller:
         client: DataApiClient,
         repo: DetectedTradeRepository,
         interval_seconds: int,
+        out_queue: asyncio.Queue[DetectedTradeDTO] | None = None,
     ) -> None:
         self._wallet = wallet_address.lower()
         self._client = client
         self._repo = repo
         self._interval = interval_seconds
+        self._out_queue = out_queue
         self._log = structlog.get_logger(__name__).bind(wallet=self._wallet)
 
     async def run(self, stop_event: asyncio.Event) -> None:
@@ -60,7 +66,8 @@ class WalletPoller:
     async def _poll_once(self, since: datetime) -> None:
         trades = await self._client.get_trades(self._wallet, since=since)
         for trade in trades:
-            inserted = await self._repo.insert_if_new(self._to_dto(trade))
+            dto = self._to_dto(trade)
+            inserted = await self._repo.insert_if_new(dto)
             if inserted:
                 self._log.info(
                     "trade_detected",
@@ -70,8 +77,17 @@ class WalletPoller:
                     usdc_size=trade.usdc_size,
                     price=trade.price,
                 )
+                self._publish(dto)
             else:
                 self._log.debug("trade_dedup_skipped", tx_hash=trade.transaction_hash)
+
+    def _publish(self, dto: DetectedTradeDTO) -> None:
+        if self._out_queue is None:
+            return
+        try:
+            self._out_queue.put_nowait(dto)
+        except asyncio.QueueFull:
+            self._log.warning("strategy_queue_full", tx_hash=dto.tx_hash)
 
     def _to_dto(self, trade: TradeActivity) -> DetectedTradeDTO:
         return DetectedTradeDTO(

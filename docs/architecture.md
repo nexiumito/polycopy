@@ -55,6 +55,8 @@
 
 ## Module : Strategy
 
+> **Status M2** ✅ — implémenté. Pipeline `MarketFilter → PositionSizer → SlippageChecker → RiskManager` exécuté à chaque `DetectedTrade` reçu via `asyncio.Queue` partagée avec le Watcher. Décisions persistées dans `strategy_decisions`. Voir `specs/M2-strategy-engine.md` et `src/polycopy/strategy/`.
+
 Pipeline en étages, chaque étage peut rejeter le trade avec une raison loggée :
 
 1. **MarketFilter** : vérifie liquidité ≥ seuil, expiration ≥ seuil, marché actif (via Gamma API, cache 60s)

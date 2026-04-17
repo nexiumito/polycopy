@@ -23,3 +23,18 @@ class DetectedTradeDTO(BaseModel):
     outcome: str | None = None
     slug: str | None = None
     raw_json: dict[str, Any]
+
+
+class StrategyDecisionDTO(BaseModel):
+    """Décision du pipeline strategy, prête pour insertion en base."""
+
+    model_config = ConfigDict(frozen=True)
+
+    detected_trade_id: int
+    tx_hash: str
+    decision: Literal["APPROVED", "REJECTED"]
+    reason: str | None = None
+    my_size: float | None = None
+    my_price: float | None = None
+    slippage_pct: float | None = None
+    pipeline_state: dict[str, Any]

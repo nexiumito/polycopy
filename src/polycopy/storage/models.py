@@ -61,6 +61,28 @@ class DetectedTrade(Base):
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
+class StrategyDecision(Base):
+    """Décision du pipeline strategy pour un `DetectedTrade` donné. Append-only."""
+
+    __tablename__ = "strategy_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    detected_trade_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    tx_hash: Mapped[str] = mapped_column(String(66), index=True, nullable=False)
+    decision: Mapped[str] = mapped_column(String(8), nullable=False)  # APPROVED | REJECTED
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    my_size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    my_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    slippage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        index=True,
+        nullable=False,
+    )
+    pipeline_state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
 # --- Populated from M3 onwards ----------------------------------------------
 
 

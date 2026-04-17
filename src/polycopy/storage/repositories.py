@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from polycopy.storage.dtos import DetectedTradeDTO
-from polycopy.storage.models import DetectedTrade, TargetTrader
+from polycopy.storage.dtos import DetectedTradeDTO, StrategyDecisionDTO
+from polycopy.storage.models import DetectedTrade, StrategyDecision, TargetTrader
 
 log = structlog.get_logger(__name__)
 
@@ -98,3 +98,47 @@ class DetectedTradeRepository:
             )
             result = await session.execute(stmt)
             return int(result.scalar_one())
+
+
+class StrategyDecisionRepository:
+    """Repository des décisions du pipeline strategy. Append-only (jamais d'update)."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(self, decision: StrategyDecisionDTO) -> StrategyDecision:
+        """Persiste la décision et retourne l'instance avec son `id`."""
+        record = StrategyDecision(
+            detected_trade_id=decision.detected_trade_id,
+            tx_hash=decision.tx_hash,
+            decision=decision.decision,
+            reason=decision.reason,
+            my_size=decision.my_size,
+            my_price=decision.my_price,
+            slippage_pct=decision.slippage_pct,
+            pipeline_state=decision.pipeline_state,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def list_recent(self, limit: int = 100) -> list[StrategyDecision]:
+        """Retourne les décisions les plus récentes (debug)."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(StrategyDecision).order_by(StrategyDecision.decided_at.desc()).limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def count_by_decision(self) -> dict[str, int]:
+        """Compte les décisions par type (`APPROVED` / `REJECTED`) — métrics."""
+        async with self._session_factory() as session:
+            stmt = select(
+                StrategyDecision.decision,
+                func.count(StrategyDecision.id),
+            ).group_by(StrategyDecision.decision)
+            result = await session.execute(stmt)
+            return {row[0]: int(row[1]) for row in result.all()}

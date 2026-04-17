@@ -51,10 +51,13 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
   - Doc : https://docs.polymarket.com/api-reference/core/get-user-activity
   - Rate limit : ~100 req/min, prévoir backoff exponentiel sur 429
 - **Gamma API** : `https://gamma-api.polymarket.com` (public)
-  - Métadonnées marchés (slug, conditionId, tokenIds, expiration)
-- **CLOB API** : `https://clob.polymarket.com` (auth L1 + L2)
+  - Métadonnées marchés (slug, conditionId, tokenIds, expiration).
+  - **Utilisé à M2** par `MarketFilter` (liquidité, expiration, état actif). Cache TTL 60s côté client.
+  - Pièges API : `clobTokenIds`, `outcomes`, `outcomePrices` sont des strings JSON-stringifiées (pas des arrays). `questionID` (et non `questionId`) — case spécifique.
+- **CLOB API** : `https://clob.polymarket.com` (auth L1 + L2 pour trading)
   - Doc : https://docs.polymarket.com/developers/CLOB/
-  - Utilise `py-clob-client` (jamais d'appels REST directs sauf si le SDK n'expose pas l'endpoint)
+  - **À M2 utilisé en read-only** (`GET /midpoint?token_id=...`, sans auth) par `SlippageChecker`. Réponse réelle : `{"mid": "0.08"}` (et **non** `mid_price` comme l'OpenAPI annonce).
+  - À partir de M3 : auth L1+L2 via `py-clob-client` (jamais d'appels REST directs sauf si le SDK n'expose pas l'endpoint).
 - **CLOB WebSocket** : `wss://ws-subscriptions-clob.polymarket.com`
   - Channel `market` pour les prix temps réel
 
@@ -66,6 +69,7 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
 - Tous les ordres passent par le `RiskManager.check()` avant `OrderExecutor.send()`. Pas d'exception.
 - Le mode `--dry-run` doit être respecté partout : si `settings.dry_run is True`, l'executor log l'ordre mais ne l'envoie pas
 - Le kill switch (`KILL_SWITCH_DRAWDOWN_PCT`) coupe tout : ferme le watcher, n'envoie plus d'ordres, alerte Telegram
+- À M2 la strategy est **read-only** (Gamma + CLOB midpoint, pas de signature, pas de POST). `settings.dry_run` n'a pas d'effet sur la strategy. Le garde-fou `dry_run` kicks in à M3 quand l'Executor le lit avant d'envoyer un ordre.
 
 ## Tests
 

@@ -48,3 +48,17 @@ def test_dry_run_default_true(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolated(monkeypatch)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.dry_run is True
+
+
+def test_risk_capital_stub_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolated(monkeypatch)
+    monkeypatch.delenv("RISK_AVAILABLE_CAPITAL_USD_STUB", raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.risk_available_capital_usd_stub == 1000.0
+
+
+def test_risk_capital_stub_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    _isolated(monkeypatch)
+    monkeypatch.setenv("RISK_AVAILABLE_CAPITAL_USD_STUB", "2500")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.risk_available_capital_usd_stub == 2500.0

@@ -13,6 +13,7 @@ from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.models import Base
 from polycopy.storage.repositories import (
     DetectedTradeRepository,
+    StrategyDecisionRepository,
     TargetTraderRepository,
 )
 
@@ -51,7 +52,31 @@ async def detected_trade_repo(
     return DetectedTradeRepository(session_factory)
 
 
+@pytest_asyncio.fixture
+async def strategy_decision_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> StrategyDecisionRepository:
+    return StrategyDecisionRepository(session_factory)
+
+
 @pytest.fixture
 def sample_activity_payload() -> list[dict[str, Any]]:
     """Réponse réelle Data API capturée pour les tests unitaires."""
     return list(json.loads((_FIXTURES_DIR / "activity_sample.json").read_text()))
+
+
+@pytest.fixture
+def sample_gamma_market() -> dict[str, Any]:
+    """1er marché de la fixture Gamma /markets capturée."""
+    payload = json.loads((_FIXTURES_DIR / "gamma_market_sample.json").read_text())
+    first: dict[str, Any] = payload[0]
+    return first
+
+
+@pytest.fixture
+def sample_clob_midpoint() -> dict[str, str]:
+    """Réponse CLOB /midpoint capturée."""
+    payload: dict[str, str] = json.loads(
+        (_FIXTURES_DIR / "clob_midpoint_sample.json").read_text(),
+    )
+    return payload

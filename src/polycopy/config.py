@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     min_hours_to_expiry: float = Field(24, ge=0)
     max_slippage_pct: float = Field(2.0, ge=0)
     kill_switch_drawdown_pct: float = Field(20, ge=0, le=100)
+    risk_available_capital_usd_stub: float = Field(
+        1000.0,
+        gt=0,
+        description=(
+            "Stub M2 du capital dispo pour le RiskManager. "
+            "Remplacé par lecture wallet on-chain à M3."
+        ),
+    )
 
     # --- Polling ---
     poll_interval_seconds: int = Field(5, ge=1)

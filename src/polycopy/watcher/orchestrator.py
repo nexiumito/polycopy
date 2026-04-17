@@ -1,14 +1,17 @@
-"""Orchestrateur async : pilote les pollers sur tous les wallets actifs."""
+"""Orchestrateur async : pilote les pollers sur tous les wallets actifs.
+
+Le `stop_event` et les signal handlers vivent dans `__main__` depuis M2 (partagés
+avec `StrategyOrchestrator`).
+"""
 
 import asyncio
-import contextlib
-import signal
 from typing import TYPE_CHECKING
 
 import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.repositories import (
     DetectedTradeRepository,
     TargetTraderRepository,
@@ -23,20 +26,20 @@ log = structlog.get_logger(__name__)
 
 
 class WatcherOrchestrator:
-    """Démarre 1 `WalletPoller` par wallet actif et orchestre la sortie propre."""
+    """Démarre 1 `WalletPoller` par wallet actif. Push sur `detected_trades_queue` si fournie."""
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: "Settings",
+        detected_trades_queue: asyncio.Queue[DetectedTradeDTO] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
-        self._stop_event = asyncio.Event()
+        self._out_queue = detected_trades_queue
 
-    async def run_forever(self) -> None:
-        """Boucle principale jusqu'à SIGINT/SIGTERM ou `request_stop()`."""
-        self._install_signal_handlers()
+    async def run_forever(self, stop_event: asyncio.Event) -> None:
+        """Boucle principale jusqu'à ce que `stop_event` soit set."""
         target_repo = TargetTraderRepository(self._session_factory)
         trade_repo = DetectedTradeRepository(self._session_factory)
         traders = await target_repo.list_active()
@@ -57,27 +60,14 @@ class WatcherOrchestrator:
                     client=api_client,
                     repo=trade_repo,
                     interval_seconds=self._settings.poll_interval_seconds,
+                    out_queue=self._out_queue,
                 )
                 for wallet in wallets
             ]
             try:
                 async with asyncio.TaskGroup() as tg:
                     for poller in pollers:
-                        tg.create_task(poller.run(self._stop_event))
+                        tg.create_task(poller.run(stop_event))
             except* asyncio.CancelledError:
                 pass
         log.info("watcher_stopped")
-
-    def request_stop(self) -> None:
-        """Demande l'arrêt propre des pollers."""
-        if not self._stop_event.is_set():
-            log.info("watcher_stop_requested")
-            self._stop_event.set()
-
-    def _install_signal_handlers(self) -> None:
-        # Windows ProactorEventLoop ne supporte pas add_signal_handler ;
-        # on retombe sur KeyboardInterrupt côté __main__.
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, self.request_stop)

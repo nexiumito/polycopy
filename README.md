@@ -64,6 +64,7 @@ Guide complet pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs
 | `MIN_HOURS_TO_EXPIRY` | Skip les marchés trop proches de l'expiration | `24` |
 | `MAX_SLIPPAGE_PCT` | Slippage max accepté vs prix original | `2.0` |
 | `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X% | `20` |
+| `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo (stub M2 ; remplacé par lecture wallet à M3) | `1000.0` |
 | `DATABASE_URL` | URL DB | `sqlite:///polycopy.db` |
 | `TELEGRAM_BOT_TOKEN` | Optionnel | |
 | `TELEGRAM_CHAT_ID` | Optionnel | |
@@ -116,7 +117,7 @@ python scripts/score_traders.py --window 30d --min-volume 50000
 ## État d'avancement
 
 - [x] M1 : Watcher + Storage
-- [ ] M2 : Strategy Engine
+- [x] M2 : Strategy Engine
 - [ ] M3 : Executor
 - [ ] M4 : Monitoring
 - [ ] M5 : Scoring
