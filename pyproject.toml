@@ -1,0 +1,68 @@
+[project]
+name = "polycopy"
+version = "0.1.0"
+description = "Copy trading bot for Polymarket"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Elie" }]
+
+dependencies = [
+    "py-clob-client>=0.20.0",
+    "polymarket-apis>=0.5.0",
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "sqlalchemy[asyncio]>=2.0.25",
+    "aiosqlite>=0.19.0",
+    "structlog>=24.1.0",
+    "tenacity>=8.2.0",
+    "python-telegram-bot>=20.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "respx>=0.20.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8.0",
+    "types-aiofiles",
+]
+
+[project.scripts]
+polycopy = "polycopy.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "UP", "ASYNC", "S", "RET", "SIM"]
+ignore = ["S101"]  # assert utilisé dans les tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: tests qui appellent les vraies APIs (lents, opt-in)",
+]
+testpaths = ["tests"]
