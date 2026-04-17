@@ -8,6 +8,12 @@ Contexte projet pour Claude Code. Lis ceci avant toute modification.
 
 Voir `README.md` pour le pitch utilisateur, `docs/architecture.md` pour le détail technique.
 
+## Environnement de dev
+
+Environnement de référence : **WSL Ubuntu (bash)**, chemin canonique `/home/<user>/code/polycopy` (Linux natif). Éviter `/mnt/c/...` : I/O `drvfs` lent sur venv et pytest. Toutes les commandes de cette doc supposent un shell bash WSL.
+
+Bootstrap complet et idempotent : `bash scripts/setup.sh` depuis la racine. Crée `.venv/`, installe les deps, copie `.env`, applique le patch §0.5 de la spec M1, lance un smoke test. Pas-à-pas utilisateur : [docs/setup.md](docs/setup.md).
+
 ## Conventions de code
 
 - **Python 3.11+**, type hints partout (vérifié par `mypy --strict`)

@@ -32,22 +32,23 @@ Voir `docs/architecture.md` pour le détail.
 
 ## Setup rapide
 
+Environnement de référence : **WSL Ubuntu (bash)**, repo cloné en chemin Linux natif (`~/code/polycopy`). Un seul script bootstrape tout (idempotent) :
+
 ```bash
-# Python 3.11+
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Config
-cp .env.example .env
-# Éditer .env avec ta clé privée et l'adresse funder
-
-# Lancer en dry-run (aucun ordre envoyé)
-python -m polycopy --dry-run
-
-# Lancer en réel (ATTENTION : utilise ton vrai capital)
-python -m polycopy
+bash scripts/setup.sh
 ```
+
+Il crée le `.venv/`, installe les deps, copie `.env.example` → `.env`, applique le patch config §0.5 de M1, et lance un smoke test `python -m polycopy --dry-run`.
+
+Ensuite, à chaque nouvelle session :
+
+```bash
+source .venv/bin/activate
+python -m polycopy --dry-run   # aucun ordre envoyé
+# python -m polycopy           # réel — ATTENTION à ton capital
+```
+
+Guide complet pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.md](docs/setup.md).
 
 ## Variables d'environnement
 

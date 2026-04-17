@@ -4,8 +4,11 @@ Toutes les variables sont chargées depuis l'environnement (ou .env en dev).
 Aucune valeur sensible en dur dans le code.
 """
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -18,12 +21,27 @@ class Settings(BaseSettings):
     )
 
     # --- Polymarket wallet ---
-    polymarket_private_key: str = Field(..., description="Clé privée du wallet de signature")
-    polymarket_funder: str = Field(..., description="Adresse du proxy wallet")
+    polymarket_private_key: str | None = Field(None, description="Clé privée du wallet de signature (requis à M3)")
+    polymarket_funder: str | None = Field(None, description="Adresse du proxy wallet (requis à M3)")
     polymarket_signature_type: int = Field(1, ge=0, le=2)
 
     # --- Cibles ---
-    target_wallets: list[str] = Field(default_factory=list)
+    # `NoDecode` désactive le JSON-decode auto de pydantic-settings pour ce champ ;
+    # le validator ci-dessous reçoit la string brute et gère CSV + JSON.
+    target_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("target_wallets", mode="before")
+    @classmethod
+    def _parse_target_wallets(cls, v: object) -> object:
+        """Accepte `TARGET_WALLETS` en CSV (`0xabc,0xdef`) ou en JSON (`["0xabc","0xdef"]`)."""
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return v
 
     # --- Sizing & risk ---
     copy_ratio: float = Field(0.01, gt=0, le=1)
@@ -50,4 +68,4 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
 
-settings = Settings()  # type: ignore[call-arg]
+settings = Settings()
