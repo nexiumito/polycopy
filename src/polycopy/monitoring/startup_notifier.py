@@ -74,10 +74,9 @@ class StartupNotifier:
             if self._settings.dashboard_enabled
             else None
         )
-        mode = "dry-run" if self._settings.dry_run else "live"
         return StartupContext(
             version=_resolve_version(),
-            mode=mode,
+            mode=self._settings.execution_mode,
             boot_at=datetime.now(tz=UTC),
             pinned_wallets=pinned,
             modules=modules,
@@ -110,7 +109,7 @@ class StartupNotifier:
             ModuleStatus(
                 name="Executor",
                 enabled=True,
-                detail="simulé" if self._settings.dry_run else "live",
+                detail=_executor_detail(self._settings.execution_mode),
             ),
             ModuleStatus(
                 name="Monitoring",
@@ -143,6 +142,15 @@ class StartupNotifier:
             ),
         ]
         return modules
+
+
+def _executor_detail(execution_mode: str) -> str:
+    """Texte humain pour la ligne Executor dans le startup message M7."""
+    if execution_mode == "live":
+        return "live"
+    if execution_mode == "simulation":
+        return "simulation"
+    return "simulé"
 
 
 def _resolve_version() -> str:

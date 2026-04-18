@@ -27,7 +27,7 @@ from polycopy.storage.repositories import PnlSnapshotRepository
 def _dry_settings(**kw: object) -> Settings:
     base: dict[str, object] = {
         "_env_file": None,
-        "dry_run": True,
+        "execution_mode": "dry_run",
         "pnl_snapshot_interval_seconds": 1,
         "kill_switch_drawdown_pct": 20.0,
     }
@@ -38,7 +38,7 @@ def _dry_settings(**kw: object) -> Settings:
 def _real_settings(**kw: object) -> Settings:
     base: dict[str, object] = {
         "_env_file": None,
-        "dry_run": False,
+        "execution_mode": "live",
         "polymarket_private_key": "0x" + "1" * 64,
         "polymarket_funder": "0xF",
         "pnl_snapshot_interval_seconds": 1,
@@ -72,16 +72,20 @@ async def _run_once(
     await asyncio.gather(writer.run(stop), _stop_later())
 
 
-# --- Dry-run : snapshot écrit, kill switch JAMAIS ---------------------------
+# --- M10 : en dry-run, le kill switch fire IDENTIQUE LIVE --------------------
 
 
 @pytest.mark.asyncio
-async def test_dry_run_writes_snapshot_and_never_kills(
+async def test_dry_run_writes_snapshot_and_triggers_kill_switch(
     session_factory: async_sessionmaker[AsyncSession],
     pnl_snapshot_repo: PnlSnapshotRepository,
 ) -> None:
-    # Pré-charge un max=1000 en dry-run, puis demande un état total=100
-    # (drawdown serait 90% si on appliquait le kill switch).
+    """M10 §3.3 : inversion de l'invariant M4/M8 — le kill switch fire en dry-run.
+
+    Scénario : max=1000 en dry-run, total=100 → drawdown 90% > seuil 20%.
+    L'alerte ``kill_switch_triggered`` CRITICAL est poussée ET ``stop_event``
+    est set par le writer (et non seulement par le timeout externe).
+    """
     await pnl_snapshot_repo.insert(
         PnlSnapshotDTO(
             total_usdc=1000.0,
@@ -97,14 +101,15 @@ async def test_dry_run_writes_snapshot_and_never_kills(
     reader = _reader(total=50.0, avail=50.0)
     writer = PnlSnapshotWriter(session_factory, _dry_settings(), reader, queue)
     stop = asyncio.Event()
-    await _run_once(writer, stop, timeout=0.15)
+    await _run_once(writer, stop, timeout=0.3)
 
-    assert stop.is_set() is True  # notre stop externe
-    # Critique : le kill switch ne doit pas avoir set stop prématurément ni pushé d'alert.
-    alerts = []
+    assert stop.is_set() is True
+    alerts: list[Alert] = []
     while not queue.empty():
         alerts.append(queue.get_nowait())
-    assert all(a.event != "kill_switch_triggered" for a in alerts)
+    events = {a.event for a in alerts}
+    assert "kill_switch_triggered" in events
+    assert "dry_run_virtual_drawdown" not in events  # M10 : supprimé
 
     latest = await pnl_snapshot_repo.get_latest(only_real=False)
     assert latest is not None

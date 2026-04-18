@@ -15,11 +15,11 @@ from polycopy.strategy.dtos import OrderApproved
 
 
 def _dry_settings() -> Settings:
-    return Settings(_env_file=None, dry_run=True)  # type: ignore[call-arg]
+    return Settings(_env_file=None, execution_mode="dry_run")  # type: ignore[call-arg]
 
 
 def _real_settings_no_keys() -> Settings:
-    return Settings(_env_file=None, dry_run=False)  # type: ignore[call-arg]
+    return Settings(_env_file=None, execution_mode="live")  # type: ignore[call-arg]
 
 
 def _approved() -> OrderApproved:
@@ -47,11 +47,12 @@ async def _stop_after(stop_event: asyncio.Event, delay: float) -> None:
 # --- Garde-fou démarrage §2.2 ----------------------------------------------
 
 
-def test_constructor_real_mode_without_keys_raises(
+def test_constructor_live_mode_without_keys_raises(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """M10 §3.5.2 : garde-fou 2 — RuntimeError si EXECUTION_MODE=live + keys None."""
     queue: asyncio.Queue[OrderApproved] = asyncio.Queue()
-    with pytest.raises(RuntimeError, match="DRY_RUN=false"):
+    with pytest.raises(RuntimeError, match="EXECUTION_MODE=live"):
         ExecutorOrchestrator(session_factory, _real_settings_no_keys(), queue)
 
 

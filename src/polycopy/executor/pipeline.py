@@ -106,8 +106,23 @@ async def execute_order(
         order_type="FOK",
     )
 
-    # 2) Branche dry-run.
-    if settings.dry_run:
+    # 2) Branche SIMULATION / DRY_RUN (non-LIVE) — M10.
+    if settings.execution_mode != "live":
+        # SIMULATION : stub M3 strict (pas de /book, pas de realistic fill).
+        # Le mode simulation utilise des fixtures locales — hors scope v1 M10,
+        # mais le dispatch est prêt pour un harness de backtest ultérieur.
+        if settings.execution_mode == "simulation":
+            await _persist_simulated_stub(
+                approved,
+                built=built,
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+                price_rounded=price_rounded,
+                order_repo=order_repo,
+                bound_log=bound,
+            )
+            return
+        # DRY_RUN : branche realistic fill M8 si activée, sinon stub M3.
         if settings.dry_run_realistic_fill and orderbook_reader is not None:
             await _persist_realistic_simulated(
                 approved,
@@ -120,28 +135,14 @@ async def execute_order(
                 bound_log=bound,
             )
             return
-        await order_repo.insert(
-            MyOrderDTO(
-                source_tx_hash=approved.tx_hash,
-                condition_id=approved.condition_id,
-                asset_id=approved.asset_id,
-                side=approved.side,
-                size=approved.my_size,
-                price=price_rounded,
-                tick_size=tick_size,
-                neg_risk=neg_risk,
-                order_type="FOK",
-                status="SIMULATED",
-                simulated=True,
-            ),
-        )
-        bound.info(
-            "order_simulated",
-            side=built.side,
-            size=built.size,
-            price=built.price,
+        await _persist_simulated_stub(
+            approved,
+            built=built,
             tick_size=tick_size,
             neg_risk=neg_risk,
+            price_rounded=price_rounded,
+            order_repo=order_repo,
+            bound_log=bound,
         )
         return
 
@@ -187,8 +188,11 @@ async def execute_order(
         )
         return
 
-    if settings.dry_run:  # double check, defense in depth §2.3
-        raise RuntimeError("dry_run flipped between checks (bug)")
+    if settings.execution_mode != "live":  # double check, defense in depth §2.3
+        raise RuntimeError(
+            f"execution_mode flipped to {settings.execution_mode!r} between "
+            "checks — MUST be 'live' at this point (bug)",
+        )
 
     inserted = await order_repo.insert(
         MyOrderDTO(
@@ -336,6 +340,47 @@ def _push_executor_error_alert(
     )
 
 
+async def _persist_simulated_stub(
+    approved: OrderApproved,
+    *,
+    built: BuiltOrder,
+    tick_size: float,
+    neg_risk: bool,
+    price_rounded: float,
+    order_repo: MyOrderRepository,
+    bound_log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Stub M3 : insère un ``MyOrder`` `SIMULATED` sans appeler ``ClobWriteClient``.
+
+    Utilisé par le dispatch M10 pour les modes SIMULATION et DRY_RUN sans
+    realistic fill. Aucune persistance de position — la position virtuelle M8
+    est gérée par ``_persist_realistic_simulated`` uniquement (ségrégation data).
+    """
+    await order_repo.insert(
+        MyOrderDTO(
+            source_tx_hash=approved.tx_hash,
+            condition_id=approved.condition_id,
+            asset_id=approved.asset_id,
+            side=approved.side,
+            size=approved.my_size,
+            price=price_rounded,
+            tick_size=tick_size,
+            neg_risk=neg_risk,
+            order_type="FOK",
+            status="SIMULATED",
+            simulated=True,
+        ),
+    )
+    bound_log.info(
+        "order_simulated",
+        side=built.side,
+        size=built.size,
+        price=built.price,
+        tick_size=tick_size,
+        neg_risk=neg_risk,
+    )
+
+
 async def _persist_realistic_simulated(
     approved: OrderApproved,
     *,
@@ -349,11 +394,14 @@ async def _persist_realistic_simulated(
 ) -> None:
     """Branche M8 : fetch /book → simulate_fill → persist + position virtuelle.
 
-    4ᵉ garde-fou M8 (defense in depth) : ``assert dry_run is True`` — un bug
-    de refactor qui appellerait cette fonction en mode live raise immédiatement.
+    4ᵉ garde-fou M8 (defense in depth) : ``assert execution_mode == "dry_run"``
+    — un bug de refactor qui appellerait cette fonction en SIMULATION ou LIVE
+    raise immédiatement. M10 : le mode SIMULATION est aussi rejeté (il utilise
+    des fixtures locales, pas ``ClobOrderbookReader``).
     """
-    assert settings.dry_run is True, (  # noqa: S101 — defense in depth invariant
-        "_persist_realistic_simulated must NEVER run in live mode (M8 4th guardrail breached)."
+    assert settings.execution_mode == "dry_run", (  # noqa: S101 — defense in depth invariant
+        "_persist_realistic_simulated must ONLY run in dry_run mode "
+        f"(got {settings.execution_mode!r}) — M8 4th guardrail breached."
     )
     book = await orderbook_reader.get_orderbook(approved.asset_id)
     fill = simulate_fill(

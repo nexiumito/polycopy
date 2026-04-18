@@ -98,11 +98,11 @@ nano .env        # si tu préfères le terminal
 
 **Pour démarrer en dry-run** (milestone courant : M4), **tu n'as besoin de renseigner qu'une seule variable** :
 
-| Variable | À faire en dry-run |
+| Variable | À faire en dry-run (M10) |
 |---|---|
 | `TARGET_WALLETS` | **Obligatoire**. Mets 1 adresse Polygon connue active sur Polymarket (CSV pour plusieurs). |
 | `POLL_INTERVAL_SECONDS` | Laisse `5`, ou monte à `15` en dev pour économiser le rate limit. |
-| `DRY_RUN` | Laisse `true`. |
+| `EXECUTION_MODE` | Laisse `dry_run` (default M10). Legacy `DRY_RUN=true` fonctionne encore 1 version avec warning. |
 | `LOG_LEVEL` | Laisse `INFO`. |
 | `DATABASE_URL` | Laisse la valeur SQLite par défaut. |
 
@@ -415,7 +415,8 @@ Via BotFather : `/token` → sélectionner ton bot → nouveau token généré. 
 Objectif : laisser le bot tourner 2-3 jours sans capital engagé tout en observant le PnL **virtuel** que tu aurais eu. Aucune signature CLOB, aucune creds touchées (uniquement `/book`, `/midpoint`, Gamma `/markets` read-only).
 
 ```env
-DRY_RUN=true
+# M10 : EXECUTION_MODE=dry_run remplace DRY_RUN=true (legacy lu 1 version avec warning).
+EXECUTION_MODE=dry_run
 DRY_RUN_REALISTIC_FILL=true
 DRY_RUN_VIRTUAL_CAPITAL_USD=1000
 DRY_RUN_RESOLUTION_POLL_MINUTES=30
@@ -447,8 +448,8 @@ Contient : équity curve virtuelle, drawdown max, Δ total_usdc, snapshots déta
 | Positions virtuelles qui ne se résolvent pas | Marché `neg_risk` (skipped v1), ou `closed=false` côté Gamma | Log `dry_run_resolution_neg_risk_unsupported` ou `dry_run_resolution_winning_outcome_unknown`. v1 = limitation documentée. |
 | `dry_run_sell_without_position` warning | Trader source vend une position que le dry-run virtuel n'a pas ouverte (filtres précédents l'ont bloquée) | Comportement attendu en v1 ; SELL virtuel est skipped + log warning, pas de crash. |
 | PnL virtuel qui ne bouge pas | Snapshots écrits toutes les 5 min ; midpoint cache 30 s côté `WalletStateReader` M3 | Patience — vérifier `pnl_snapshot_written is_dry_run=True` dans les logs. |
-| Alerte `dry_run_virtual_drawdown` | Drawdown ≥ 50 % du seuil `KILL_SWITCH_DRAWDOWN_PCT` | INFO only — **aucun** kill switch en dry-run (invariant M4). Sert à signaler la tendance, pas à arrêter le bot. |
-| Passage au live | Mettre `DRY_RUN=false` + clés + `MAX_POSITION_USD=1` | Le flag `DRY_RUN_REALISTIC_FILL` est **ignoré** en live (cohérent, jamais de fill virtuel en prod). 4ᵉ garde-fou M8 raise `AssertionError` si quelqu'un appelle la branche M8 avec `dry_run=False`. |
+| Alerte `kill_switch_triggered` en dry-run (M10) | Drawdown ≥ `KILL_SWITCH_DRAWDOWN_PCT` | **Attendu depuis M10** — le dry-run est un miroir fidèle du live. Pour désactiver explicitement le kill switch sur un long backtest : `KILL_SWITCH_DRAWDOWN_PCT=100`. |
+| Passage au live | Mettre `EXECUTION_MODE=live` + clés + `MAX_POSITION_USD=1` | Le flag `DRY_RUN_REALISTIC_FILL` est **ignoré** en live (cohérent, jamais de fill virtuel en prod). 4ᵉ garde-fou M8/M10 raise `AssertionError` si quelqu'un appelle la branche M8 avec `execution_mode != "dry_run"`. |
 
 
 ---

@@ -46,7 +46,9 @@ class DryRunResolutionWatcher:
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle jusqu'à ``stop_event.set()``. No-op si M8 désactivé."""
-        if not (self._settings.dry_run and self._settings.dry_run_realistic_fill):
+        if not (
+            self._settings.execution_mode == "dry_run" and self._settings.dry_run_realistic_fill
+        ):
             return
         interval_s = self._settings.dry_run_resolution_poll_minutes * 60
         log.info("dry_run_resolution_started", interval_s=interval_s)

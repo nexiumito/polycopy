@@ -12,13 +12,13 @@ from polycopy.executor.dtos import BuiltOrder
 
 
 def _dry_settings() -> Settings:
-    return Settings(_env_file=None, dry_run=True)  # type: ignore[call-arg]
+    return Settings(_env_file=None, execution_mode="dry_run")  # type: ignore[call-arg]
 
 
 def _real_settings(*, key: str | None = "0x" + "1" * 64, funder: str | None = "0xF") -> Settings:
     return Settings(  # type: ignore[call-arg]
         _env_file=None,
-        dry_run=False,
+        execution_mode="live",
         polymarket_private_key=key,
         polymarket_funder=funder,
     )
@@ -42,7 +42,7 @@ def mock_clob_class(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 def test_garde_fou_constructor_in_dry_run_raises() -> None:
-    with pytest.raises(RuntimeError, match="dry-run mode"):
+    with pytest.raises(RuntimeError, match="execution_mode='live'"):
         ClobWriteClient(_dry_settings())
 
 

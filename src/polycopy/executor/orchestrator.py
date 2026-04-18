@@ -30,8 +30,8 @@ _QUEUE_GET_TIMEOUT_SECONDS: float = 1.0
 class ExecutorOrchestrator:
     """Pull `OrderApproved` depuis la queue M2 et exécute via le pipeline.
 
-    Garde-fou démarrage strict : si `dry_run=False` ET clés absentes,
-    raise `RuntimeError` AVANT le TaskGroup (cf. spec §2.2).
+    Garde-fou démarrage strict (M3/M10) : si ``execution_mode == "live"`` ET
+    clés absentes, raise ``RuntimeError`` AVANT le TaskGroup (cf. spec §2.2).
     """
 
     def __init__(
@@ -41,12 +41,13 @@ class ExecutorOrchestrator:
         approved_orders_queue: asyncio.Queue[OrderApproved],
         alerts_queue: "asyncio.Queue[Alert] | None" = None,
     ) -> None:
-        if settings.dry_run is False and (
+        if settings.execution_mode == "live" and (
             settings.polymarket_private_key is None or settings.polymarket_funder is None
         ):
             raise RuntimeError(
-                "Executor cannot start without Polymarket credentials when DRY_RUN=false. "
-                "Set POLYMARKET_PRIVATE_KEY and POLYMARKET_FUNDER in .env, or use --dry-run.",
+                "Executor cannot start without Polymarket credentials when "
+                "EXECUTION_MODE=live. Set POLYMARKET_PRIVATE_KEY and "
+                "POLYMARKET_FUNDER in .env, or use EXECUTION_MODE=dry_run.",
             )
         self._session_factory = session_factory
         self._settings = settings
@@ -69,11 +70,13 @@ class ExecutorOrchestrator:
             gamma_client = GammaApiClient(http_client)
             wallet_state_reader = WalletStateReader(http_client, self._settings)
             write_client: ClobWriteClient | None = None
-            if self._settings.dry_run is False:
+            if self._settings.execution_mode == "live":
                 write_client = ClobWriteClient(self._settings)
             orderbook_reader: ClobOrderbookReader | None = None
             resolution_watcher: DryRunResolutionWatcher | None = None
-            m8_enabled = self._settings.dry_run and self._settings.dry_run_realistic_fill
+            m8_enabled = (
+                self._settings.execution_mode == "dry_run" and self._settings.dry_run_realistic_fill
+            )
             if m8_enabled:
                 orderbook_reader = ClobOrderbookReader(
                     http_client,
@@ -91,8 +94,11 @@ class ExecutorOrchestrator:
                     poll_minutes=self._settings.dry_run_resolution_poll_minutes,
                     allow_partial=self._settings.dry_run_allow_partial_book,
                 )
-            mode = "real" if self._settings.dry_run is False else "dry_run"
-            log.info("executor_started", mode=mode, m8=m8_enabled)
+            log.info(
+                "executor_started",
+                mode=self._settings.execution_mode,
+                m8=m8_enabled,
+            )
             try:
                 async with asyncio.TaskGroup() as tg:
                     tg.create_task(

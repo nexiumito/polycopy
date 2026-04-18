@@ -51,11 +51,23 @@ _LEVEL_EMOJI: dict[str, str] = {
     "CRITICAL": "🚨",
 }
 
+# M10 : badge visuel pour distinguer les modes dans les messages Telegram.
+# Injecté en header de chaque template via le binding ``mode_badge``.
+_MODE_BADGE: dict[str, str] = {
+    "simulation": "🟢 SIMULATION",
+    "dry_run": "🟢 DRY-RUN",
+    "live": "🔴 LIVE",
+}
+
 
 class AlertRenderer:
     """Rendu Markdown v2 Telegram des alertes + messages M7 via Jinja2."""
 
-    def __init__(self, project_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path | None = None,
+        mode: str = "dry_run",
+    ) -> None:
         root = project_root if project_root is not None else Path.cwd()
         search_paths: list[str] = []
         user_dir = root / "assets" / "telegram"
@@ -77,6 +89,10 @@ class AlertRenderer:
         self.env.filters["wallet_short"] = wallet_short
         self.env.filters["format_usd_tg"] = format_usd_tg
         self.env.filters["humanize_dt_tg"] = humanize_dt_tg
+        self._mode = mode
+        # M10 : le badge est pré-résolu ; fallback défensif au cas d'un mode
+        # inconnu (ne devrait jamais arriver vu la Literal côté Settings).
+        self._mode_badge = _MODE_BADGE.get(mode, f"? {mode}")
 
     # ------------------------------------------------------------------
     # API publique
@@ -89,12 +105,14 @@ class AlertRenderer:
         reproduit le format M4 (``emoji *[event]*\\nbody``).
         """
         template_name = f"{alert.event}.md.j2"
-        context = {
-            "event_type": alert.event,
-            "level": alert.level,
-            "body": alert.body,
-            "emoji": _LEVEL_EMOJI.get(alert.level, ""),
-        }
+        context = self._inject_mode(
+            {
+                "event_type": alert.event,
+                "level": alert.level,
+                "body": alert.body,
+                "emoji": _LEVEL_EMOJI.get(alert.level, ""),
+            },
+        )
         try:
             template = self.env.get_template(template_name)
         except TemplateNotFound:
@@ -107,28 +125,42 @@ class AlertRenderer:
 
     def render_shutdown(self, context: ShutdownContext) -> str:
         template = self.env.get_template("shutdown.md.j2")
-        return self._finalize(template.render(**context.model_dump()))
+        return self._finalize(template.render(**self._inject_mode(context.model_dump())))
 
     def render_heartbeat(self, context: HeartbeatContext) -> str:
         template = self.env.get_template("heartbeat.md.j2")
-        return self._finalize(template.render(**context.model_dump()))
+        return self._finalize(template.render(**self._inject_mode(context.model_dump())))
 
     def render_daily_summary(self, context: DailySummaryContext) -> str:
         template = self.env.get_template("daily_summary.md.j2")
-        return self._finalize(template.render(**context.model_dump()))
+        return self._finalize(template.render(**self._inject_mode(context.model_dump())))
 
     def render_digest(self, context: DigestContext) -> str:
         template = self.env.get_template("digest.md.j2")
-        return self._finalize(template.render(**context.model_dump()))
+        return self._finalize(template.render(**self._inject_mode(context.model_dump())))
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _startup_vars(context: StartupContext) -> dict[str, Any]:
+    def _inject_mode(self, base_ctx: dict[str, Any]) -> dict[str, Any]:
+        """Ajoute ``mode`` + ``mode_badge`` au context Jinja (M10 §3.4.1).
+
+        Les templates peuvent référencer ``{{ mode_badge | telegram_md_escape }}``
+        pour afficher le badge visuel. ``mode`` est disponible pour du contenu
+        conditionnel fin si besoin, mais M10 privilégie le badge seul.
+        """
+        base_ctx.setdefault("mode", self._mode)
+        base_ctx.setdefault("mode_badge", self._mode_badge)
+        return base_ctx
+
+    def _startup_vars(self, context: StartupContext) -> dict[str, Any]:
         """Serialise StartupContext vers un dict consommable par Jinja."""
-        return context.model_dump()
+        data = context.model_dump()
+        # M10 : le StartupContext porte déjà `mode` (enum execution_mode),
+        # mais on ajoute le badge sans overrider le champ existant.
+        data.setdefault("mode_badge", self._mode_badge)
+        return data
 
     @staticmethod
     def _finalize(rendered: str) -> str:

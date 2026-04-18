@@ -35,7 +35,7 @@ from polycopy.strategy.gamma_client import GammaApiClient
 def _settings_m8(*, realistic: bool, dry: bool = True, partial: bool = False) -> Settings:
     return Settings(  # type: ignore[call-arg]
         _env_file=None,
-        dry_run=dry,
+        execution_mode="dry_run" if dry else "live",
         polymarket_private_key="0x" + "1" * 64 if not dry else None,
         polymarket_funder="0xF" if not dry else None,
         risk_available_capital_usd_stub=1000.0,
@@ -256,27 +256,49 @@ async def test_sell_without_virtual_position_logs_warning_no_crash(
     assert open_virtual == []
 
 
-# --- 4ᵉ garde-fou ---------------------------------------------------------
+# --- 4ᵉ garde-fou (M8 + M10) -----------------------------------------------
 
 
-async def test_4th_guardrail_assert_dry_run_true(
+async def test_4th_guardrail_assert_execution_mode_dry_run(
     my_order_repo: MyOrderRepository,
     my_position_repo: MyPositionRepository,
 ) -> None:
-    """Calling _persist_realistic_simulated directly with dry_run=False must
-    raise AssertionError (defense-in-depth invariant breach)."""
+    """M10 §3.5.4 : ``_persist_realistic_simulated`` rejette LIVE et SIMULATION.
+
+    Defense-in-depth — un bug de refactor qui appellerait la branche M8 avec
+    un autre mode que ``dry_run`` raise ``AssertionError`` immédiatement.
+    """
     import structlog
 
     book = _book(asks=[("0.08", "100")])
     orderbook_reader = AsyncMock(spec=ClobOrderbookReader)
     orderbook_reader.get_orderbook.return_value = book
-    settings = _settings_m8(realistic=True, dry=False)
-    with pytest.raises(AssertionError, match="must NEVER run in live mode"):
+
+    settings_live = _settings_m8(realistic=True, dry=False)
+    with pytest.raises(AssertionError, match="must ONLY run in dry_run mode"):
         await _persist_realistic_simulated(
             _approved(),
             tick_size=0.01,
             neg_risk=False,
-            settings=settings,
+            settings=settings_live,
+            orderbook_reader=orderbook_reader,
+            order_repo=my_order_repo,
+            position_repo=my_position_repo,
+            bound_log=structlog.get_logger(),
+        )
+
+    settings_sim = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        execution_mode="simulation",
+        risk_available_capital_usd_stub=1000.0,
+        dry_run_realistic_fill=True,
+    )
+    with pytest.raises(AssertionError, match="must ONLY run in dry_run mode"):
+        await _persist_realistic_simulated(
+            _approved(),
+            tick_size=0.01,
+            neg_risk=False,
+            settings=settings_sim,
             orderbook_reader=orderbook_reader,
             order_repo=my_order_repo,
             position_repo=my_position_repo,

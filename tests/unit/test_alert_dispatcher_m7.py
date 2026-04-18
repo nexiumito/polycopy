@@ -69,8 +69,10 @@ async def test_unknown_event_uses_fallback_preserves_m4_shape() -> None:
     stop = asyncio.Event()
     await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.1))
     body = tg.send.await_args.args[0]
-    # Forme M4 préservée : emoji + [event] + body
-    assert body.startswith("🟢")
+    # M10 : le fallback gagne 1 ligne header badge. La forme M4 (emoji + [event]
+    # + body) reste présente en dessous.
+    assert body.startswith("_\\[")
+    assert "🟢 *\\[future\\_event\\]*" in body
     assert "future\\_event" in body
 
 

@@ -57,6 +57,20 @@
            style="border-color: var(--color-border); background: var(--color-bg); color: var(--color-text);">
   </label>
 
+  <div class="flex items-center gap-2 mr-2">
+    <span class="text-xs" style="color: var(--color-muted);">Preset :</span>
+    <button type="button" id="preset-business"
+            class="text-xs rounded-md border px-2 py-1"
+            style="border-color: var(--color-border); color: var(--color-text);">
+      Business events only
+    </button>
+    <button type="button" id="preset-access"
+            class="text-xs rounded-md border px-2 py-1"
+            style="border-color: var(--color-border); color: var(--color-muted);">
+      Include HTTP access
+    </button>
+  </div>
+
   <label class="flex items-center gap-1 text-xs" style="color: var(--color-muted);">
     <input type="checkbox" id="live-tail-toggle">
     Live tail (2 s)
@@ -97,6 +111,49 @@
         pollHandle = null;
       }
     });
+  })();
+
+  // M10 : preset UI "Business events only" vs "Include HTTP access".
+  // Persiste le choix en localStorage (clé `polycopy.logs.preset`, cohérent M6).
+  (function () {
+    const LS_KEY = 'polycopy.logs.preset';
+    const form = document.getElementById('logs-filter-form');
+    const btnBusiness = document.getElementById('preset-business');
+    const btnAccess = document.getElementById('preset-access');
+    if (!form || !btnBusiness || !btnAccess) return;
+
+    const eventsInput = form.querySelector('input[name="events"]');
+    const initial = localStorage.getItem(LS_KEY) || 'business';
+
+    function applyPreset(name, options) {
+      options = options || { submit: true };
+      if (!eventsInput) return;
+      if (name === 'access') {
+        const existing = (eventsInput.value || '')
+          .split(',').map(s => s.trim()).filter(Boolean);
+        if (!existing.includes('dashboard_request')) existing.push('dashboard_request');
+        eventsInput.value = existing.join(',');
+        btnAccess.style.color = 'var(--color-text)';
+        btnBusiness.style.color = 'var(--color-muted)';
+      } else {
+        const existing = (eventsInput.value || '')
+          .split(',').map(s => s.trim())
+          .filter(s => s && s !== 'dashboard_request');
+        eventsInput.value = existing.join(',');
+        btnBusiness.style.color = 'var(--color-text)';
+        btnAccess.style.color = 'var(--color-muted)';
+      }
+      localStorage.setItem(LS_KEY, name);
+      if (options.submit && typeof htmx !== 'undefined') {
+        htmx.trigger(form, 'submit');
+      }
+    }
+
+    btnBusiness.addEventListener('click', () => applyPreset('business'));
+    btnAccess.addEventListener('click', () => applyPreset('access'));
+    // Au 1er load : on applique le preset sans re-submit (le rendu initial
+    // côté serveur a déjà appliqué l'exclusion par défaut).
+    applyPreset(initial, { submit: false });
   })();
 </script>
 {% endif %}

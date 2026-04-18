@@ -15,6 +15,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+# M10 : events exclus par défaut du rendu ``/logs`` + partial logs-tail.
+# Opt-in via query string ``events=dashboard_request`` (preset UI
+# ``Include HTTP access``). Cf. spec M10 §4.3.
+_DEFAULT_EXCLUDED_EVENTS: frozenset[str] = frozenset({"dashboard_request"})
+
 
 class LogEntry(BaseModel):
     """Une ligne JSON structlog parsée best-effort.
@@ -96,14 +101,21 @@ def filter_entries(
     levels: set[str] | None = None,
     event_types: set[str] | None = None,
     q: str | None = None,
+    exclude_events: frozenset[str] | None = None,
 ) -> list[LogEntry]:
-    """Filtre la liste par niveau, event_type et recherche texte.
+    """Filtre la liste par niveau, event_type, recherche texte, exclusion.
 
-    - `levels` : intersection avec `entry.level.upper()` (case-insensitive).
-    - `event_types` : match exact sur `entry.event`.
-    - `q` : substring case-insensitive sur le JSON dump complet (events + extras).
+    - ``levels`` : intersection avec ``entry.level.upper()`` (case-insensitive).
+    - ``event_types`` : match exact sur ``entry.event``.
+    - ``q`` : substring case-insensitive sur le JSON dump complet.
+    - ``exclude_events`` (M10) : appliqué EN PREMIER — drop tout entry dont
+      l'event est dans le set. Utilisé pour exclure ``dashboard_request`` par
+      défaut côté route ``/logs``. Si l'utilisateur opt-in via
+      ``events=dashboard_request``, la route n'envoie pas ce param.
     """
     result = entries
+    if exclude_events:
+        result = [e for e in result if e.event not in exclude_events]
     if levels:
         wanted = {lvl.upper() for lvl in levels}
         result = [e for e in result if e.level.upper() in wanted]

@@ -1,11 +1,14 @@
-"""Configuration du logging M9 : RotatingFileHandler + stream conditionnel.
+"""Configuration du logging M9 / M10 : RotatingFileHandler + filter noisy.
 
-**Invariant strict** : les processors structlog M1..M8 sont préservés
-identiques (`add_log_level`, `TimeStamper iso UTC`, `StackInfoRenderer`,
-`format_exc_info`, `JSONRenderer`). M9 ajoute uniquement un handler
-fichier rotatif (toujours actif) et un handler stdout conditionnel.
+**Invariant M9** : les processors structlog M1..M8 sont préservés identiques
+(``add_log_level``, ``TimeStamper iso UTC``, ``StackInfoRenderer``,
+``format_exc_info``, ``JSONRenderer``).
 
-Permissions : parent `0o700`, fichier `0o600` (cf. spec §0.6 / §2.2).
+**M10** ajoute un processor en TÊTE de chaîne : ``filter_noisy_endpoints``
+drop les ``dashboard_request`` 2xx/3xx des paths polling haute fréquence
+**avant** formatage JSON (économie CPU + fichier log 30× moins gros).
+
+Permissions : parent ``0o700``, fichier ``0o600`` (cf. spec §0.6 / §2.2).
 """
 
 from __future__ import annotations
@@ -13,11 +16,63 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sys
+from collections.abc import Iterable, Mapping, MutableMapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import structlog
+
+# M10 : paths dashboard polling haute fréquence filtrés par défaut.
+# Les patterns sont compilés une fois à l'import et consommés par
+# ``make_filter_noisy_endpoints``. Surcharge utilisateur via l'env var
+# ``DASHBOARD_LOG_SKIP_PATHS`` (additif, pas de remplacement).
+_DEFAULT_NOISY_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^/api/health-external$"),
+    re.compile(r"^/partials/.*$"),
+    re.compile(r"^/api/version$"),
+)
+
+
+def make_filter_noisy_endpoints(
+    extra_patterns: Iterable[str] | None = None,
+) -> structlog.types.Processor:
+    """Factory : retourne un processor qui drop les dashboard_request noisy.
+
+    Logique (cf. spec M10 §4.1) :
+    - Laisse passer tout event qui n'est pas ``dashboard_request``.
+    - Laisse passer les statuts 4xx/5xx (observabilité errors préservée).
+    - Drop (``raise structlog.DropEvent``) les 2xx/3xx dont le ``path`` match
+      la whitelist (defaults + patterns utilisateur).
+
+    La whitelist default est intentionnellement courte (3 patterns) — couvre
+    ~95% du volume sur un Home actif (mesure synthèse §2.3).
+    """
+    compiled: list[re.Pattern[str]] = list(_DEFAULT_NOISY_PATH_PATTERNS)
+    if extra_patterns:
+        for pat in extra_patterns:
+            compiled.append(re.compile(pat))
+
+    def _processor(
+        _logger: Any,
+        _method_name: str,
+        event_dict: MutableMapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if event_dict.get("event") != "dashboard_request":
+            return event_dict
+        status = event_dict.get("status", 200)
+        if isinstance(status, int) and status >= 400:
+            return event_dict  # errors always pass
+        path = event_dict.get("path", "")
+        if isinstance(path, str):
+            for pattern in compiled:
+                if pattern.match(path):
+                    raise structlog.DropEvent
+        return event_dict
+
+    return _processor
 
 
 def configure_logging(
@@ -27,6 +82,7 @@ def configure_logging(
     max_bytes: int,
     backup_count: int,
     silent: bool,
+    skip_paths: Iterable[str] | None = None,
 ) -> None:
     """Configure root logger + structlog pour M9.
 
@@ -83,8 +139,12 @@ def configure_logging(
     # JSON. Le default `PrintLoggerFactory(stdout)` de M1..M8 court-circuitait
     # stdlib et empêchait toute rotation fichier — bug latent levé par M9.
     # Les processors restent IDENTIQUES (contrainte spec §0.6 / §2.2).
+    # M10 : insérer ``filter_noisy_endpoints`` EN PREMIER (avant TimeStamper
+    # + JSONRenderer) pour économiser le coût de formatage sur les events
+    # droppés. Test d'ordre : ``tests/unit/test_logging_config.py``.
     structlog.configure(
         processors=[
+            make_filter_noisy_endpoints(skip_paths),
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),

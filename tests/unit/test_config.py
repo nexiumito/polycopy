@@ -12,8 +12,13 @@ def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
         "POLYMARKET_FUNDER",
         "TARGET_WALLETS",
         "DRY_RUN",
+        "EXECUTION_MODE",
     ):
         monkeypatch.delenv(var, raising=False)
+    # Reset legacy detection flag for tests.
+    import polycopy.config
+
+    polycopy.config._LEGACY_DRY_RUN_DETECTED = False
 
 
 def test_polymarket_keys_optional(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,9 +1,13 @@
-"""Tests M8 §9.9 — ``PnlSnapshotWriter`` mode dry-run virtuel.
+"""Tests M8 §9.9 / M10 §3.3 — ``PnlSnapshotWriter`` mode dry-run virtuel.
+
+M10 inverse l'invariant M4/M8 : le kill switch fire en dry-run exactement
+comme en live. La colonne DB ``is_dry_run`` reste binaire (agrège
+SIMULATION + DRY_RUN).
 
 Couvre :
-- Snapshot inséré avec is_dry_run=True quand dry_run.
-- Kill switch **JAMAIS** déclenché en dry-run, même drawdown élevé (M4 invariant).
-- Alerte ``dry_run_virtual_drawdown`` INFO si drawdown ≥ 50% × seuil.
+- Snapshot inséré avec is_dry_run=True quand execution_mode != live.
+- Kill switch **IDENTIQUE LIVE** en dry-run (inversion M10).
+- Drawdown sous le seuil en dry-run → aucune alerte (comportement inchangé).
 - En mode réel, comportement M4 inchangé (kill switch + warning).
 """
 
@@ -28,7 +32,7 @@ from polycopy.storage.repositories import PnlSnapshotRepository
 def _settings(*, dry: bool, m8: bool = True) -> Settings:
     return Settings(  # type: ignore[call-arg]
         _env_file=None,
-        dry_run=dry,
+        execution_mode="dry_run" if dry else "live",
         polymarket_private_key=None if dry else "0x" + "1" * 64,
         polymarket_funder=None if dry else "0xF",
         pnl_snapshot_interval_seconds=1,
@@ -76,11 +80,16 @@ async def test_dry_run_snapshot_marks_is_dry_run(
 
 
 @pytest.mark.asyncio
-async def test_dry_run_severe_drawdown_does_not_trigger_kill_switch(
+async def test_dry_run_severe_drawdown_triggers_kill_switch_like_live(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """M10 §3.3 : en dry-run, drawdown ≥ seuil déclenche le kill switch.
+
+    Inversion explicite de l'invariant M4/M8. L'event legacy
+    ``dry_run_virtual_drawdown`` est supprimé ; on vérifie qu'il n'est
+    plus émis.
+    """
     repo = PnlSnapshotRepository(session_factory)
-    # Pré-remplit un snapshot dry-run à 1000 → max_ever=1000.
     await repo.insert(
         PnlSnapshotDTO(
             total_usdc=1000.0,
@@ -96,17 +105,15 @@ async def test_dry_run_severe_drawdown_does_not_trigger_kill_switch(
     writer = PnlSnapshotWriter(
         session_factory,
         _settings(dry=True),
-        _virtual_reader(total=400.0, exposure=300.0, n=1),
+        _virtual_reader(total=400.0, exposure=300.0, n=1),  # drawdown 60%
         queue,
     )
     await _run_once(writer)
-    # On vérifie qu'AUCUN kill_switch_triggered n'a été émis.
     events: list[str] = []
     while not queue.empty():
         events.append(queue.get_nowait().event)
-    assert "kill_switch_triggered" not in events
-    # Mais un dry_run_virtual_drawdown INFO peut être présent (drawdown 60%).
-    assert "dry_run_virtual_drawdown" in events
+    assert "kill_switch_triggered" in events
+    assert "dry_run_virtual_drawdown" not in events
 
 
 @pytest.mark.asyncio

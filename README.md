@@ -320,11 +320,13 @@ Si l'un des 3 stoppe : process probablement mort.
 <details>
 <summary><strong>Que faire si mon PnL plonge ?</strong></summary>
 
-- Si `drawdown ≥ KILL_SWITCH_DRAWDOWN_PCT=20%`, le bot **se coupe automatiquement** (mode live uniquement, jamais en dry-run) + alerte Telegram CRITICAL.
+- Si `drawdown ≥ KILL_SWITCH_DRAWDOWN_PCT=20%`, le bot **se coupe automatiquement** (dans les **3 modes** SIMULATION/DRY_RUN/LIVE depuis M10) + alerte Telegram CRITICAL avec badge visuel du mode (`🟢 DRY-RUN` ou `🔴 LIVE`).
 - Sinon, options manuelles :
-  1. `DRY_RUN=true` + redémarre → continue d'observer sans risque.
+  1. `EXECUTION_MODE=dry_run` + redémarre → continue d'observer sans risque.
   2. Baisse `MAX_POSITION_USD` (par 2 minimum).
   3. Désactive le wallet sous-performant : `sqlite3 polycopy.db "UPDATE target_traders SET active=0 WHERE wallet_address='0x...';"`.
+
+> **M10 — dry-run = miroir fidèle live.** Depuis M10, le kill switch s'active **aussi en dry-run** : le comportement observé en dry-run reflète exactement ce que ferait le bot en live (alertes, drawdown, `stop_event`). Seule la signature CLOB (POST ordre réel) est désactivée. Si tu veux désactiver explicitement le kill switch pour un backtest long : `KILL_SWITCH_DRAWDOWN_PCT=100`.
 
 </details>
 
@@ -466,7 +468,8 @@ Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de
 | Variable | Description | Default | Requis |
 |---|---|---|---|
 | `TARGET_WALLETS` | Wallets à copier (CSV ou JSON array) | — | **toujours** |
-| `DRY_RUN` | Mode safe (aucun ordre réel envoyé) | `true` | non |
+| `EXECUTION_MODE` (**M10**) | `simulation` \| `dry_run` \| `live` — remplace `DRY_RUN` | `dry_run` | non |
+| `DRY_RUN` | **[DÉPRÉCIÉ M10]** legacy `true/false` → `execution_mode` avec warning 1 version | — | non |
 | `POLL_INTERVAL_SECONDS` | Fréquence de polling Data API | `5` | non |
 | `COPY_RATIO` | Fraction du trade source à répliquer | `0.01` | non |
 | `MAX_POSITION_USD` | Plafond par position | `100` | non |
@@ -475,8 +478,8 @@ Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de
 | `MAX_SLIPPAGE_PCT` | Slippage max vs prix source | `2.0` | non |
 | `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X % | `20` | non |
 | `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo stub | `1000.0` | non |
-| `POLYMARKET_PRIVATE_KEY` | Clé privée du wallet de signature | — | **si `DRY_RUN=false`** |
-| `POLYMARKET_FUNDER` | Adresse du proxy wallet | — | **si `DRY_RUN=false`** |
+| `POLYMARKET_PRIVATE_KEY` | Clé privée du wallet de signature | — | **si `EXECUTION_MODE=live`** |
+| `POLYMARKET_FUNDER` | Adresse du proxy wallet | — | **si `EXECUTION_MODE=live`** |
 | `POLYMARKET_SIGNATURE_TYPE` | `0` EOA, `1` Magic, `2` Gnosis Safe | `1` | non |
 | `DATABASE_URL` | URL DB | `sqlite+aiosqlite:///polycopy.db` | non |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | non |
@@ -486,6 +489,7 @@ Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de
 | `LOG_FILE_BACKUP_COUNT` (**M9**) | Nb fichiers rotatifs conservés | `10` | non |
 | `DASHBOARD_LOGS_ENABLED` (**M9**) | Active l'onglet `/logs` du dashboard | `true` | non |
 | `DASHBOARD_LOGS_TAIL_LINES` (**M9**) | Lignes max affichées dans `/logs` | `500` | non |
+| `DASHBOARD_LOG_SKIP_PATHS` (**M10**) | Regex additifs pour drop `dashboard_request` 2xx/3xx (CSV/JSON) | `[]` | non |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes Telegram (bypass silencieux si vide) | — | non |
 | `PNL_SNAPSHOT_INTERVAL_SECONDS` | Période entre 2 snapshots PnL | `300` | non |
 | `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD pour `order_filled_large` | `50.0` | non |

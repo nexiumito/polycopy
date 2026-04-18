@@ -23,7 +23,7 @@ from polycopy.cli.status_screen import (
     render_status_screen,
 )
 from polycopy.cli.version import get_version
-from polycopy.config import settings
+from polycopy.config import legacy_dry_run_detected, settings
 from polycopy.dashboard.orchestrator import DashboardOrchestrator
 from polycopy.discovery.orchestrator import DiscoveryOrchestrator
 from polycopy.executor.orchestrator import ExecutorOrchestrator
@@ -48,7 +48,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Force settings.dry_run=True (aucun ordre envoyé).",
+        help=(
+            "[legacy] Force EXECUTION_MODE=dry_run. Préférer "
+            "--execution-mode=dry_run ou la variable d'env EXECUTION_MODE."
+        ),
+    )
+    parser.add_argument(
+        "--execution-mode",
+        choices=["simulation", "dry_run", "live"],
+        default=None,
+        help="Force le mode d'exécution (override EXECUTION_MODE env).",
     )
     parser.add_argument(
         "--log-level",
@@ -97,7 +106,7 @@ async def _async_main() -> None:
     log = structlog.get_logger()
     log.info(
         "polycopy_starting",
-        dry_run=settings.dry_run,
+        execution_mode=settings.execution_mode,
         targets=settings.target_wallets,
         version=get_version(),
     )
@@ -166,10 +175,13 @@ async def _async_main() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Point d'entrée CLI M9 (appelé par `__main__.py`)."""
+    """Point d'entrée CLI M9 / M10 (appelé par `__main__.py`)."""
     args = _parse_args(argv)
-    if args.dry_run:
-        settings.dry_run = True
+    # M10 : --execution-mode a priorité sur --dry-run legacy.
+    if args.execution_mode is not None:
+        settings.execution_mode = args.execution_mode
+    elif args.dry_run:
+        settings.execution_mode = "dry_run"
     if args.log_level is not None:
         settings.log_level = args.log_level
 
@@ -183,7 +195,28 @@ def main(argv: list[str] | None = None) -> int:
         max_bytes=settings.log_file_max_bytes,
         backup_count=settings.log_file_backup_count,
         silent=silent,
+        skip_paths=settings.dashboard_log_skip_paths,
     )
+
+    log = structlog.get_logger()
+
+    # M10 : deprecation warning pour DRY_RUN env var legacy + --dry-run CLI flag.
+    # Émis après configure_logging pour que le warning aille dans le fichier M9.
+    if legacy_dry_run_detected():
+        log.warning(
+            "config_deprecation_dry_run_env",
+            message=(
+                "DRY_RUN is deprecated since M10. "
+                "Use EXECUTION_MODE=simulation|dry_run|live instead. "
+                "DRY_RUN will be removed in version+2."
+            ),
+            resolved_execution_mode=settings.execution_mode,
+        )
+    if args.dry_run and args.execution_mode is None:
+        log.warning(
+            "cli_deprecation_dry_run_flag",
+            message="--dry-run is deprecated; use --execution-mode=dry_run",
+        )
 
     # Écran rich uniquement si silent ET pas en mode daemon (--no-cli).
     show_rich_screen = silent and not args.no_cli
@@ -191,7 +224,6 @@ def main(argv: list[str] | None = None) -> int:
         modules = build_initial_module_status(settings)
         render_status_screen(settings, modules, version=get_version())
 
-    log = structlog.get_logger()
     try:
         asyncio.run(_async_main())
     except KeyboardInterrupt:

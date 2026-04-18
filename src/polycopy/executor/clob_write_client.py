@@ -30,10 +30,11 @@ class ClobWriteClient:
     """Wrapper async sur `py-clob-client` pour POST `/order` signés."""
 
     def __init__(self, settings: "Settings") -> None:
-        if settings.dry_run:
+        if settings.execution_mode != "live":
             raise RuntimeError(
-                "ClobWriteClient must not be instantiated in dry-run mode "
-                "(lazy init expected from ExecutorOrchestrator).",
+                "ClobWriteClient must be instantiated only when "
+                f"execution_mode='live' (got {settings.execution_mode!r} — "
+                "lazy init expected from ExecutorOrchestrator).",
             )
         if settings.polymarket_private_key is None or settings.polymarket_funder is None:
             raise RuntimeError(
@@ -69,8 +70,11 @@ class ClobWriteClient:
 
     async def post_order(self, built: BuiltOrder) -> OrderResult:
         """Signe et POST l'ordre via le SDK (sync) en off-loadant sur un thread."""
-        if self._settings.dry_run:  # garde-fou défense en profondeur §2.3
-            raise RuntimeError("post_order called while dry_run=True (bug)")
+        if self._settings.execution_mode != "live":  # garde-fou défense en profondeur §2.3
+            raise RuntimeError(
+                f"post_order called with execution_mode="
+                f"{self._settings.execution_mode!r} — MUST be 'live' (bug)",
+            )
         args = self._build_order_args(built)
         options = {"tick_size": str(built.tick_size), "neg_risk": built.neg_risk}
         order_type_enum = OrderType[built.order_type]

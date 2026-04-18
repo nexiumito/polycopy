@@ -41,7 +41,7 @@ class WalletStateReader:
 
     async def get_state(self) -> WalletState:
         """Retourne l'état courant du wallet (capital + exposition)."""
-        if self._settings.dry_run:
+        if self._settings.execution_mode != "live":
             return WalletState(
                 total_position_value_usd=0.0,
                 available_capital_usd=self._settings.risk_available_capital_usd_stub,
@@ -53,7 +53,7 @@ class WalletStateReader:
                 return state
         if self._settings.polymarket_funder is None:
             raise RuntimeError(
-                "WalletStateReader requires POLYMARKET_FUNDER when DRY_RUN=false",
+                "WalletStateReader requires POLYMARKET_FUNDER when EXECUTION_MODE=live",
             )
         positions = await self._fetch_positions(self._settings.polymarket_funder)
         total_value = sum(float(p.get("currentValue", 0) or 0) for p in positions)

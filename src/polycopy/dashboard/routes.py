@@ -26,7 +26,11 @@ from polycopy.config import Settings
 from polycopy.dashboard import queries
 from polycopy.dashboard.health_check import ExternalHealthChecker
 from polycopy.dashboard.jinja_filters import all_filters
-from polycopy.dashboard.log_reader import filter_entries, read_log_tail
+from polycopy.dashboard.log_reader import (
+    _DEFAULT_EXCLUDED_EVENTS,
+    filter_entries,
+    read_log_tail,
+)
 from polycopy.dashboard.middleware import StructlogAccessMiddleware
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
@@ -80,7 +84,8 @@ def _render(
     templates: Jinja2Templates = request.app.state.templates
     settings: Settings = request.app.state.settings
     base_context: dict[str, Any] = {
-        "settings_dry_run": settings.dry_run,
+        "settings_dry_run": settings.execution_mode != "live",
+        "settings_execution_mode": settings.execution_mode,
         "dashboard_theme": settings.dashboard_theme,
         "poll_interval": settings.dashboard_poll_interval_seconds,
     }
@@ -183,12 +188,15 @@ def build_pages_router() -> APIRouter:
             )
         validated_levels = _validate_levels(levels)
         validated_events = _validate_events(events)
+        # M10 : ``dashboard_request`` exclu par défaut ; opt-in via query.
+        exclude = None if "dashboard_request" in validated_events else _DEFAULT_EXCLUDED_EVENTS
         all_entries = read_log_tail(settings.log_file, settings.dashboard_logs_tail_lines)
         filtered = filter_entries(
             all_entries,
             levels=set(validated_levels) if validated_levels else None,
             event_types=set(validated_events) if validated_events else None,
             q=q,
+            exclude_events=exclude,
         )
         return _render(
             request,
@@ -407,12 +415,15 @@ def build_partials_router() -> APIRouter:
             )
         validated_levels = _validate_levels(levels)
         validated_events = _validate_events(events)
+        # M10 : même logique d'exclusion default que la page ``/logs``.
+        exclude = None if "dashboard_request" in validated_events else _DEFAULT_EXCLUDED_EVENTS
         all_entries = read_log_tail(settings.log_file, settings.dashboard_logs_tail_lines)
         filtered = filter_entries(
             all_entries,
             levels=set(validated_levels) if validated_levels else None,
             event_types=set(validated_events) if validated_events else None,
             q=q,
+            exclude_events=exclude,
         )
         return _render(
             request,

@@ -1,7 +1,7 @@
 {% from 'partials/common_partials.md.j2' import wallet_line, module_line %}
+_\[{{ mode_badge | telegram_md_escape }}\]_
 🤖 *polycopy démarré*
 
-_Mode :_ {{ mode | telegram_md_escape }}
 _Version :_ {{ version | telegram_md_escape }}
 _Heure :_ {{ boot_at | humanize_dt_tg }}
 

@@ -61,7 +61,7 @@ class MonitoringOrchestrator:
         boot_at = datetime.now(tz=UTC)
         async with httpx.AsyncClient() as http_client:
             wallet_reader: WalletStateReader | VirtualWalletStateReader
-            if self._settings.dry_run and self._settings.dry_run_realistic_fill:
+            if self._settings.execution_mode == "dry_run" and self._settings.dry_run_realistic_fill:
                 # Lazy import : évite l'import circulaire monitoring↔strategy
                 # au load module.
                 from polycopy.strategy.clob_read_client import ClobReadClient
@@ -79,7 +79,7 @@ class MonitoringOrchestrator:
                 log.info("telegram_enabled")
             else:
                 log.warning("telegram_disabled")
-            renderer = AlertRenderer()
+            renderer = AlertRenderer(mode=self._settings.execution_mode)
             digest = AlertDigestWindow(
                 window_seconds=self._settings.telegram_digest_window_minutes * 60,
                 threshold=self._settings.telegram_digest_threshold,
@@ -104,6 +104,7 @@ class MonitoringOrchestrator:
                 startup_message=self._settings.telegram_startup_message,
                 heartbeat=self._settings.telegram_heartbeat_enabled,
                 daily_summary=self._settings.telegram_daily_summary,
+                execution_mode=self._settings.execution_mode,
             )
 
             try:

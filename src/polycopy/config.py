@@ -6,11 +6,17 @@ Aucune valeur sensible en dur dans le code.
 
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Flag module-level positionné par le validator `_migrate_legacy_dry_run` quand
+# une env var legacy `DRY_RUN` a été utilisée pour dériver `execution_mode`.
+# Le warning de deprecation est émis au boot par `cli/runner.py` après la
+# configuration de la chaîne structlog (cf. spec M10 §3.2.2 + §6.13).
+_LEGACY_DRY_RUN_DETECTED: bool = False
 
 
 class Settings(BaseSettings):
@@ -73,8 +79,29 @@ class Settings(BaseSettings):
     # --- Storage ---
     database_url: str = "sqlite+aiosqlite:///polycopy.db"
 
-    # --- Mode ---
-    dry_run: bool = True
+    # --- Mode (M10) ---
+    execution_mode: Literal["simulation", "dry_run", "live"] = Field(
+        "dry_run",
+        description=(
+            "Mode d'exécution M10. "
+            "'simulation' = backtest offline (fixtures, pas de réseau). "
+            "'dry_run' = pipeline complet online, simulation fill (stub M3 ou "
+            "realistic M8 selon DRY_RUN_REALISTIC_FILL), alertes + kill switch "
+            "identiques à LIVE (badge visuel différent). "
+            "'live' = exécution réelle CLOB. Backward-compat : legacy DRY_RUN=true "
+            "ou DRY_RUN=false est lu avec warning de deprecation (1 version)."
+        ),
+    )
+    # M10 : ghost field pour capter ``DRY_RUN`` env var legacy.
+    # Consommé + retiré par ``_migrate_legacy_dry_run`` avant validation finale.
+    # Disparaît à version+2 (cf. spec §11.1).
+    dry_run_env_legacy: bool | None = Field(
+        None,
+        alias="DRY_RUN",
+        validation_alias="DRY_RUN",
+        exclude=True,
+        description="[legacy M10] Lu une dernière version avec warning, puis supprimé.",
+    )
 
     # --- Mode dry-run réaliste (M8, opt-in strict) -----------------------
     dry_run_realistic_fill: bool = Field(
@@ -293,6 +320,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Dashboard M10 : hygiène des logs (filter noisy endpoints) -------
+    dashboard_log_skip_paths: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("dashboard_log_skip_paths", mode="before")
+    @classmethod
+    def _parse_skip_paths(cls, v: object) -> object:
+        """Accepte CSV (``^/a$,^/b$``) ou JSON array (``["^/a$","^/b$"]``).
+
+        Additif aux defaults hardcodés dans ``cli/logging_config.py``
+        (``^/api/health-external$``, ``^/partials/.*$``, ``^/api/version$``).
+        """
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return v
+
     # --- Discovery (M5, optionnel, opt-in strict) ------------------------
     discovery_enabled: bool = Field(
         False,
@@ -447,6 +494,46 @@ class Settings(BaseSettings):
             ) from exc
         return v
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_dry_run(cls, data: Any) -> Any:
+        """Backward-compat M10 : traduit legacy ``DRY_RUN`` en ``execution_mode``.
+
+        - ``DRY_RUN=true/1/yes/on`` → ``execution_mode="dry_run"``.
+        - ``DRY_RUN=false/0/no/off`` → ``execution_mode="live"``.
+        - ``EXECUTION_MODE`` explicite gagne sur legacy sans warning.
+
+        Le warning ``config_deprecation_dry_run_env`` est émis au boot par
+        ``cli/runner.py`` (pas ici : on veut la chaîne structlog M9 configurée
+        avant d'émettre sur stderr).
+        """
+        global _LEGACY_DRY_RUN_DETECTED
+        if not isinstance(data, dict):
+            return data
+        # Sources possibles pour la valeur legacy (ordre : kwarg test direct,
+        # alias env var, variante majuscule). ``dry_run`` kwarg est encore
+        # supporté dans les tests pour faciliter la migration.
+        raw_legacy = data.get("dry_run_env_legacy")
+        if raw_legacy is None:
+            raw_legacy = data.get("dry_run")
+        if raw_legacy is None:
+            raw_legacy = data.get("DRY_RUN")
+        explicit_mode = data.get("execution_mode")
+        if explicit_mode is None:
+            explicit_mode = data.get("EXECUTION_MODE")
+        if raw_legacy is not None and explicit_mode is None:
+            if str(raw_legacy).strip().lower() in {"true", "1", "yes", "on"}:
+                data["execution_mode"] = "dry_run"
+            else:
+                data["execution_mode"] = "live"
+            _LEGACY_DRY_RUN_DETECTED = True
+        # On retire les alias legacy avant la validation finale pour ne pas
+        # polluer le schéma ``Settings`` — le ghost field ``dry_run_env_legacy``
+        # reste exposé mais jamais lu par le code métier.
+        data.pop("dry_run", None)
+        data.pop("DRY_RUN", None)
+        return data
+
     @model_validator(mode="after")
     def _validate_discovery_thresholds(self) -> "Settings":
         """Cross-field : demotion_threshold doit être strictement < promotion_threshold.
@@ -461,6 +548,25 @@ class Settings(BaseSettings):
                 f"SCORING_PROMOTION_THRESHOLD ({self.scoring_promotion_threshold}).",
             )
         return self
+
+    @property
+    def dry_run(self) -> bool:
+        """Proxy deprecation-only — dérive depuis ``execution_mode``.
+
+        Retourne True si ``execution_mode in {"simulation", "dry_run"}``.
+        Backward-compat M10 : disparaît à version+2. Le code qui a besoin de
+        distinguer SIMULATION de DRY_RUN doit lire ``self.execution_mode``.
+        """
+        return self.execution_mode in {"simulation", "dry_run"}
+
+
+def legacy_dry_run_detected() -> bool:
+    """Retourne True si le validator a traduit un ``DRY_RUN`` legacy.
+
+    Flag lu par ``cli/runner.py`` pour émettre le warning de deprecation
+    une fois la chaîne structlog configurée.
+    """
+    return _LEGACY_DRY_RUN_DETECTED
 
 
 settings = Settings()

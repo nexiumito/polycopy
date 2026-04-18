@@ -27,6 +27,25 @@ class ModuleStatus:
     detail: str
 
 
+def _executor_detail_cli(settings: Settings) -> str:
+    """Détail Executor pour l'écran rich — M10 (3 modes)."""
+    mode = settings.execution_mode
+    if mode == "live":
+        return "LIVE"
+    if mode == "simulation":
+        return "SIMULATION"
+    return "dry-run réaliste" if settings.dry_run_realistic_fill else "dry-run"
+
+
+def _mode_label_and_color(execution_mode: str) -> tuple[str, str]:
+    """Badge label + couleur rich pour le bandeau mode de l'écran boot."""
+    if execution_mode == "live":
+        return "LIVE", "red"
+    if execution_mode == "simulation":
+        return "SIMULATION", "cyan"
+    return "dry-run", "cyan"
+
+
 def build_initial_module_status(settings: Settings) -> list[ModuleStatus]:
     """Construit la liste des 6 modules à partir des settings au boot."""
     pnl_min = settings.pnl_snapshot_interval_seconds // 60
@@ -41,9 +60,7 @@ def build_initial_module_status(settings: Settings) -> list[ModuleStatus]:
         ModuleStatus(
             name="Executor",
             enabled=True,
-            detail="dry-run réaliste"
-            if (settings.dry_run and settings.dry_run_realistic_fill)
-            else ("simulé" if settings.dry_run else "LIVE"),
+            detail=_executor_detail_cli(settings),
         ),
         ModuleStatus(
             name="Monitoring",
@@ -90,8 +107,7 @@ def render_status_screen(
         emoji = "✅" if mod.enabled else "⏸️ "
         body.add_row(emoji, f"{mod.name:<11} {mod.detail}")
 
-    mode_label = "dry-run" if settings.dry_run else "LIVE"
-    color = "cyan" if settings.dry_run else "red"
+    mode_label, color = _mode_label_and_color(settings.execution_mode)
     panel = Panel.fit(
         body,
         title=f"🤖 polycopy v{version}",

@@ -206,3 +206,96 @@ async def test_logs_no_log_file_renders_empty_state(
         res = await client.get("/logs")
         assert res.status_code == 200
         assert "Aucun log trouvé" in res.text
+
+
+# --- M10 §4.3 : exclusion default / opt-in dashboard_request ----------------
+
+
+def _write_log_file_with_access(path: Path) -> None:
+    """Fixture log contenant 2 business events + 2 dashboard_request access."""
+    lines = [
+        json.dumps(
+            {
+                "event": "trade_detected",
+                "level": "info",
+                "wallet": "0xbiz0001",
+                "timestamp": "2026-04-18T10:00:00Z",
+            },
+        ),
+        json.dumps(
+            {
+                "event": "dashboard_request",
+                "level": "info",
+                "path": "/home",
+                "status": 200,
+                "timestamp": "2026-04-18T10:01:00Z",
+            },
+        ),
+        json.dumps(
+            {
+                "event": "order_simulated",
+                "level": "info",
+                "condition_id": "0xcond",
+                "timestamp": "2026-04-18T10:02:00Z",
+            },
+        ),
+        json.dumps(
+            {
+                "event": "dashboard_request",
+                "level": "info",
+                "path": "/partials/kpis",
+                "status": 200,
+                "timestamp": "2026-04-18T10:03:00Z",
+            },
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
+@pytest_asyncio.fixture
+async def client_with_access_logs(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> AsyncIterator[AsyncClient]:
+    log_file = tmp_path / "polycopy.log"
+    _write_log_file_with_access(log_file)
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        target_wallets=[],
+        log_file=log_file,
+        dashboard_logs_enabled=True,
+        dashboard_logs_tail_lines=500,
+    )
+    app = build_app(session_factory, settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_logs_default_hides_dashboard_request(
+    client_with_access_logs: AsyncClient,
+) -> None:
+    """Sans filtre, les entrées ``dashboard_request`` sont masquées."""
+    res = await client_with_access_logs.get("/logs")
+    assert res.status_code == 200
+    # On match sur les paths uniques des entrées dashboard_request pour
+    # éviter les faux positifs dans le form filter.
+    assert "/partials/kpis" not in res.text
+    assert "trade_detected" in res.text
+    assert "order_simulated" in res.text
+
+
+@pytest.mark.asyncio
+async def test_logs_opt_in_shows_dashboard_request(
+    client_with_access_logs: AsyncClient,
+) -> None:
+    """``events=dashboard_request`` restore l'affichage des HTTP access."""
+    res = await client_with_access_logs.get(
+        "/logs?events=dashboard_request",
+    )
+    assert res.status_code == 200
+    assert "/partials/kpis" in res.text
+    assert "dashboard_request" in res.text

@@ -57,14 +57,16 @@ def test_fallback_template_renders(renderer: AlertRenderer) -> None:
     out = renderer.render_alert(
         Alert(level="INFO", event="unknown_future_event_v2", body="(a) - b."),
     )
-    assert out.startswith("🟢")
+    # M10 : header badge en 1re ligne, emoji préservé en 2e ligne.
+    assert out.startswith("_\\[")
+    assert "🟢 *\\[unknown\\_future\\_event\\_v2\\]*" in out
     assert "unknown\\_future\\_event\\_v2" in out
 
 
 def test_startup_template_minimal(renderer: AlertRenderer) -> None:
     ctx = StartupContext(
         version="0.0.0",
-        mode="dry-run",
+        mode="dry_run",
         boot_at=datetime(2026, 4, 18, 14, 30, tzinfo=UTC),
         pinned_wallets=[],
         modules=[ModuleStatus(name="Watcher", enabled=True, detail="0 wallets")],

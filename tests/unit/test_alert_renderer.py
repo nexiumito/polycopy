@@ -36,7 +36,10 @@ def test_render_unknown_event_uses_fallback() -> None:
     )
     assert "future\\_event" in out
     assert "ça bouge \\(vite\\)\\." in out
-    assert out.startswith("🟡")
+    # M10 : le header badge précède le emoji historique (conservation de la
+    # shape M4 : emoji + *[event]* en 2e ligne).
+    assert out.startswith("_\\[")
+    assert "🟡 *\\[future\\_event\\]*" in out
 
 
 def test_render_known_event_uses_dedicated_template() -> None:
@@ -118,7 +121,7 @@ def test_render_startup_full() -> None:
     renderer = _renderer()
     ctx = StartupContext(
         version="0.1.0 (abc12345)",
-        mode="dry-run",
+        mode="dry_run",
         boot_at=datetime(2026, 4, 18, 14, 30, tzinfo=UTC),
         pinned_wallets=[
             PinnedWallet(wallet_short="0xabcd…cdef", label="Smart Money"),

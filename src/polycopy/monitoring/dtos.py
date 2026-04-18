@@ -56,12 +56,17 @@ class ModuleStatus(BaseModel):
 
 
 class StartupContext(BaseModel):
-    """Context consommé par ``startup.md.j2`` (M7 §4.2)."""
+    """Context consommé par ``startup.md.j2`` (M7 §4.2, étendu M10 §3.4).
+
+    ``mode`` reflète la nouvelle enum M10 ``execution_mode`` ; la
+    représentation visuelle (badge emoji) est déléguée au filter
+    ``mode_badge`` injecté par ``AlertRenderer``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     version: str
-    mode: Literal["dry-run", "live"]
+    mode: Literal["simulation", "dry_run", "live"]
     boot_at: datetime
     pinned_wallets: list[PinnedWallet]
     modules: list[ModuleStatus]
