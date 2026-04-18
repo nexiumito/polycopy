@@ -1,0 +1,13 @@
+📬 *Digest alertes polycopy*
+_{{ count }} alertes `{{ event_type | telegram_md_escape }}` dans les {{ window_minutes }} dernières minutes_ \(niveau {{ level | telegram_md_escape }}\)
+
+{% for line in sample_lines %}
+• {{ line | telegram_md_escape }}
+{% endfor %}
+{% if truncated_count > 0 %}
+• \.\.\. et {{ truncated_count }} autres
+{% endif %}
+
+{% if dashboard_url %}
+_Voir le dashboard pour le détail_ : {{ dashboard_url | telegram_md_escape }}
+{% endif %}

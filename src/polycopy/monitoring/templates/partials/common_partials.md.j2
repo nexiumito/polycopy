@@ -1,0 +1,15 @@
+{# Macros partagées entre templates M7.
+   Importer via : {% from 'partials/common_partials.md.j2' import wallet_line %}
+#}
+
+{% macro wallet_line(pinned) -%}
+{% if pinned.label -%}
+`{{ pinned.wallet_short | telegram_md_escape }}` {{ pinned.label | telegram_md_escape }}
+{%- else -%}
+`{{ pinned.wallet_short | telegram_md_escape }}`
+{%- endif %}
+{%- endmacro %}
+
+{% macro module_line(module) -%}
+{% if module.enabled %}✅{% else %}⏸️{% endif %} {{ module.name | telegram_md_escape }} \({{ module.detail | telegram_md_escape }}\)
+{%- endmacro %}

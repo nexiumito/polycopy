@@ -1,0 +1,50 @@
+🗓 *polycopy — résumé du {{ date_human | telegram_md_escape }}*
+
+*🔍 Détection*
+• Trades détectés : {{ trades_24h }}
+{% if top_wallets %}
+• Top wallets actifs :
+{% for tw in top_wallets %}
+  — `{{ tw.wallet_short | telegram_md_escape }}`{% if tw.label %} {{ tw.label | telegram_md_escape }}{% endif %} \({{ tw.trade_count }}\)
+{% endfor %}
+{% else %}
+• Top wallets actifs : _aucun_
+{% endif %}
+
+*🎯 Stratégie*
+• Décisions : {{ decisions_approved }} approuvées · {{ decisions_rejected }} rejetées
+{% if top_reject_reason %}
+• Top raison rejet : {{ top_reject_reason | telegram_md_escape }}
+{% endif %}
+
+*💼 Exécution*
+• Ordres : {{ orders_sent }} envoyés · {{ orders_filled }} remplis · {{ orders_rejected }} rejetés
+• Volume exécuté : {{ volume_executed_usd | format_usd_tg }}
+
+*📈 PnL*
+• Total USDC : {{ total_usdc | format_usd_tg }}
+{% if delta_24h_pct is not none %}
+• Delta 24 h : {{ delta_24h_pct | telegram_md_escape }}%
+{% endif %}
+{% if drawdown_24h_pct is not none %}
+• Drawdown max 24 h : {{ drawdown_24h_pct | telegram_md_escape }}%
+{% endif %}
+• Positions ouvertes : {{ positions_open }} \(valeur {{ positions_value_usd | format_usd_tg }}\)
+
+{% if discovery_enabled %}
+*🧭 Discovery*
+• Cycles : {{ discovery_cycles_24h }}
+• Promotions : {{ discovery_promotions_24h }}
+• Demotions : {{ discovery_demotions_24h }}
+• Cap atteint : {{ discovery_cap_reached_24h }} fois
+
+{% endif %}
+*🔔 Alertes*
+• Total 24 h \(_depuis dernier boot_\) : {{ alerts_total_24h }}
+{% if alerts_by_type_compact %}
+• Par type : {{ alerts_by_type_compact | telegram_md_escape }}
+{% endif %}
+
+{% if dashboard_url %}
+_Dashboard_ : {{ dashboard_url | telegram_md_escape }}
+{% endif %}

@@ -1,0 +1,25 @@
+{% from 'partials/common_partials.md.j2' import wallet_line, module_line %}
+🤖 *polycopy démarré*
+
+_Mode :_ {{ mode | telegram_md_escape }}
+_Version :_ {{ version | telegram_md_escape }}
+_Heure :_ {{ boot_at | humanize_dt_tg }}
+
+{% if pinned_wallets %}
+*Wallets suivis \(pinned\)* :
+{% for pw in pinned_wallets %}
+• {{ wallet_line(pw) }}
+{% endfor %}
+{% else %}
+_Aucun wallet pinned — configurer `TARGET_WALLETS` ou activer `DISCOVERY_ENABLED`\._
+{% endif %}
+
+*Modules actifs* :
+{% for module in modules %}
+{{ module_line(module) }}
+{% endfor %}
+
+{% if dashboard_url %}
+_Dashboard_ : {{ dashboard_url | telegram_md_escape }}
+{% endif %}
+_Bot accessible_ ✓

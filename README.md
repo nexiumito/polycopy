@@ -101,6 +101,14 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `PNL_SNAPSHOT_INTERVAL_SECONDS` | Période entre 2 snapshots PnL | `300` | non |
 | `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD au-dessus duquel un fill déclenche `order_filled_large` | `50.0` | non |
 | `ALERT_COOLDOWN_SECONDS` | Anti-spam Telegram par event_type (in-memory) | `60` | non |
+| `TELEGRAM_STARTUP_MESSAGE` | Envoie un message de démarrage au boot (M7) | `true` | non |
+| `TELEGRAM_HEARTBEAT_ENABLED` | Active les heartbeats périodiques (M7) | `false` | non |
+| `TELEGRAM_HEARTBEAT_INTERVAL_HOURS` | Intervalle entre 2 heartbeats (1–168 h) | `12` | non |
+| `TELEGRAM_DAILY_SUMMARY` | Envoie un résumé quotidien (M7) | `false` | non |
+| `TG_DAILY_SUMMARY_HOUR` | Heure locale d'envoi du résumé (0–23) | `9` | non |
+| `TG_DAILY_SUMMARY_TIMEZONE` | TZ IANA du résumé quotidien | `Europe/Paris` | non |
+| `TELEGRAM_DIGEST_THRESHOLD` | Alertes/heure pour batch digest (M7) | `5` | non |
+| `TELEGRAM_DIGEST_WINDOW_MINUTES` | Fenêtre de comptage digest | `60` | non |
 | `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
 | `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
 | `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
@@ -171,6 +179,33 @@ Pour les activer (5 min) :
 - `order_filled_large` (INFO) — fill taker ≥ `ALERT_LARGE_ORDER_USD_THRESHOLD`.
 
 Anti-spam : cooldown in-memory de `ALERT_COOLDOWN_SECONDS` par `cooldown_key` (reset au boot).
+
+### M7 : bot Telegram conversationnel (templates, heartbeat, résumé quotidien, digest)
+
+Depuis M7, le bot passe d'une **alarme silencieuse** à un **compagnon structuré** :
+
+- **Startup message** (ON par défaut si token configuré) : à chaque `python -m polycopy`, un message avec version, mode, wallets pinned, modules actifs, lien dashboard.
+- **Heartbeat périodique** (opt-in) : toutes les 12 h, un ping "💚 polycopy actif" — utile pour détecter une panne silencieuse (plus d'heartbeat depuis 24 h → process mort).
+- **Résumé quotidien** (opt-in, TZ-aware) : à `TG_DAILY_SUMMARY_HOUR` heure locale, un digest des trades 24 h, décisions, ordres, PnL, discovery, alertes.
+- **Digest anti-spam** : ≥ `TELEGRAM_DIGEST_THRESHOLD=5` alertes du même type en `TELEGRAM_DIGEST_WINDOW_MINUTES=60` → batch en 1 seul message.
+- **Templates Jinja2 soignés** dans `src/polycopy/monitoring/templates/`, **surchargeables** via `assets/telegram/*.md.j2` sans fork (voir `assets/telegram/README.md`).
+- **Shutdown message** : à l'extinction propre, un bref "🛑 polycopy arrêté" (durée + version).
+
+Pour tout activer :
+
+```env
+TELEGRAM_BOT_TOKEN=<ton_token>
+TELEGRAM_CHAT_ID=<ton_chat>
+TELEGRAM_STARTUP_MESSAGE=true
+TELEGRAM_HEARTBEAT_ENABLED=true
+TELEGRAM_DAILY_SUMMARY=true
+TG_DAILY_SUMMARY_HOUR=9
+TG_DAILY_SUMMARY_TIMEZONE=Europe/Paris
+```
+
+Les defaults (`STARTUP_MESSAGE=true`, le reste `false`) garantissent qu'un user M4/M5 qui met à jour `main` sans toucher son `.env` ne sera pas spammé d'un coup. Bot reste **emitter-only** — aucune commande entrante.
+
+Détails et surcharge templates : `docs/setup.md` §16 + `specs/M7-telegram-enhanced.md`.
 
 ## Découverte automatique de traders (optionnel, M5)
 
@@ -290,10 +325,10 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M4.5** : Dashboard local (FastAPI + HTMX + Chart.js, read-only, opt-in)
 - [x] **M5** : Scoring de traders + sélection automatique (opt-in, read-only)
 - [x] **M6** : Dashboard 2026 (refonte UX, sidebar, cards KPI, jauge score, timeline PnL)
+- [x] **M7** : Bot Telegram enrichi (startup, heartbeat, résumé quotidien, templates, digest)
 
-### Après M6 (roadmap UX/expérience, pas de nouveau module fonctionnel)
+### Après M7 (roadmap UX/expérience, pas de nouveau module fonctionnel)
 
-- Bot Telegram plus bavard (start/stop, heartbeat périodique, résumé quotidien)
 - Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
   comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans
   capital engagé

@@ -87,7 +87,10 @@ class TelegramClient:
         payload = {
             "chat_id": self._chat_id,
             "text": text,
-            "parse_mode": "Markdown",
+            # M7 : Markdown v2 strict. L'AlertRenderer échappe les valeurs user
+            # via le filter ``telegram_md_escape`` + le fallback template.
+            "parse_mode": "MarkdownV2",
+            "disable_web_page_preview": True,
         }
         response = await self._http.post(url, json=payload, timeout=self.DEFAULT_TIMEOUT)
         if response.status_code == 200:

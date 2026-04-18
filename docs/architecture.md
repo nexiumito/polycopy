@@ -90,6 +90,8 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 - **Rapport PnL manuel** : `scripts/pnl_report.py --since 7 --output html` génère un HTML statique avec stats + sparkline SVG natif (zéro dep).
 - **Migrations DB** : `alembic upgrade head` au boot dans `init_db` ; auto-stamp baseline si DB M3 préexistante sans `alembic_version`.
 
+> **Status M7** ✅ — refonte de la couche Telegram en *compagnon conversationnel*. `StartupNotifier`, `HeartbeatScheduler`, `DailySummaryScheduler` co-lancés par `MonitoringOrchestrator` dans le même TaskGroup que `PnlSnapshotWriter` + `AlertDispatcher`. Templates Jinja2 (`src/polycopy/monitoring/templates/`, `autoescape=False` + `StrictUndefined` + filter `telegram_md_escape` pour Markdown v2) surchargeables via `assets/telegram/*.md.j2` sans fork. `AlertDispatcher` M4 étendu par composition (injection `AlertRenderer` + `AlertDigestWindow`) — zéro refactor, tests M4 inchangés. `fallback.md.j2` préserve le format M4 pour les `event_type` non documentés (zéro régression). Bot reste **emitter-only** : aucune commande entrante. Parse mode passé à `MarkdownV2`. Voir `specs/M7-telegram-enhanced.md`.
+
 ## Module : Dashboard (optionnel)
 
 > **Status M4.5** ✅ — implémenté. FastAPI + HTMX + Chart.js. Lancé dans le même `asyncio.TaskGroup` que les autres modules si `DASHBOARD_ENABLED=true`. Bind `127.0.0.1:8787` par défaut. Read-only strict (zéro endpoint write, zéro auth applicative — bind localhost suffit). Voir `specs/M4.5-dashboard.md` et `src/polycopy/dashboard/`.

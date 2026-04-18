@@ -6,6 +6,7 @@ Aucune valeur sensible en dur dans le code.
 
 import json
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -91,6 +92,60 @@ class Settings(BaseSettings):
         60,
         ge=0,
         description="Anti-spam par event_type (in-memory, reset au boot).",
+    )
+
+    # --- Monitoring M7 : Telegram enrichi (opt-in sauf startup) ----------
+    telegram_startup_message: bool = Field(
+        True,
+        description=(
+            "Envoie un message de démarrage au boot (version, modules, dashboard). "
+            "ON par défaut — no-op si TELEGRAM_BOT_TOKEN absent."
+        ),
+    )
+    telegram_heartbeat_enabled: bool = Field(
+        False,
+        description=(
+            "Opt-in M7. Si true, envoie un heartbeat toutes les "
+            "TELEGRAM_HEARTBEAT_INTERVAL_HOURS heures pour détecter une panne."
+        ),
+    )
+    telegram_heartbeat_interval_hours: int = Field(
+        12,
+        ge=1,
+        le=168,
+        description="Intervalle entre 2 heartbeats (1 h à 7 jours).",
+    )
+    telegram_daily_summary: bool = Field(
+        False,
+        description="Opt-in M7. Envoie un résumé quotidien à l'heure configurée.",
+    )
+    tg_daily_summary_hour: int = Field(
+        9,
+        ge=0,
+        le=23,
+        description="Heure locale [0, 23] d'envoi du résumé quotidien.",
+    )
+    tg_daily_summary_timezone: str = Field(
+        "Europe/Paris",
+        description=(
+            "Nom IANA de la TZ du résumé quotidien. Validé via zoneinfo.ZoneInfo "
+            "au boot. Nécessite le package système `tzdata` sur Linux minimal."
+        ),
+    )
+    telegram_digest_threshold: int = Field(
+        5,
+        ge=2,
+        le=100,
+        description=(
+            "Nombre d'alertes du même event_type dans la fenêtre pour activer "
+            "le digest mode (batch en 1 seul message)."
+        ),
+    )
+    telegram_digest_window_minutes: int = Field(
+        60,
+        ge=5,
+        le=1440,
+        description="Fenêtre glissante (minutes) pour le compteur de digest.",
     )
 
     # --- Logs ---
@@ -275,6 +330,19 @@ class Settings(BaseSettings):
             return [item.strip().lower() for item in stripped.split(",") if item.strip()]
         if isinstance(v, list):
             return [str(item).lower() for item in v]
+        return v
+
+    @field_validator("tg_daily_summary_timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str) -> str:
+        """Fail-fast si la TZ IANA n'existe pas (ex: `tzdata` manquant sur WSL minimal)."""
+        try:
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                f"TG_DAILY_SUMMARY_TIMEZONE={v!r} introuvable — "
+                "installer `tzdata` ou vérifier le nom IANA.",
+            ) from exc
         return v
 
     @model_validator(mode="after")

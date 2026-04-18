@@ -356,4 +356,57 @@ Le dashboard M4.5 a été relooké en M6 sans changement d'API. Si tu mets à jo
 | Jauge score `/traders` vide | M5 jamais tourné OU wallet en cold start (`score = 0`) | Lancer un cycle M5 (`DISCOVERY_ENABLED=true`) ou attendre `SCORING_MIN_CLOSED_MARKETS` positions résolues. |
 | Footer version `unknown` | Bot lancé hors d'un repo git (tarball) | Cosmétique seulement — fallback `0.6.0-unknown`. |
 
+## 16. Activer les notifications Telegram enrichies (M7)
+
+Prérequis : `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` déjà configurés (cf. §11).
+
+M7 transforme le bot d'alarme silencieuse en **compagnon conversationnel**.
+
+### Options disponibles
+
+- **Startup message** (ON par défaut dès que le token est configuré) : à chaque `python -m polycopy`, un message avec la liste des modules actifs, les wallets pinned et un lien dashboard. Désactiver via `TELEGRAM_STARTUP_MESSAGE=false`.
+- **Heartbeat périodique** : `TELEGRAM_HEARTBEAT_ENABLED=true` + `TELEGRAM_HEARTBEAT_INTERVAL_HOURS=12`. Un ping "💚 polycopy actif" tous les N heures — utile pour détecter une panne silencieuse.
+- **Résumé quotidien** : `TELEGRAM_DAILY_SUMMARY=true` + `TG_DAILY_SUMMARY_HOUR=9` + `TG_DAILY_SUMMARY_TIMEZONE=Europe/Paris`. Le résumé arrive à l'heure locale configurée (TZ-aware via `zoneinfo`).
+- **Digest anti-spam** : activé par défaut dès 5 alertes du même type en 1 h (`TELEGRAM_DIGEST_THRESHOLD=5` + `TELEGRAM_DIGEST_WINDOW_MINUTES=60`). Adaptatif.
+
+### Vérifier la TZ disponible
+
+```bash
+python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Europe/Paris'))"
+```
+
+Si `ZoneInfoNotFoundError` → installer `tzdata` au niveau système :
+
+```bash
+sudo apt install tzdata  # Debian/Ubuntu
+# ou en option Python :
+pip install tzdata
+```
+
+### Surcharger un template
+
+Les 15 templates vivent dans `src/polycopy/monitoring/templates/`. Pour personnaliser sans fork :
+
+```bash
+mkdir -p assets/telegram/
+cp src/polycopy/monitoring/templates/kill_switch_triggered.md.j2 assets/telegram/
+# Édite assets/telegram/kill_switch_triggered.md.j2 à ton goût
+```
+
+Au prochain démarrage, le template surchargé est utilisé automatiquement (cascade user → default). Pour revenir au default, supprimer le fichier user-land. Voir `assets/telegram/README.md` pour les règles d'écriture Markdown v2.
+
+### Rotation du token
+
+Via BotFather : `/token` → sélectionner ton bot → nouveau token généré. Remplacer `TELEGRAM_BOT_TOKEN` dans `.env`, redémarrer. **À faire tous les 6 mois ou immédiatement si compromission suspectée.** Aucune migration applicative requise côté polycopy.
+
+### Troubleshooting M7
+
+| Symptôme | Cause probable | Fix |
+|---|---|---|
+| Startup message absent | `TELEGRAM_STARTUP_MESSAGE=false` OU token vide | Vérifier `.env`. Log `telegram_startup_sent` au boot si OK. |
+| Daily summary à mauvaise heure | Mauvaise TZ | Vérifier `TG_DAILY_SUMMARY_TIMEZONE` via `python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('<ton_tz>'))"`. |
+| Telegram 400 Bad Request après surcharge template | Markdown v2 cassé (caractère non échappé) | Comparer avec le default. Toute valeur user-controlled doit passer par `\| telegram_md_escape`. |
+| `UndefinedError` au render d'un template custom | Variable renommée / ajoutée dans une nouvelle version | `StrictUndefined` fait crasher bruyamment — ré-évaluer la surcharge, relire `specs/M7-telegram-enhanced.md` §4. |
+| Heartbeat manquant après un kill switch | *Attendu* — heartbeat sauté si alerte CRITICAL récente dans la fenêtre (évite dissonance "🚨 kill switch puis 💚 polycopy actif"). Log `telegram_heartbeat_skipped reason=recent_critical`. |
+| Rate limit 429 | > 30 msg/s Telegram Bot API (rare à l'usage polycopy) | Ignoré silencieusement, loggé `telegram_error status_code=429`. Pas de retry queue à M7. |
 
