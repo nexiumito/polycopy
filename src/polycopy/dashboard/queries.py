@@ -821,3 +821,227 @@ async def get_app_version() -> str:
         sha = proc.stdout.strip()
         _APP_VERSION_CACHE = f"0.6.0-{sha}" if sha else _APP_VERSION_FALLBACK
         return _APP_VERSION_CACHE
+
+
+# --- M12 : scoring v2 comparison queries ------------------------------------
+
+
+@dataclass(frozen=True)
+class ScoringComparisonRow:
+    """Row pour le tableau v1|v2|delta_rank de ``/traders/scoring``.
+
+    ``score_v1`` / ``score_v2`` = latest per wallet (pas forcément du même
+    cycle — peut arriver transitoirement, documenté dans la template).
+    ``delta_rank`` = ``rank_v1 - rank_v2`` signed (positif = améliore le rang).
+    """
+
+    wallet_address: str
+    label: str | None
+    status: str
+    pinned: bool
+    score_v1: float | None
+    score_v2: float | None
+    rank_v1: int | None
+    rank_v2: int | None
+    delta_rank: int | None
+    last_scored_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ScoringComparisonAggregates:
+    """Métriques agrégées pool-wide pour la section header v1|v2.
+
+    Calculées sur les derniers ``latest_per_wallet`` v1 et v2 respectivement.
+    Spearman rank(v1, v2) reporté comme ``None`` si moins de 3 wallets avec
+    les deux scores (pas de corrélation significative sur petit échantillon).
+    """
+
+    wallets_compared: int
+    median_delta_rank: float | None
+    spearman_rank: float | None
+    top10_delta: int  # wallets in v2 top-10 but not v1 top-10
+    shadow_days_elapsed: int | None
+    shadow_days_remaining: int | None
+    cutover_ready: bool
+
+
+async def list_scoring_comparison(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    limit: int = 100,
+) -> list[ScoringComparisonRow]:
+    """Liste les wallets avec leurs derniers scores v1 et v2.
+
+    Pour chaque wallet ayant au moins 1 row `trader_scores`, on récupère le
+    score v1 et v2 les plus récents (via sous-requêtes `MAX(cycle_at)` par
+    version). Le rank est calculé côté Python sur l'échantillon filtré.
+    Retourne au plus ``limit`` rows triées ``score_v2 DESC NULLS LAST``.
+    """
+    limit = _clamp_limit(limit)
+    async with session_factory() as session:
+        # Latest v1 score per wallet
+        latest_v1_subq = (
+            select(
+                TraderScore.wallet_address,
+                func.max(TraderScore.cycle_at).label("max_cycle_at"),
+            )
+            .where(TraderScore.scoring_version == "v1")
+            .group_by(TraderScore.wallet_address)
+            .subquery()
+        )
+        v1_stmt = (
+            select(TraderScore)
+            .join(
+                latest_v1_subq,
+                (TraderScore.wallet_address == latest_v1_subq.c.wallet_address)
+                & (TraderScore.cycle_at == latest_v1_subq.c.max_cycle_at),
+            )
+            .where(TraderScore.scoring_version == "v1")
+        )
+        v1_rows = list((await session.execute(v1_stmt)).scalars().all())
+
+        latest_v2_subq = (
+            select(
+                TraderScore.wallet_address,
+                func.max(TraderScore.cycle_at).label("max_cycle_at"),
+            )
+            .where(TraderScore.scoring_version == "v2")
+            .group_by(TraderScore.wallet_address)
+            .subquery()
+        )
+        v2_stmt = (
+            select(TraderScore)
+            .join(
+                latest_v2_subq,
+                (TraderScore.wallet_address == latest_v2_subq.c.wallet_address)
+                & (TraderScore.cycle_at == latest_v2_subq.c.max_cycle_at),
+            )
+            .where(TraderScore.scoring_version == "v2")
+        )
+        v2_rows = list((await session.execute(v2_stmt)).scalars().all())
+
+        # TargetTrader metadata
+        traders_stmt = select(TargetTrader)
+        traders = list((await session.execute(traders_stmt)).scalars().all())
+        trader_by_wallet = {t.wallet_address: t for t in traders}
+
+    v1_by_wallet = {r.wallet_address: float(r.score) for r in v1_rows}
+    v2_by_wallet = {r.wallet_address: float(r.score) for r in v2_rows}
+
+    # Ranks 1-based (1 = meilleur), None si absent.
+    v1_ranked = sorted(v1_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
+    v2_ranked = sorted(v2_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
+    rank_v1 = {w: i + 1 for i, (w, _) in enumerate(v1_ranked)}
+    rank_v2 = {w: i + 1 for i, (w, _) in enumerate(v2_ranked)}
+
+    all_wallets = set(v1_by_wallet) | set(v2_by_wallet) | set(trader_by_wallet)
+    rows: list[ScoringComparisonRow] = []
+    for wallet in all_wallets:
+        s1 = v1_by_wallet.get(wallet)
+        s2 = v2_by_wallet.get(wallet)
+        r1 = rank_v1.get(wallet)
+        r2 = rank_v2.get(wallet)
+        delta = (r1 - r2) if (r1 is not None and r2 is not None) else None
+        t = trader_by_wallet.get(wallet)
+        rows.append(
+            ScoringComparisonRow(
+                wallet_address=wallet,
+                label=t.label if t is not None else None,
+                status=t.status if t is not None else "absent",
+                pinned=bool(t.pinned) if t is not None else False,
+                score_v1=s1,
+                score_v2=s2,
+                rank_v1=r1,
+                rank_v2=r2,
+                delta_rank=delta,
+                last_scored_at=(t.last_scored_at if t is not None else None),
+            ),
+        )
+    # Sort: score_v2 desc (None last), tiebreak score_v1 desc.
+    rows.sort(
+        key=lambda r: (
+            -(r.score_v2 if r.score_v2 is not None else -1),
+            -(r.score_v1 if r.score_v1 is not None else -1),
+        ),
+    )
+    return rows[:limit]
+
+
+async def scoring_comparison_aggregates(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    shadow_days: int,
+    cutover_ready: bool,
+) -> ScoringComparisonAggregates:
+    """Agrégats pool-wide pour la section header de ``/traders/scoring``.
+
+    - ``spearman_rank`` : corrélation de rang sur les wallets ayant v1 ET v2.
+      ``None`` si < 3 wallets (pas significatif).
+    - ``top10_delta`` : nombre de wallets dans le top-10 v2 absents du top-10 v1.
+    - ``shadow_days_elapsed`` : depuis la 1ère row v2 (None si pas encore commencé).
+    - ``cutover_ready`` : passé-through depuis settings.
+    """
+    rows = await list_scoring_comparison(session_factory, limit=_MAX_LIMIT)
+    with_both = [r for r in rows if r.score_v1 is not None and r.score_v2 is not None]
+
+    median_delta: float | None = None
+    spearman: float | None = None
+    if len(with_both) >= 1:
+        deltas = sorted(r.delta_rank for r in with_both if r.delta_rank is not None)
+        if deltas:
+            mid = len(deltas) // 2
+            median_delta = (
+                float(deltas[mid])
+                if len(deltas) % 2 == 1
+                else (deltas[mid - 1] + deltas[mid]) / 2.0
+            )
+    if len(with_both) >= 3:
+        spearman = _spearman_rank(
+            [float(r.rank_v1) for r in with_both if r.rank_v1 is not None],
+            [float(r.rank_v2) for r in with_both if r.rank_v2 is not None],
+        )
+
+    top10_v1 = {r.wallet_address for r in rows if r.rank_v1 is not None and r.rank_v1 <= 10}
+    top10_v2 = {r.wallet_address for r in rows if r.rank_v2 is not None and r.rank_v2 <= 10}
+    top10_delta = len(top10_v2 - top10_v1)
+
+    async with session_factory() as session:
+        first_v2_cycle = (
+            await session.execute(
+                select(func.min(TraderScore.cycle_at)).where(
+                    TraderScore.scoring_version == "v2",
+                ),
+            )
+        ).scalar_one_or_none()
+    shadow_elapsed: int | None = None
+    shadow_remaining: int | None = None
+    if first_v2_cycle is not None:
+        if first_v2_cycle.tzinfo is None:
+            first_v2_cycle = first_v2_cycle.replace(tzinfo=UTC)
+        shadow_elapsed = (datetime.now(tz=UTC) - first_v2_cycle).days
+        shadow_remaining = max(0, shadow_days - shadow_elapsed)
+
+    return ScoringComparisonAggregates(
+        wallets_compared=len(with_both),
+        median_delta_rank=median_delta,
+        spearman_rank=spearman,
+        top10_delta=top10_delta,
+        shadow_days_elapsed=shadow_elapsed,
+        shadow_days_remaining=shadow_remaining,
+        cutover_ready=cutover_ready,
+    )
+
+
+def _spearman_rank(ranks_a: list[float], ranks_b: list[float]) -> float | None:
+    """Spearman ρ = 1 - (6 * Σd²) / (n * (n² - 1)).
+
+    Pure fonction. Retourne None si n < 3 ou si toutes les valeurs égales.
+    """
+    n = min(len(ranks_a), len(ranks_b))
+    if n < 3:
+        return None
+    d2_sum = sum((ranks_a[i] - ranks_b[i]) ** 2 for i in range(n))
+    denom = n * (n * n - 1)
+    if denom == 0:
+        return None
+    return 1.0 - (6.0 * d2_sum) / denom

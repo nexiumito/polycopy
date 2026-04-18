@@ -18,6 +18,7 @@ from polycopy.storage.repositories import (
     PnlSnapshotRepository,
     StrategyDecisionRepository,
     TargetTraderRepository,
+    TraderDailyPnlRepository,
     TraderEventRepository,
     TraderScoreRepository,
 )
@@ -147,6 +148,13 @@ async def trader_event_repo(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> TraderEventRepository:
     return TraderEventRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def trader_daily_pnl_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> TraderDailyPnlRepository:
+    return TraderDailyPnlRepository(session_factory)
 
 
 @pytest.fixture

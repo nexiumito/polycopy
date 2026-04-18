@@ -122,10 +122,17 @@ def test_whale_one_market_blocked_by_diversity() -> None:
     assert score < 0.80
 
 
-def test_unknown_scoring_version_raises() -> None:
-    s = _settings(scoring_version="vZ")
-    with pytest.raises(ValueError, match="Unknown SCORING_VERSION"):
-        compute_score(_metrics(resolved=20), settings=s)
+def test_unknown_scoring_version_rejected_at_boot() -> None:
+    """M12 : ``scoring_version`` promu à Literal['v1','v2'] — rejet au boot Settings.
+
+    Avant M12, l'erreur remontait depuis ``compute_score`` (lookup dict). Depuis
+    M12, Pydantic valide la valeur à l'instanciation de :class:`Settings` (cf.
+    spec M12 §9.2 — test adapté).
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="scoring_version"):
+        _settings(scoring_version="vZ")
 
 
 @pytest.mark.parametrize("roi", [-5.0, -2.0, -1.0, 0.0, 1.0, 2.0, 5.0])

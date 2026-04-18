@@ -1,0 +1,45 @@
+wallet_address,label,notes
+# M12 backtest labels — polycopy scoring v2 validation set.
+# -------------------------------------------------------
+# Format : wallet_address (42 chars hex, lowercase),label ∈ {smart_money,random},notes
+#
+# Label guidelines :
+#   - "smart_money" = wallet observable comme "informé" via heuristique manuelle
+#     (typiquement top-holder cohérent sur plusieurs marchés d'une même catégorie
+#     sur ≥ 90j, cash_pnl_90d positif, ≥ 50 trades sur la fenêtre).
+#   - "random" = wallet control group (one-shot whale, low volume, activité
+#     sporadique, wallets récents < 30j, ou échantillon aléatoire du feed /trades).
+#
+# Cibles backtest v1 M12 :
+#   - ≥ 50 wallets, ratio ~50/50 smart_money/random.
+#   - Diversité catégorielle : couvrir Politics, Sports, Crypto, Geopolitics, Economy.
+#
+# v1 M12 — seed initial issu de specs/m5_backtest_seed.txt (top-holders des 5
+# marchés les plus liquides au T0 implémentation M5). Compléter manuellement
+# avec ~40 wallets supplémentaires + labels précis avant le cutover.
+# Un label sans observation manuelle = "random" (défaut conservateur).
+#
+# Source de vérité : scripts/backtest_scoring_v2.py --labels-file <ce fichier>.
+# Reportable v2.1 : labels doivent être revalidés tous les 6 mois (les wallets
+# changent de comportement, wash clusters évoluent, etc.).
+
+0xa5ef39c3d3e10d0b270233af41cac69796b12966,smart_money,top holder 5 markets 2025-Q4
+0xe40ea00e74059c76c0035c919ef6b99c3e25a94d,smart_money,top holder politics cluster
+0x2663daca3cecf3767ca1c3b126002a8578a8ed1f,smart_money,top holder sports FIFA 2026
+0xbddf61af533ff524d27154e589d2d7a81510c684,smart_money,consistent crypto specialist
+0x6786ee962d54738152f2c04f9008bafcb9740d36,smart_money,top holder geopolitics cluster
+0xbefa95c276ee8ef6ff3ef43d1c1c454f52bc300d,smart_money,consistent economy specialist
+0x6cfcf9047deec0d169005df2fcd1bfededfa661e,smart_money,cross-category consistent
+0xc21ea96be762bb55041529af6e386e7c53b80215,smart_money,top holder Fed rates markets
+0xcbba64cddd05171925ffd05d8f8abd38c83fdbff,smart_money,consistent sports
+0xf5198df69e13937a40d1c76d6f72d9aa067d906b,smart_money,multi-month resolved positive PnL
+0x2e3ea056400d81c42e2ce26ef25fda4ec5caabea,random,one-shot election 2024 whale
+0x4c677b8da16c8308fbc15f6191a5369faee71075,random,low volume sporadic activity
+0x68146921df11eab44296dc4e58025ca84741a9e7,random,seed /trades feed top volume control
+0x09b29d2a45558b924a0ea2cac6a65b9e46b9a017,random,random /trades feed sample
+0xd5e64977e3e6e800e60f10a2821abac395821f0e,random,low diversity one-market
+0x3b6fd06a595d71c70afb3f44414be1c11304340b,random,recent activity (< 60 j)
+0x216509be5332c6037105b4f871966eb97240f598,random,short resolution history
+0xe613b515bd46b1585a8b137a4d291d9b80bd540e,random,sporadic /trades feed sample
+0x11b04e6fe25927725a50c45beae7e62574a86d33,random,control low cash_pnl
+0x3a4a8d2cb37a14c11c2c11d67c09b26770e60f66,random,control low trade count

@@ -5,10 +5,20 @@ Tables structurelles M3+ : `my_orders`, `my_positions`, `pnl_snapshots`
 (créées par `create_all` mais ni lues ni écrites avant l'Executor).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -312,3 +322,42 @@ class TraderEvent(Base):
     event_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (Index("ix_trader_events_wallet_at", "wallet_address", "at"),)
+
+
+class TraderDailyPnl(Base):
+    """Snapshot quotidien de l'equity curve d'un wallet (M12, append-only).
+
+    Source de reconstruction de l'equity curve nécessaire au calcul Sortino /
+    Calmar / consistency dans le scoring v2 (cf. spec M12 §3.2, §3.6, §5.6).
+    Écrit par ``TraderDailyPnlWriter`` (scheduler 24h co-lancé dans
+    ``DiscoveryOrchestrator``). Dédup via contrainte unique ``(wallet_address,
+    date)`` — idempotent sur re-run dans la même journée.
+
+    Zéro PII, zéro secret : ``wallet_address`` est une adresse publique déjà
+    loggée en M1..M11, ``equity_usdc`` est dérivé de ``/positions`` + ``/value``
+    public Data API.
+    """
+
+    __tablename__ = "trader_daily_pnl"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wallet_address: Mapped[str] = mapped_column(String(42), nullable=False, index=True)
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    equity_usdc: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    realized_pnl_day: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    unrealized_pnl_day: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    positions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snapshotted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "wallet_address",
+            "date",
+            name="uq_trader_daily_pnl_wallet_date",
+        ),
+        Index("ix_trader_daily_pnl_wallet_date", "wallet_address", "date"),
+    )

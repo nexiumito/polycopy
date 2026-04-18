@@ -458,6 +458,8 @@ python scripts/score_backtest.py \
 
 **M11 — pipeline temps réel** : le CLOB WebSocket `market` channel alimente un cache mid-price in-memory consommé par `SlippageChecker` (fallback HTTP `/midpoint` transparent), le cache Gamma adopte un TTL adaptatif par segment (résolu / proche / actif / inactif) au lieu de 60 s uniforme, et chaque trade est instrumenté avec 6 stages de latence visibles dans le dashboard `/latency` (p50/p95/p99). Cible : ~2-3 s end-to-end vs ~10-15 s pré-M11.
 
+**M12 — scoring v2** : formule hybride 6 facteurs (Sortino+Calmar `risk_adjusted`, Brier-skill `calibration`, Mitts-Ofir `timing_alpha`, HHI catégories Gamma `specialization`, `consistency` mensuel, `discipline` anti-zombie) + 6 gates durs pré-scoring (`cash_pnl_90d>0`, `trade_count_90d≥50`, `days_active≥30`, `zombie_ratio<0.40`, not blacklisted, not `WASH_CLUSTER_WALLETS`). **Opt-in strict** : `SCORING_VERSION=v1` par défaut, le flip vers `v2` est une décision humaine conditionnée à un backtest validé via `scripts/backtest_scoring_v2.py` (cible `brier_top10_v2 < brier_v1 - 0.01`). Pendant la shadow period (14 j par défaut), les deux formules calculent en parallèle pour audit — seule v1 pilote `DecisionEngine`. Dashboard `/traders/scoring` rend la comparaison v1|v2|delta_rank + métriques agrégées.
+
 Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [specs/](specs/).
 
 ---
@@ -570,13 +572,17 @@ Si une clé manque, le bot **refuse de démarrer** avec un `RuntimeError` clair.
 - [x] **M6** : Dashboard 2026 (refonte UX, sidebar, cards KPI, jauge score, timeline PnL)
 - [x] **M7** : Bot Telegram enrichi (startup, heartbeat, résumé quotidien, templates, digest)
 - [x] **M8** : Dry-run réaliste (fill orderbook, PnL virtuel live, résolution marchés)
-- [x] **M9** : CLI silencieux + onglet `/logs` + README overhaul (← *tu es ici*)
+- [x] **M9** : CLI silencieux + onglet `/logs` + README overhaul
+- [x] **M10** : parité dry-run/live (kill switch + alertes identiques) + log hygiene (processor middleware)
+- [x] **M11** : pipeline temps réel phase 1 (WS CLOB + cache Gamma adaptatif + instrumentation latence 6 stages)
+- [x] **M12** : scoring v2 (formule hybride + gates durs + shadow period) (← *tu es ici*)
 
 ### Suite (idées, pas engagement)
 
-- [ ] **M10** : tests E2E "fly-by" — bot lancé contre un fork mainnet, snapshots avant/après.
-- [ ] **M11** : multi-strategy beyond copy trading (mean reversion, arb, etc.).
-- [ ] **M12** : packaging (Docker compose, helm chart, ou one-line installer Mac/Linux).
+- [ ] **M13+** : taker fees dynamiques, RTDS timing_alpha, Apify bootstrap.
+- [ ] Tests E2E "fly-by" — bot lancé contre un fork mainnet, snapshots avant/après.
+- [ ] Multi-strategy beyond copy trading (mean reversion, arb, etc.).
+- [ ] Packaging (Docker compose, helm chart, ou one-line installer Mac/Linux).
 
 ---
 

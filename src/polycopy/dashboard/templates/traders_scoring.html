@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}scoring v1/v2{% endblock %}
+{% block heading %}Scoring comparison — v1 | v2 | delta_rank (M12){% endblock %}
+{% block content %}
+
+<p class="text-sm mb-4" style="color: var(--color-muted);">
+  Comparaison côte-à-côte de la formule <strong>v1</strong> (pilote) et de la
+  formule <strong>v2</strong> (shadow). Tant que la version pilote
+  (<code>SCORING_VERSION</code>) reste <strong>v1</strong>, v2 n'influence
+  aucune décision (<code>DecisionEngine</code>) — elle est uniquement calculée
+  en parallèle pour comparaison empirique et audit.
+</p>
+
+<section class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+  <div class="kpi-card">
+    <div class="kpi-label">Pilot version</div>
+    <div class="kpi-value">{{ pilot_version | upper }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Wallets compared (v1 ∩ v2)</div>
+    <div class="kpi-value">{{ aggregates.wallets_compared }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Spearman rank(v1, v2)</div>
+    <div class="kpi-value">
+      {% if aggregates.spearman_rank is none %}—{% else %}{{ '%.3f' | format(aggregates.spearman_rank) }}{% endif %}
+    </div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Top-10 delta</div>
+    <div class="kpi-value">{{ aggregates.top10_delta }}</div>
+  </div>
+</section>
+
+<section class="mb-6 p-4 rounded" style="background: var(--color-panel); border: 1px solid var(--color-border);">
+  <h3 class="font-semibold mb-2">Cutover status</h3>
+  <div class="text-sm" style="color: var(--color-muted);">
+    {% if aggregates.shadow_days_elapsed is none %}
+      <p>Shadow period not started (aucune row <code>trader_scores</code> avec <code>scoring_version='v2'</code>).</p>
+    {% else %}
+      <p>
+        Days elapsed: <strong>{{ aggregates.shadow_days_elapsed }}</strong> /
+        {{ shadow_days_config }}
+        {% if aggregates.shadow_days_remaining > 0 %}
+          · Remaining: <strong>{{ aggregates.shadow_days_remaining }}</strong> days
+        {% else %}
+          · <strong style="color: var(--color-accent-9);">Shadow period elapsed ✓</strong>
+        {% endif %}
+      </p>
+    {% endif %}
+    <p class="mt-2">
+      Cutover ready flag: <strong>{{ aggregates.cutover_ready }}</strong>
+      {% if not aggregates.cutover_ready %}
+        <br>
+        <span style="color: var(--color-muted);">
+          Set <code>SCORING_V2_CUTOVER_READY=true</code> in <code>.env</code>
+          after backtest validation (<code>brier_v2 &lt; brier_v1 - 0.01</code>).
+        </span>
+      {% endif %}
+    </p>
+    <p class="mt-3">
+      {% if aggregates.cutover_ready and (aggregates.shadow_days_remaining == 0 or aggregates.shadow_days_remaining is none) %}
+        <strong>Ready to flip to v2.</strong> Run manually (dashboard is read-only):
+        <pre class="mt-1 p-2 rounded text-xs" style="background: var(--color-bg); border: 1px solid var(--color-border);"># .env
+SCORING_VERSION=v2
+# Restart the bot to apply
+python -m polycopy --verbose</pre>
+      {% else %}
+        Flip v2 not yet available — complete shadow period + backtest first.
+      {% endif %}
+    </p>
+  </div>
+</section>
+
+<section class="overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead>
+      <tr style="border-bottom: 1px solid var(--color-border);">
+        <th class="text-left py-2 px-2">Wallet</th>
+        <th class="text-left py-2 px-2">Label</th>
+        <th class="text-left py-2 px-2">Status</th>
+        <th class="text-right py-2 px-2">Score v1</th>
+        <th class="text-right py-2 px-2">Score v2</th>
+        <th class="text-right py-2 px-2">Rank v1</th>
+        <th class="text-right py-2 px-2">Rank v2</th>
+        <th class="text-right py-2 px-2">Δ rank</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr style="border-bottom: 1px solid var(--color-border-subtle, var(--color-border));">
+        <td class="py-1 px-2 font-mono text-xs">{{ row.wallet_address[:10] }}…{{ row.wallet_address[-4:] }}</td>
+        <td class="py-1 px-2">{{ row.label or "—" }}</td>
+        <td class="py-1 px-2">
+          {% if row.pinned %}<span class="status-pinned">pinned</span>
+          {% else %}<span class="status-{{ row.status }}">{{ row.status }}</span>{% endif %}
+        </td>
+        <td class="py-1 px-2 text-right">
+          {% if row.score_v1 is none %}—{% else %}{{ '%.3f' | format(row.score_v1) }}{% endif %}
+        </td>
+        <td class="py-1 px-2 text-right">
+          {% if row.score_v2 is none %}—{% else %}{{ '%.3f' | format(row.score_v2) }}{% endif %}
+        </td>
+        <td class="py-1 px-2 text-right">
+          {% if row.rank_v1 is none %}—{% else %}{{ row.rank_v1 }}{% endif %}
+        </td>
+        <td class="py-1 px-2 text-right">
+          {% if row.rank_v2 is none %}—{% else %}{{ row.rank_v2 }}{% endif %}
+        </td>
+        <td class="py-1 px-2 text-right">
+          {% if row.delta_rank is none %}—
+          {% elif row.delta_rank > 0 %}<span style="color: var(--color-accent-9);">+{{ row.delta_rank }}</span>
+          {% elif row.delta_rank < 0 %}<span style="color: var(--color-danger);">{{ row.delta_rank }}</span>
+          {% else %}0{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr>
+        <td colspan="8" class="text-center py-6" style="color: var(--color-muted);">
+          Aucun score v1 ou v2 persisté. Lance un cycle discovery pour voir apparaître les rows.
+        </td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+{% endblock %}

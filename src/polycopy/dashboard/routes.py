@@ -156,6 +156,35 @@ def build_pages_router() -> APIRouter:
     async def traders(request: Request, status: str | None = None) -> HTMLResponse:
         return _render(request, "traders.html", {"status_filter": status or ""})
 
+    @router.get("/traders/scoring", response_class=HTMLResponse)
+    async def traders_scoring_page(
+        request: Request,
+        sf: SFDep,
+        settings: STDep,
+    ) -> HTMLResponse:
+        """Onglet M12 — comparaison v1|v2|delta_rank + cutover status.
+
+        Read-only strict (pas d'endpoint write). Le bouton "Validate v2 & flip"
+        du template n'exécute pas le flip (respect invariant dashboard M4.5
+        read-only) — il affiche la commande ``.env`` à appliquer manuellement.
+        """
+        rows = await queries.list_scoring_comparison(sf, limit=200)
+        aggregates = await queries.scoring_comparison_aggregates(
+            sf,
+            shadow_days=settings.scoring_v2_shadow_days,
+            cutover_ready=settings.scoring_v2_cutover_ready,
+        )
+        return _render(
+            request,
+            "traders_scoring.html",
+            {
+                "rows": rows,
+                "aggregates": aggregates,
+                "pilot_version": settings.scoring_version,
+                "shadow_days_config": settings.scoring_v2_shadow_days,
+            },
+        )
+
     @router.get("/backtest", response_class=HTMLResponse)
     async def backtest(request: Request) -> HTMLResponse:
         return _render(

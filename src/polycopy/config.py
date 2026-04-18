@@ -453,11 +453,16 @@ class Settings(BaseSettings):
         ),
     )
     blacklisted_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    scoring_version: str = Field(
+    # WASH_CLUSTER_WALLETS (M12) : liste manuelle d'exclusion wash cluster.
+    # Discipline identique BLACKLISTED_WALLETS : CSV ou JSON array, lowercase.
+    # Auto-detection wash cluster reportée M17+ (§14.6 spec M12).
+    wash_cluster_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    scoring_version: Literal["v1", "v2"] = Field(
         "v1",
         description=(
             "Version de la formule de scoring. Loggée + écrite avec chaque score "
-            "pour reproductibilité (cf. §7.6 spec)."
+            "pour reproductibilité (cf. §7.6 spec). M12 : promu à Literal pour "
+            "rejet boot des valeurs invalides."
         ),
     )
     scoring_min_closed_markets: int = Field(
@@ -531,6 +536,73 @@ class Settings(BaseSettings):
         description="URL du subgraph pnl (miroir par défaut de positions_url, optionnel).",
     )
 
+    # --- Equity curve quotidienne (M12, prérequis scoring v2) -----------------
+    # Consommé par `TraderDailyPnlWriter` co-lancé dans `DiscoveryOrchestrator`
+    # TaskGroup. Source unique de l'equity curve pour Sortino/Calmar/consistency.
+    trader_daily_pnl_enabled: bool = Field(
+        True,
+        description=(
+            "Active le scheduler TraderDailyPnlWriter (snapshot equity curve "
+            "quotidien). Si false, scoring v2 tourne en mode dégradé (Sortino=0 "
+            "sans curve)."
+        ),
+    )
+    trader_daily_pnl_interval_seconds: int = Field(
+        86400,
+        ge=3600,
+        le=604800,
+        description=(
+            "Cadence du snapshot equity curve. 24h par défaut. Borne min 1h, borne max 7 jours."
+        ),
+    )
+
+    # --- Scoring v2 — shadow period + backtest + cutover (M12 §6.1) ----------
+    # Tant que SCORING_VERSION=v1 (default), v2 ne pilote rien. SHADOW_DAYS>0
+    # active le dual-compute en parallèle (observation) — seule v1 reste
+    # autoritaire pour `DecisionEngine`. Cutover manuel après backtest OK.
+    scoring_v2_shadow_days: int = Field(
+        14,
+        ge=0,
+        le=90,
+        description=(
+            "Durée de coexistence v1/v2 en shadow. Pendant la fenêtre, v2 "
+            "calcule + écrit trader_scores (scoring_version='v2') mais NE "
+            "PILOTE PAS DecisionEngine. 0 = pas de calcul parallèle."
+        ),
+    )
+    scoring_v2_window_days: int = Field(
+        90,
+        ge=30,
+        le=365,
+        description=(
+            "Fenêtre temporelle des facteurs v2 (Sortino/Calmar/Brier/"
+            "timing_alpha). 90j par défaut. Weighting uniforme v1 (half-life "
+            "exponentiel reportable v2.1, cf. §14.1 spec)."
+        ),
+    )
+    scoring_v2_cold_start_mode: bool = Field(
+        False,
+        description=(
+            "Si true, relâche la gate `trade_count_90d` à ≥ 20 au lieu de 50. "
+            "WARNING loggé au boot. Reportable v1.1 si pool trop restreint."
+        ),
+    )
+    scoring_v2_backtest_label_file: str = Field(
+        "assets/scoring_v2_labels.csv",
+        description=(
+            "Chemin du set labelé smart_money/random utilisé par "
+            "scripts/backtest_scoring_v2.py avant décision cutover."
+        ),
+    )
+    scoring_v2_cutover_ready: bool = Field(
+        False,
+        description=(
+            "Active le bouton dashboard 'Validate v2 & flip'. User-controlled "
+            "— doit être set à true uniquement après rapport backtest validé "
+            "(brier_v2 < brier_v1 - 0.01)."
+        ),
+    )
+
     @field_validator("blacklisted_wallets", mode="before")
     @classmethod
     def _parse_blacklisted_wallets(cls, v: object) -> object:
@@ -541,6 +613,30 @@ class Settings(BaseSettings):
                 return []
             if stripped.startswith("["):
                 return json.loads(stripped)
+            return [item.strip().lower() for item in stripped.split(",") if item.strip()]
+        if isinstance(v, list):
+            return [str(item).lower() for item in v]
+        return v
+
+    @field_validator("wash_cluster_wallets", mode="before")
+    @classmethod
+    def _parse_wash_cluster_wallets(cls, v: object) -> object:
+        """M12 : même discipline que BLACKLISTED_WALLETS (CSV ou JSON, lowercase).
+
+        ⚠️ Contrairement à ``_parse_blacklisted_wallets`` M5 qui ne lowercase
+        pas les entrées JSON (bug historique préservé pour backward-compat),
+        M12 normalise **toujours** en lowercase — cohérent avec le rôle sécurité
+        absolue du gate.
+        """
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item).lower() for item in parsed]
+                return parsed
             return [item.strip().lower() for item in stripped.split(",") if item.strip()]
         if isinstance(v, list):
             return [str(item).lower() for item in v]

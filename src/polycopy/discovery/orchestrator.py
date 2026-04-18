@@ -6,17 +6,29 @@ Pattern analogue à ``PnlSnapshotWriter`` (M4) et ``DashboardOrchestrator``
 
 Zéro instanciation si ``settings.discovery_enabled=False`` — garde dans
 ``__main__`` (cf. spec §2.6).
+
+**M12 — scoring v2 dual-compute** : quand ``SCORING_VERSION=v1`` (default)
+ET ``SCORING_V2_SHADOW_DAYS > 0``, l'orchestrator calcule **en parallèle** un
+score v2 par wallet (via :class:`MetricsCollectorV2` + :func:`compute_score_v2`)
+qu'il écrit dans ``trader_scores`` avec ``scoring_version='v2'`` — mais qui
+**ne pilote pas** ``DecisionEngine`` (invariant lifecycle M5 strict tant que
+``SCORING_VERSION=v1``). Les gates v2 s'appliquent en amont : wallet rejeté =
+`trader_events.event_type="gate_rejected"` + skip scoring v2 (v1 continue).
+Le scheduler :class:`TraderDailyPnlWriter` est co-lancé dans un TaskGroup
+interne pour produire l'equity curve nécessaire à Sortino/Calmar.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime
+from contextlib import AsyncExitStack, nullcontext
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
 import structlog
+from sqlalchemy import func, select
 
 from polycopy.discovery.candidate_pool import CandidatePool
 from polycopy.discovery.data_api_client import DiscoveryDataApiClient
@@ -24,11 +36,23 @@ from polycopy.discovery.decision_engine import DecisionEngine
 from polycopy.discovery.dtos import DiscoveryDecision, ScoringResult
 from polycopy.discovery.goldsky_client import GoldskyClient
 from polycopy.discovery.metrics_collector import MetricsCollector
+from polycopy.discovery.metrics_collector_v2 import MetricsCollectorV2
 from polycopy.discovery.scoring import compute_score
+from polycopy.discovery.scoring.v2 import (
+    MarketCategoryResolver,
+    PoolContext,
+    TraderMetricsV2,
+    bind_pool_context,
+    check_all_gates,
+    compute_score_v2,
+)
+from polycopy.discovery.trader_daily_pnl_writer import TraderDailyPnlWriter
 from polycopy.monitoring.dtos import Alert
 from polycopy.storage.dtos import TraderEventDTO, TraderScoreDTO
+from polycopy.storage.models import TraderScore
 from polycopy.storage.repositories import (
     TargetTraderRepository,
+    TraderDailyPnlRepository,
     TraderEventRepository,
     TraderScoreRepository,
 )
@@ -76,13 +100,20 @@ class DiscoveryOrchestrator:
             pool_size=cfg.discovery_candidate_pool_size,
             backend=cfg.discovery_backend,
             scoring_version=cfg.scoring_version,
+            scoring_v2_shadow_days=cfg.scoring_v2_shadow_days,
             max_active_traders=cfg.max_active_traders,
             trader_shadow_days=cfg.trader_shadow_days,
+            trader_daily_pnl_enabled=cfg.trader_daily_pnl_enabled,
         )
         if cfg.trader_shadow_days == 0 and cfg.discovery_shadow_bypass:
             log.warning(
                 "discovery_shadow_bypass_enabled",
                 reason="auto_promote_immediate",
+            )
+        if cfg.scoring_v2_cold_start_mode:
+            log.warning(
+                "scoring_v2_cold_start_mode_enabled",
+                reason="trade_count_90d_gate_relaxed_to_20",
             )
 
         async with httpx.AsyncClient() as http_client:
@@ -96,44 +127,78 @@ class DiscoveryOrchestrator:
             target_repo = TargetTraderRepository(self._sf)
             score_repo = TraderScoreRepository(self._sf)
             event_repo = TraderEventRepository(self._sf)
+            daily_pnl_repo = TraderDailyPnlRepository(self._sf)
             decision_engine = DecisionEngine(target_repo, cfg, self._alerts)
 
-            log.info("discovery_started")
+            # M12 : sur-composants scoring v2 (créés inconditionnellement,
+            # utilisés seulement si v2 pilote OU shadow_days > 0 — cf.
+            # _should_compute_v2 ci-dessous).
+            category_resolver = MarketCategoryResolver(http_client)
+            metrics_collector_v2 = MetricsCollectorV2(
+                base_collector=metrics_collector,
+                daily_pnl_repo=daily_pnl_repo,
+                data_api=data_api,
+                category_resolver=category_resolver,
+                settings=cfg,
+            )
+            daily_pnl_writer = TraderDailyPnlWriter(
+                data_api=data_api,
+                target_repo=target_repo,
+                daily_pnl_repo=daily_pnl_repo,
+                settings=cfg,
+            )
 
-            while not stop_event.is_set():
-                try:
-                    await self._run_one_cycle(
-                        candidate_pool,
-                        metrics_collector,
-                        score_repo,
-                        event_repo,
-                        target_repo,
-                        decision_engine,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("discovery_cycle_failed")
-                    self._push_alert(
-                        Alert(
-                            level="ERROR",
-                            event="discovery_cycle_failed",
-                            body="Discovery cycle raised an exception, see structured logs.",
-                            cooldown_key="discovery_cycle_failed",
-                        ),
-                    )
-                    # Retry rapide après un crash (1 min) avant le sleep normal.
-                    if await _sleep_or_stop(stop_event, 60.0):
+            # TaskGroup interne : co-lance TraderDailyPnlWriter si enabled.
+            # `AsyncExitStack` + `nullcontext` pour rester simple si writer off.
+            async with AsyncExitStack() as stack:
+                if cfg.trader_daily_pnl_enabled:
+                    tg = await stack.enter_async_context(asyncio.TaskGroup())
+                    tg.create_task(daily_pnl_writer.run_forever(stop_event))
+                else:
+                    # Placeholder typé pour garder le pattern homogène.
+                    await stack.enter_async_context(nullcontext())
+
+                log.info("discovery_started")
+
+                while not stop_event.is_set():
+                    try:
+                        await self._run_one_cycle(
+                            candidate_pool,
+                            metrics_collector,
+                            metrics_collector_v2,
+                            score_repo,
+                            event_repo,
+                            target_repo,
+                            decision_engine,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("discovery_cycle_failed")
+                        self._push_alert(
+                            Alert(
+                                level="ERROR",
+                                event="discovery_cycle_failed",
+                                body=("Discovery cycle raised an exception, see structured logs."),
+                                cooldown_key="discovery_cycle_failed",
+                            ),
+                        )
+                        # Retry rapide après un crash (1 min) avant le sleep normal.
+                        if await _sleep_or_stop(stop_event, 60.0):
+                            break
+                        continue
+                    if await _sleep_or_stop(
+                        stop_event,
+                        float(cfg.discovery_interval_seconds),
+                    ):
                         break
-                    continue
-                if await _sleep_or_stop(stop_event, float(cfg.discovery_interval_seconds)):
-                    break
         log.info("discovery_stopped")
 
     async def _run_one_cycle(
         self,
         candidate_pool: CandidatePool,
         metrics_collector: MetricsCollector,
+        metrics_collector_v2: MetricsCollectorV2,
         score_repo: TraderScoreRepository,
         event_repo: TraderEventRepository,
         target_repo: TargetTraderRepository,
@@ -165,77 +230,180 @@ class DiscoveryOrchestrator:
         # Promotions vont incrémenter active_count au fil du scoring — on l'estime
         # côté engine à chaque décide() via ce compteur mutable partagé.
         promotions = demotions = kept = skipped = discovered = 0
+        gate_rejected_count = 0
+        v2_scored_count = 0
         active_count = active_count_start
 
+        # M12 — décide si v2 doit être calculé (pilote OU shadow actif).
+        compute_v2 = await self._should_compute_v2()
+        is_v2_pilot = self._settings.scoring_version == "v2"
+
+        # M12 — pre-build PoolContext si v2 impliqué (1 appel MetricsCollectorV2
+        # par wallet × fetch metrics, puis agrégation pool-wide).
+        metrics_v2_by_wallet: dict[str, TraderMetricsV2] = {}
+        pool_context: PoolContext | None = None
+        if compute_v2 and to_score:
+            metrics_v2_by_wallet = await self._collect_metrics_v2_batch(
+                to_score,
+                metrics_collector_v2,
+            )
+            pool_context = self._build_pool_context_from_metrics(
+                metrics_v2_by_wallet.values(),
+            )
+
         # 5. Scoring séquentiel par wallet (le client HTTP a son propre semaphore).
-        for wallet in to_score:
-            try:
-                metrics = await metrics_collector.collect(wallet)
-            except Exception:
-                log.exception("metrics_collect_failed", wallet=wallet)
-                continue
+        # Le `bind_pool_context` est posé sur tout le bloc — safe même si
+        # `pool_context is None` (le contextvar reste à None, le wrapper v2
+        # renvoie 0.0 + log warn).
+        with bind_pool_context(pool_context):
+            for wallet in to_score:
+                try:
+                    metrics = await metrics_collector.collect(wallet)
+                except Exception:
+                    log.exception("metrics_collect_failed", wallet=wallet)
+                    continue
 
-            score_value, low_conf = compute_score(metrics, settings=self._settings)
-            scoring = ScoringResult(
-                wallet_address=wallet,
-                score=score_value,
-                scoring_version=self._settings.scoring_version,
-                low_confidence=low_conf,
-                metrics=metrics,
-                cycle_at=cycle_at,
-            )
+                # --- v2 path (gates + score si compute_v2) ------------------
+                metrics_v2 = metrics_v2_by_wallet.get(wallet) if compute_v2 else None
+                gate_rejected = False
+                score_v2_value: float | None = None
+                v2_breakdown = None
+                if metrics_v2 is not None and pool_context is not None:
+                    gates = check_all_gates(metrics_v2, wallet, self._settings)
+                    if not gates.passed:
+                        gate_rejected = True
+                        gate_rejected_count += 1
+                        await self._write_gate_rejected_event(
+                            event_repo=event_repo,
+                            wallet=wallet,
+                            current=existing_by_wallet.get(wallet),
+                            gates=gates,
+                        )
+                    else:
+                        v2_breakdown = compute_score_v2(metrics_v2, pool_context)
+                        score_v2_value = v2_breakdown.score
 
-            # Persist score (seulement si on a un trader en DB — sinon
-            # `discovered_shadow` va le créer ci-dessous puis on skip le score_repo
-            # pour ce cycle ; le prochain cycle l'aura).
-            current = existing_by_wallet.get(wallet)
-            if current is not None:
-                await score_repo.insert(
-                    TraderScoreDTO(
-                        target_trader_id=current.id,
-                        wallet_address=wallet,
-                        score=score_value,
-                        scoring_version=self._settings.scoring_version,
-                        low_confidence=low_conf,
-                        metrics_snapshot=metrics.model_dump(mode="json"),
-                    ),
+                # Si v2 est pilote ET gate rejected → skip scoring complet
+                # (pas de row trader_scores, pas de decision_engine). v1
+                # continue seulement si v2 n'est pas pilote (shadow mode).
+                if is_v2_pilot and gate_rejected:
+                    log.debug("gate_rejected_pilot_skip", wallet=wallet)
+                    continue
+
+                # --- v1 path (intact, signature M5) -------------------------
+                score_v1_value, low_conf = compute_score(
+                    metrics,
+                    settings=self._settings,
                 )
-                await target_repo.update_score(
-                    wallet,
-                    score=score_value,
-                    scoring_version=self._settings.scoring_version,
-                    scored_at=cycle_at,
+
+                # Version pilote = écrire target_traders.score (colonne
+                # overwrite M5) + la row trader_scores pilote.
+                pilot_score = score_v2_value if is_v2_pilot else score_v1_value
+                pilot_version = "v2" if is_v2_pilot else "v1"
+                # Cas limite : v2 pilote ET pas de score (e.g. compute_v2=False
+                # si shadow=0 + scoring_version=v2 + first cycle without
+                # pool_context). On fallback au score v1 comme filet de
+                # sécurité (jamais laisser un cycle sans piloter la décision).
+                if pilot_score is None:
+                    pilot_score = score_v1_value
+                    pilot_version = "v1"
+
+                current = existing_by_wallet.get(wallet)
+
+                # Persist v1 row si trader existe et pas rejeté par v2 en
+                # mode pilote v1 (shadow mode = v1 garde sa trace).
+                if current is not None:
+                    await score_repo.insert(
+                        TraderScoreDTO(
+                            target_trader_id=current.id,
+                            wallet_address=wallet,
+                            score=score_v1_value,
+                            scoring_version="v1",
+                            low_confidence=low_conf,
+                            metrics_snapshot=metrics.model_dump(mode="json"),
+                        ),
+                    )
+                    # Shadow v2 : double-write trader_scores row v2 pour audit.
+                    if (
+                        v2_breakdown is not None
+                        and metrics_v2 is not None
+                        and score_v2_value is not None
+                    ):
+                        await score_repo.insert(
+                            TraderScoreDTO(
+                                target_trader_id=current.id,
+                                wallet_address=wallet,
+                                score=score_v2_value,
+                                scoring_version="v2",
+                                low_confidence=False,
+                                metrics_snapshot={
+                                    "base": metrics.model_dump(mode="json"),
+                                    "v2_raw": v2_breakdown.raw.model_dump(
+                                        mode="json",
+                                    ),
+                                    "v2_normalized": v2_breakdown.normalized.model_dump(
+                                        mode="json",
+                                    ),
+                                    "brier_baseline_pool": (v2_breakdown.brier_baseline_pool),
+                                },
+                            ),
+                        )
+                        v2_scored_count += 1
+                    # target_traders.score (colonne overwrite M5) reflète la
+                    # version pilote.
+                    await target_repo.update_score(
+                        wallet,
+                        score=pilot_score,
+                        scoring_version=pilot_version,
+                        scored_at=cycle_at,
+                    )
+
+                scoring = ScoringResult(
+                    wallet_address=wallet,
+                    score=pilot_score,
+                    scoring_version=pilot_version,
+                    low_confidence=low_conf if pilot_version == "v1" else False,
+                    metrics=metrics,
+                    cycle_at=cycle_at,
                 )
 
-            decision = await decision_engine.decide(
-                scoring,
-                current,
-                active_count=active_count,
-            )
-            await self._persist_event(event_repo, decision, scoring, current, cycle_at)
-            # Compteurs
-            if decision.decision == "promote_active":
-                promotions += 1
-                active_count += 1
-                await self._push_promoted_alert(wallet, score_value)
-            elif decision.decision == "demote_paused":
-                demotions += 1
-                active_count -= 1
-                await self._push_demoted_alert(wallet, score_value)
-            elif decision.decision == "discovered_shadow":
-                discovered += 1
-            elif decision.decision in ("keep", "revived_shadow"):
-                kept += 1
-            elif decision.decision in ("skip_blacklist", "skip_cap"):
-                skipped += 1
+                decision = await decision_engine.decide(
+                    scoring,
+                    current,
+                    active_count=active_count,
+                )
+                await self._persist_event(
+                    event_repo,
+                    decision,
+                    scoring,
+                    current,
+                    cycle_at,
+                )
+                # Compteurs
+                if decision.decision == "promote_active":
+                    promotions += 1
+                    active_count += 1
+                    await self._push_promoted_alert(wallet, pilot_score)
+                elif decision.decision == "demote_paused":
+                    demotions += 1
+                    active_count -= 1
+                    await self._push_demoted_alert(wallet, pilot_score)
+                elif decision.decision == "discovered_shadow":
+                    discovered += 1
+                elif decision.decision in ("keep", "revived_shadow"):
+                    kept += 1
+                elif decision.decision in ("skip_blacklist", "skip_cap"):
+                    skipped += 1
 
-            log.debug(
-                "score_computed",
-                wallet=wallet,
-                score=round(score_value, 4),
-                low_confidence=low_conf,
-                decision=decision.decision,
-            )
+                log.debug(
+                    "score_computed",
+                    wallet=wallet,
+                    score_v1=round(score_v1_value, 4),
+                    score_v2=(round(score_v2_value, 4) if score_v2_value is not None else None),
+                    pilot=pilot_version,
+                    low_confidence=low_conf,
+                    decision=decision.decision,
+                )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         log.info(
@@ -247,6 +415,8 @@ class DiscoveryOrchestrator:
             demoted=demotions,
             kept=kept,
             skipped=skipped,
+            gate_rejected=gate_rejected_count,
+            v2_scored=v2_scored_count,
             active_count=active_count,
             duration_ms=duration_ms,
             scoring_version=self._settings.scoring_version,
@@ -273,6 +443,169 @@ class DiscoveryOrchestrator:
                 reason=decision.reason,
                 event_metadata=decision.event_metadata or None,
             ),
+        )
+
+    async def _should_compute_v2(self) -> bool:
+        """Détermine si v2 doit être calculé ce cycle (pilote OU shadow actif).
+
+        Logique :
+
+        - ``SCORING_VERSION=v2`` → toujours compute v2 (pilote).
+        - ``SCORING_VERSION=v1`` + ``SCORING_V2_SHADOW_DAYS > 0`` → compute v2
+          si la shadow period n'est pas encore expirée (detected via
+          :meth:`_is_v2_shadow_active`).
+        - Sinon → pas de compute v2 (pur M5).
+        """
+        cfg = self._settings
+        if cfg.scoring_version == "v2":
+            return True
+        if cfg.scoring_v2_shadow_days <= 0:
+            return False
+        return await self._is_v2_shadow_active()
+
+    async def _is_v2_shadow_active(self) -> bool:
+        """Shadow period encore active ?
+
+        Query DB : ``MIN(cycle_at) FROM trader_scores WHERE
+        scoring_version='v2'``. Si aucune row v2 → shadow period pas encore
+        démarrée, retourne True (on va la démarrer ce cycle). Si première row
+        v2 < ``SCORING_V2_SHADOW_DAYS`` jours → shadow encore active.
+        """
+        cfg = self._settings
+        async with self._sf() as session:
+            stmt = select(func.min(TraderScore.cycle_at)).where(
+                TraderScore.scoring_version == "v2",
+            )
+            first_v2_cycle = (await session.execute(stmt)).scalar_one_or_none()
+        if first_v2_cycle is None:
+            return True
+        # SQLite ne persiste pas tzinfo → ré-injecte UTC si naïf.
+        if first_v2_cycle.tzinfo is None:
+            first_v2_cycle = first_v2_cycle.replace(tzinfo=UTC)
+        elapsed = datetime.now(tz=UTC) - first_v2_cycle
+        return elapsed < timedelta(days=cfg.scoring_v2_shadow_days)
+
+    async def _collect_metrics_v2_batch(
+        self,
+        wallets: list[str],
+        collector: MetricsCollectorV2,
+    ) -> dict[str, TraderMetricsV2]:
+        """Fetch metrics v2 pour chaque wallet. Séquentiel (Data API semaphore
+        in-process). Les erreurs par wallet n'interrompent pas les autres.
+        """
+        out: dict[str, TraderMetricsV2] = {}
+        for wallet in wallets:
+            try:
+                out[wallet] = await collector.collect(wallet)
+            except Exception:
+                log.exception("metrics_v2_collect_failed", wallet=wallet)
+        return out
+
+    def _build_pool_context_from_metrics(
+        self,
+        metrics_iter: object,  # Iterable[TraderMetricsV2] — évite import TYPE_CHECKING-only
+    ) -> PoolContext:
+        """Agrège les valeurs brutes pool-wide + Brier baseline pool.
+
+        Pour chaque facteur : collect les valeurs "raw" (pré-normalisation) en
+        ré-appelant les factors sur chaque metrics. Le :class:`PoolContext`
+        est consommé ensuite par :func:`apply_pool_normalization` dans
+        :func:`compute_score_v2`.
+
+        Brier baseline pool = moyenne des ``brier_90d`` non-None du pool
+        (approximation §3.3 simplifiée — un "wallet moyen" calibrerait comme
+        le pool). Fallback 0.25 si aucun brier disponible.
+        """
+        from polycopy.discovery.scoring.v2.factors import (
+            compute_calibration,
+            compute_consistency,
+            compute_discipline,
+            compute_risk_adjusted,
+            compute_specialization,
+            compute_timing_alpha,
+        )
+
+        risk_adjusted_pool: list[float] = []
+        calibration_pool: list[float] = []
+        timing_alpha_pool: list[float] = []
+        specialization_pool: list[float] = []
+        consistency_pool: list[float] = []
+        discipline_pool: list[float] = []
+        brier_values: list[float] = []
+
+        for m in metrics_iter:  # type: ignore[attr-defined]
+            if not isinstance(m, TraderMetricsV2):
+                continue
+            if m.brier_90d is not None:
+                brier_values.append(float(m.brier_90d))
+            risk_adjusted_pool.append(compute_risk_adjusted(m))
+            # Pour calibration : on calcule avec baseline provisoire (0.25)
+            # — la vraie baseline sera injectée dans compute_score_v2 après.
+            # Ici on collect le *raw brier* utile à la normalisation, pas la
+            # skill finale. On dérive skill avec baseline finale plus tard.
+            # Compromis : on stocke le pool de brier raw + la baseline
+            # séparément — la normalisation des calibrations finales se fait
+            # sur les *skill scores* finaux, mais on peut approximer avec
+            # un remap ici.
+            calibration_pool.append(
+                compute_calibration(m, brier_baseline_pool=0.25),
+            )
+            timing_alpha_pool.append(compute_timing_alpha(m))
+            specialization_pool.append(compute_specialization(m))
+            consistency_pool.append(compute_consistency(m))
+            discipline_pool.append(compute_discipline(m))
+
+        brier_baseline_pool = sum(brier_values) / len(brier_values) if brier_values else 0.25
+        return PoolContext(
+            risk_adjusted_pool=risk_adjusted_pool,
+            calibration_pool=calibration_pool,
+            timing_alpha_pool=timing_alpha_pool,
+            specialization_pool=specialization_pool,
+            consistency_pool=consistency_pool,
+            discipline_pool=discipline_pool,
+            brier_baseline_pool=brier_baseline_pool,
+        )
+
+    async def _write_gate_rejected_event(
+        self,
+        *,
+        event_repo: TraderEventRepository,
+        wallet: str,
+        current: object,
+        gates: object,
+    ) -> None:
+        """Persiste une row ``trader_events.event_type='gate_rejected'`` (M12 §4.3).
+
+        ``gates.failed_gate`` contient le :class:`GateResult` rejeté (name,
+        observed_value, threshold, reason). Event_metadata structuré pour
+        faciliter le drill-down dashboard.
+        """
+        failed = getattr(gates, "failed_gate", None)
+        if failed is None:
+            return  # défense en profondeur
+        current_status = _current_status_value(current)
+        await event_repo.insert(
+            TraderEventDTO(
+                wallet_address=wallet,
+                event_type="gate_rejected",
+                from_status=current_status,
+                to_status=current_status,
+                score_at_event=None,
+                scoring_version="v2",
+                reason=str(failed.reason)[:128],
+                event_metadata={
+                    "gate": str(failed.gate_name),
+                    "value": failed.observed_value,
+                    "threshold": failed.threshold,
+                },
+            ),
+        )
+        log.info(
+            "trader_gate_rejected",
+            wallet=wallet,
+            gate=str(failed.gate_name),
+            value=failed.observed_value,
+            threshold=failed.threshold,
         )
 
     async def _push_promoted_alert(self, wallet: str, score: float) -> None:
@@ -311,3 +644,18 @@ async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> bool:
     except TimeoutError:
         return False
     return True
+
+
+def _current_status_value(trader: object) -> str | None:
+    """Extrait ``status`` d'un :class:`TargetTrader` ou None si absent.
+
+    Helper tolérant (duck-typed) pour les branches M12 gate_rejected — évite
+    d'introduire un import cyclique vers :class:`TargetTrader` et reste
+    robuste aux shapes de test stubs.
+    """
+    if trader is None:
+        return None
+    status = getattr(trader, "status", None)
+    if isinstance(status, str):
+        return status
+    return None

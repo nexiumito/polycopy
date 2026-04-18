@@ -1,6 +1,6 @@
 """DTOs Pydantic pour la couche storage."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -124,6 +124,8 @@ TraderEventType = Literal[
     "skipped_cap",
     "manual_override",
     "revived_shadow",
+    # M12 — scoring v2 gates (cf. spec M12 §4.3) : wallet rejeté avant scoring.
+    "gate_rejected",
 ]
 
 
@@ -153,3 +155,22 @@ class TraderEventDTO(BaseModel):
     scoring_version: str | None = None
     reason: str | None = None
     event_metadata: dict[str, Any] | None = None
+
+
+class TraderDailyPnlDTO(BaseModel):
+    """DTO append pour ``TraderDailyPnlRepository.insert_if_new`` (M12).
+
+    Snapshot quotidien de l'equity curve d'un wallet. Source de reconstruction
+    Sortino / Calmar / consistency dans le scoring v2. Les nombres viennent
+    exclusivement de `/positions` + `/value` public Data API — zéro PII, zéro
+    secret.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    wallet_address: str
+    date: date
+    equity_usdc: float = 0.0
+    realized_pnl_day: float = 0.0
+    unrealized_pnl_day: float = 0.0
+    positions_count: int = 0

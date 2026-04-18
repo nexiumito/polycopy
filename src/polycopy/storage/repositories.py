@@ -14,6 +14,7 @@ from polycopy.storage.dtos import (
     PnlSnapshotDTO,
     RealisticSimulatedOrderDTO,
     StrategyDecisionDTO,
+    TraderDailyPnlDTO,
     TraderEventDTO,
     TraderScoreDTO,
 )
@@ -25,6 +26,7 @@ from polycopy.storage.models import (
     StrategyDecision,
     TargetTrader,
     TradeLatencySample,
+    TraderDailyPnl,
     TraderEvent,
     TraderScore,
 )
@@ -861,3 +863,98 @@ class TradeLatencyRepository:
             # ``Result.rowcount`` existe sur les DELETE mais n'est pas typé sur
             # ``Result[Any]`` ; CursorResult l'expose correctement — cast silent.
             return int(getattr(result, "rowcount", 0) or 0)
+
+
+# --- M12 scoring v2 — equity curve quotidienne --------------------------------
+
+
+class TraderDailyPnlRepository:
+    """Repository append-only pour ``trader_daily_pnl`` (M12).
+
+    Dédup via contrainte unique ``(wallet_address, date)`` — ``insert_if_new``
+    retourne ``False`` silencieusement si la row existe déjà pour la journée
+    (idempotent sur re-run dans la même journée UTC).
+
+    Source de reconstruction de l'equity curve pour Sortino / Calmar /
+    consistency dans le scoring v2. Cf. spec M12 §3.2, §5.6 + carnet
+    ``docs/development/m12_notes.md``.
+    """
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert_if_new(self, snapshot: TraderDailyPnlDTO) -> bool:
+        """Insère le snapshot ; ``False`` si ``(wallet, date)`` déjà présent."""
+        record = TraderDailyPnl(
+            wallet_address=snapshot.wallet_address.lower(),
+            date=snapshot.date,
+            equity_usdc=snapshot.equity_usdc,
+            realized_pnl_day=snapshot.realized_pnl_day,
+            unrealized_pnl_day=snapshot.unrealized_pnl_day,
+            positions_count=snapshot.positions_count,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return False
+            return True
+
+    async def get_curve(
+        self,
+        wallet_address: str,
+        *,
+        days: int,
+    ) -> list[TraderDailyPnl]:
+        """Courbe equity des ``days`` derniers jours (ordre date ascendant).
+
+        Retourne au plus ``days`` rows ; la fenêtre est strictement
+        postérieure à ``today - days`` (inclusive).
+        """
+        cutoff_date = (datetime.now(tz=UTC) - timedelta(days=days)).date()
+        async with self._session_factory() as session:
+            stmt = (
+                select(TraderDailyPnl)
+                .where(
+                    TraderDailyPnl.wallet_address == wallet_address.lower(),
+                    TraderDailyPnl.date >= cutoff_date,
+                )
+                .order_by(TraderDailyPnl.date.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_curves_batch(
+        self,
+        wallets: list[str],
+        *,
+        days: int,
+    ) -> dict[str, list[TraderDailyPnl]]:
+        """Version batch : 1 query retourne la courbe pour N wallets.
+
+        Utilisé par ``_build_pool_context`` pour éviter N queries séquentielles.
+        """
+        if not wallets:
+            return {}
+        cutoff_date = (datetime.now(tz=UTC) - timedelta(days=days)).date()
+        wallets_lower = [w.lower() for w in wallets]
+        async with self._session_factory() as session:
+            stmt = (
+                select(TraderDailyPnl)
+                .where(
+                    TraderDailyPnl.wallet_address.in_(wallets_lower),
+                    TraderDailyPnl.date >= cutoff_date,
+                )
+                .order_by(
+                    TraderDailyPnl.wallet_address.asc(),
+                    TraderDailyPnl.date.asc(),
+                )
+            )
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+        grouped: dict[str, list[TraderDailyPnl]] = {w: [] for w in wallets_lower}
+        for row in rows:
+            grouped.setdefault(row.wallet_address, []).append(row)
+        return grouped
