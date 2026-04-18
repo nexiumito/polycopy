@@ -35,3 +35,23 @@
     {% endif %}
   </small>
 </p>
+<h3>Discovery (M5)</h3>
+<div class="grid">
+  {{ kpi_card("Active/Pinned", kpis.discovery_active_count) }}
+  {{ kpi_card("Shadow", kpis.discovery_shadow_count) }}
+  {{ kpi_card("Paused", kpis.discovery_paused_count) }}
+  {{ kpi_card("Cycles (24 h)", kpis.discovery_cycles_24h) }}
+</div>
+<p>
+  <small>
+    Dernier cycle :
+    {% if kpis.discovery_last_cycle_at %}
+      {{ kpis.discovery_last_cycle_at.strftime("%Y-%m-%d %H:%M:%SZ") }}
+    {% else %}
+      — (M5 désactivé ou pas encore tourné)
+    {% endif %}
+    · Promotions 24 h : {{ kpis.discovery_promotions_24h }}
+    · Demotions 24 h : {{ kpis.discovery_demotions_24h }}
+    · <a href="/traders">voir tous les traders →</a>
+  </small>
+</p>

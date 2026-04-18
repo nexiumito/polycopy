@@ -18,6 +18,8 @@ from polycopy.storage.repositories import (
     PnlSnapshotRepository,
     StrategyDecisionRepository,
     TargetTraderRepository,
+    TraderEventRepository,
+    TraderScoreRepository,
 )
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -131,6 +133,20 @@ async def pnl_snapshot_repo(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> PnlSnapshotRepository:
     return PnlSnapshotRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def trader_score_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> TraderScoreRepository:
+    return TraderScoreRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def trader_event_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> TraderEventRepository:
+    return TraderEventRepository(session_factory)
 
 
 @pytest.fixture

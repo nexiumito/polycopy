@@ -208,7 +208,61 @@ async def test_docs_disabled(dashboard_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_each_page_returns_200(dashboard_client: AsyncClient) -> None:
-    for path in ("/home", "/detections", "/strategy", "/orders", "/positions", "/pnl"):
+    for path in (
+        "/home",
+        "/detections",
+        "/strategy",
+        "/orders",
+        "/positions",
+        "/pnl",
+        "/traders",
+        "/backtest",
+    ):
         res = await dashboard_client.get(path)
         assert res.status_code == 200, path
         assert "<!doctype html>" in res.text.lower(), path
+
+
+@pytest.mark.asyncio
+async def test_traders_page_filter_querystring(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Le filtre `?status=...` est passé au partial HTMX via l'URL hx-get."""
+    res = await dashboard_client.get("/traders?status=shadow")
+    assert res.status_code == 200
+    # Le template inclut l'URL hx-get avec status.
+    assert "/partials/traders-rows?status=shadow" in res.text
+
+
+@pytest.mark.asyncio
+async def test_partials_traders_rows_renders_counts(
+    dashboard_client: AsyncClient,
+    target_trader_repo,  # type: ignore[no-untyped-def]
+) -> None:
+    await target_trader_repo.upsert("0xpinn")  # pinned
+    await target_trader_repo.insert_shadow("0xshad")
+    res = await dashboard_client.get("/partials/traders-rows")
+    assert res.status_code == 200
+    # Le fragment contient les 2 wallets et au moins 1 status counts.
+    assert "0xpinn" in res.text
+    assert "0xshad" in res.text
+    assert "<!doctype html>" not in res.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_partials_traders_rows_invalid_status_ignored(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Filtre invalide → traité comme non-filtre (UX > strictness)."""
+    res = await dashboard_client.get("/partials/traders-rows?status=FAKE")
+    assert res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_backtest_page_notes_when_no_report(
+    dashboard_client: AsyncClient,
+) -> None:
+    res = await dashboard_client.get("/backtest")
+    assert res.status_code == 200
+    # Soit rapport existant, soit guide affiché : les 2 contiennent "Backtest".
+    assert "Backtest" in res.text

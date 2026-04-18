@@ -100,6 +100,20 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 - **Sécurité** : bind explicite `127.0.0.1`, aucun secret loggé ni rendu (Telegram token, private key, funder, CLOB L2 creds), `SELECT`-only via `session_factory`. Swagger / OpenAPI désactivés.
 - **Lifecycle** : uvicorn in-process, shutdown via watchdog `server.should_exit = True` déclenché par le `stop_event` partagé avec `__main__`.
 
+## Module : Discovery (optionnel, M5)
+
+> **Status M5** ✅ — implémenté. Module de découverte et scoring automatique de wallets candidats. Opt-in strict via `DISCOVERY_ENABLED=true`. Read-only sur Data API publique + Gamma + Goldsky (backend opt-in). Aucune signature CLOB, aucune dépendance aux credentials L2. Voir `specs/M5-trader-scoring.md` et `src/polycopy/discovery/`.
+
+- **Pool de candidats** : top holders des top-liquidité markets (`/holders` fan-out) + feed global `/trades` filtré par `usdcSize ≥ $100`. Backend opt-in `goldsky` / `hybrid` : ranking par `realizedPnl` via subgraph GraphQL.
+- **Metrics** (fenêtre glissante `SCORING_LOOKBACK_DAYS=90` j) : win rate, ROI réalisé, indice Herfindahl (diversité), volume log-scale.
+- **Score v1** : `0.30·consistency + 0.30·roi_norm + 0.20·diversity + 0.20·volume_norm` ∈ [0, 1]. Versionné via `SCORING_VERSION` (reproductibilité, pas de rewrite rétroactif).
+- **Statuts** : `shadow` (observation) → `active` (copié) → `paused` (retiré après 3 cycles low). `pinned` = jamais touché (provient de `TARGET_WALLETS` env).
+- **Garde-fous non-négociables** : `MAX_ACTIVE_TRADERS` cap dur (refuse + alerte, jamais retire), `TRADER_SHADOW_DAYS` observation obligatoire avant copy, `BLACKLISTED_WALLETS` exclusion absolue (vérifiée 2× : pre-bootstrap + pre-promotion), hystérésis `K=3` cycles avant demote.
+- **Audit trail** : chaque décision (`discovered`, `promoted_active`, `demoted_paused`, `kept`, `skipped_blacklist`, `skipped_cap`, `revived_shadow`) écrite dans `trader_events` + log structuré. Historique des scores append-only dans `trader_scores`.
+- **Backtest obligatoire avant prod** : `scripts/score_backtest.py` — corrélation Spearman score ↔ ROI observé ≥ 0.30 sur ≥ 50 wallets seed (cf. `specs/m5_backtest_seed.txt`).
+- **Throttle API** : `asyncio.Semaphore(5)` in-process sur le `DiscoveryDataApiClient` — pic ≤ ~60 req/min observé.
+- **Règle de dépendance** : `discovery/ → storage/` + `config/` + `monitoring/dtos` uniquement. Aucune dépendance vers `watcher/`, `strategy/`, `executor/`, `dashboard/core`. Communique via DB (update `target_traders`) et `alerts_queue`.
+
 ## Latence & timing
 
 Latence cible détection → exécution : **~10-15 secondes** sur le path heureux.

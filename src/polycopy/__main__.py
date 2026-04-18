@@ -16,6 +16,7 @@ import structlog
 
 from polycopy.config import settings
 from polycopy.dashboard.orchestrator import DashboardOrchestrator
+from polycopy.discovery.orchestrator import DiscoveryOrchestrator
 from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.monitoring.dtos import Alert
 from polycopy.monitoring.orchestrator import MonitoringOrchestrator
@@ -131,6 +132,10 @@ async def _run() -> None:
         if settings.dashboard_enabled:
             dashboard = DashboardOrchestrator(session_factory, settings)
 
+        discovery: DiscoveryOrchestrator | None = None
+        if settings.discovery_enabled:
+            discovery = DiscoveryOrchestrator(session_factory, settings, alerts_queue)
+
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(watcher.run_forever(stop_event))
@@ -139,6 +144,8 @@ async def _run() -> None:
                 tg.create_task(monitoring.run_forever(stop_event))
                 if dashboard is not None:
                     tg.create_task(dashboard.run_forever(stop_event))
+                if discovery is not None:
+                    tg.create_task(discovery.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:

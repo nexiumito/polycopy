@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}traders{% endblock %}
+{% block content %}
+<h2>Traders (M5)</h2>
+<p>
+  Cibles observées par le bot, avec leur score M5 le plus récent.
+  <small>
+    Statuts :
+    <strong>pinned</strong> = fixé via <code>TARGET_WALLETS</code> (jamais retiré) ·
+    <strong>active</strong> = copié par le watcher ·
+    <strong>shadow</strong> = observation avant promotion ·
+    <strong>paused</strong> = retiré (score sous seuil pendant K cycles).
+  </small>
+</p>
+<nav>
+  <ul>
+    <li><a href="/traders">Tous</a></li>
+    <li><a href="/traders?status=pinned">Pinned</a></li>
+    <li><a href="/traders?status=active">Active</a></li>
+    <li><a href="/traders?status=shadow">Shadow</a></li>
+    <li><a href="/traders?status=paused">Paused</a></li>
+  </ul>
+</nav>
+<section id="traders"
+         hx-get="/partials/traders-rows{% if status_filter %}?status={{ status_filter }}{% endif %}"
+         hx-trigger="load, every 10s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement…</p>
+</section>
+{% endblock %}

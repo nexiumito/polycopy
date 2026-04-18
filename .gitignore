@@ -47,5 +47,10 @@ Thumbs.db
 logs/
 *.log
 
+# Reports générés localement (PnL M4, backtest M5)
+pnl_report.html
+backtest_v1_report.html
+backtest_v*_report.html
+
 # Claude Code local
 .claude/settings.local.json

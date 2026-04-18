@@ -92,6 +92,18 @@ def build_pages_router() -> APIRouter:
     async def pnl(request: Request, since: str = "24h") -> HTMLResponse:
         return _render(request, "pnl.html", {"since": since})
 
+    @router.get("/traders", response_class=HTMLResponse)
+    async def traders(request: Request, status: str | None = None) -> HTMLResponse:
+        return _render(request, "traders.html", {"status_filter": status or ""})
+
+    @router.get("/backtest", response_class=HTMLResponse)
+    async def backtest(request: Request) -> HTMLResponse:
+        return _render(
+            request,
+            "backtest.html",
+            {"report_exists": queries.backtest_report_exists()},
+        )
+
     return router
 
 
@@ -219,6 +231,33 @@ def build_partials_router() -> APIRouter:
             "drawdown_pct": series.drawdown_pct,
         }
         return JSONResponse(payload)
+
+    @router.get("/traders-rows", response_class=HTMLResponse)
+    async def traders_rows(
+        request: Request,
+        sf: SFDep,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        rows = await queries.list_traders(
+            sf,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        counts = await queries.count_traders_by_status(sf)
+        return _render(
+            request,
+            "partials/traders_rows.html",
+            {
+                "rows": rows,
+                "counts": counts,
+                "status": status or "",
+                "limit": limit,
+                "offset": offset,
+            },
+        )
 
     return router
 

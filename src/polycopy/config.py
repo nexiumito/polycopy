@@ -5,9 +5,9 @@ Aucune valeur sensible en dur dans le code.
 """
 
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -117,6 +117,162 @@ class Settings(BaseSettings):
         le=65535,
         description="Port TCP local du dashboard.",
     )
+
+    # --- Discovery (M5, optionnel, opt-in strict) ------------------------
+    discovery_enabled: bool = Field(
+        False,
+        description=(
+            "Opt-in strict M5. Si false, __main__ n'instancie pas le "
+            "DiscoveryOrchestrator (zéro overhead, zéro appel API supplémentaire)."
+        ),
+    )
+    discovery_interval_seconds: int = Field(
+        21600,
+        ge=3600,
+        le=604800,
+        description=(
+            "Cadence d'un cycle complet de scoring. Default 6h. "
+            "Borne [3600, 604800] (1h–7j) via validator Pydantic."
+        ),
+    )
+    discovery_candidate_pool_size: int = Field(
+        100,
+        ge=1,
+        le=5000,
+        description="Wallets candidats scannés par cycle (budget API ~2 calls/wallet).",
+    )
+    discovery_top_markets_for_holders: int = Field(
+        20,
+        ge=1,
+        le=100,
+        description="Nb de marchés Gamma top-liquidité scannés via /holders en bootstrap.",
+    )
+    discovery_global_trades_lookback_hours: int = Field(
+        24,
+        ge=1,
+        le=168,
+        description=(
+            "Fenêtre du feed /trades global (informatif — l'API retourne les "
+            "500 trades récents quel que soit ce paramètre)."
+        ),
+    )
+    max_active_traders: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description=(
+            "Plafond dur sur les target_traders.status='active'. Si dépassement, "
+            "M5 refuse + alerte. Jamais de retrait arbitraire."
+        ),
+    )
+    blacklisted_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    scoring_version: str = Field(
+        "v1",
+        description=(
+            "Version de la formule de scoring. Loggée + écrite avec chaque score "
+            "pour reproductibilité (cf. §7.6 spec)."
+        ),
+    )
+    scoring_min_closed_markets: int = Field(
+        10,
+        ge=0,
+        description=(
+            "Seuil cold start : un wallet avec < N marchés résolus est scoré 0 "
+            "et flaggé low_confidence."
+        ),
+    )
+    scoring_lookback_days: int = Field(
+        90,
+        ge=1,
+        le=3650,
+        description="Fenêtre glissante de PnL/volume retenue pour le scoring.",
+    )
+    scoring_promotion_threshold: float = Field(
+        0.65,
+        ge=0.0,
+        le=1.0,
+        description="Score ≥ seuil → candidat à promotion (shadow → active).",
+    )
+    scoring_demotion_threshold: float = Field(
+        0.40,
+        ge=0.0,
+        le=1.0,
+        description="Score < seuil pendant K cycles → demote (active → paused).",
+    )
+    scoring_demotion_hysteresis_cycles: int = Field(
+        3,
+        ge=1,
+        le=100,
+        description="K cycles consécutifs sous le seuil avant demote (anti-whipsaw).",
+    )
+    trader_shadow_days: int = Field(
+        7,
+        ge=0,
+        le=90,
+        description=(
+            "Jours d'observation 'shadow' avant qu'un wallet auto-promu devienne "
+            "'active'. 0 = bypass shadow (uniquement si DISCOVERY_SHADOW_BYPASS=true)."
+        ),
+    )
+    discovery_shadow_bypass: bool = Field(
+        False,
+        description=(
+            "Si true ET TRADER_SHADOW_DAYS=0, autorise l'auto-promote immédiat "
+            "(shadow → active sans observation). ⚠️ Log WARNING au boot."
+        ),
+    )
+    discovery_backend: Literal["data_api", "goldsky", "hybrid"] = Field(
+        "data_api",
+        description=(
+            "Backend de découverte. 'data_api' (default, zéro dep) / 'goldsky' / "
+            "'hybrid' (ranking Goldsky + enrichissement Data API)."
+        ),
+    )
+    goldsky_positions_subgraph_url: str = Field(
+        # ⚠️ Par défaut pointe vers pnl-subgraph (qui expose realizedPnl via
+        # UserPosition). Le subgraph "positions-subgraph/0.0.7" historiquement
+        # mentionné dans la spec ne contient PAS d'entité Position avec PnL —
+        # divergence §14.5 #3 confirmée par introspection 2026-04-18.
+        "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/pnl-subgraph/0.0.14/gn",
+        description=(
+            "URL du subgraph Goldsky hébergeant UserPosition{realizedPnl}. "
+            "Override possible si la version drift."
+        ),
+    )
+    goldsky_pnl_subgraph_url: str = Field(
+        "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/pnl-subgraph/0.0.14/gn",
+        description="URL du subgraph pnl (miroir par défaut de positions_url, optionnel).",
+    )
+
+    @field_validator("blacklisted_wallets", mode="before")
+    @classmethod
+    def _parse_blacklisted_wallets(cls, v: object) -> object:
+        """Accepte `BLACKLISTED_WALLETS` en CSV ou JSON array (même logique que TARGET_WALLETS)."""
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip().lower() for item in stripped.split(",") if item.strip()]
+        if isinstance(v, list):
+            return [str(item).lower() for item in v]
+        return v
+
+    @model_validator(mode="after")
+    def _validate_discovery_thresholds(self) -> "Settings":
+        """Cross-field : demotion_threshold doit être strictement < promotion_threshold.
+
+        Empêche l'état incohérent `demote=0.70, promote=0.65` où chaque score
+        déclenche à la fois promotion ET demote. Raise `ValueError` au boot.
+        """
+        if self.scoring_demotion_threshold >= self.scoring_promotion_threshold:
+            raise ValueError(
+                "SCORING_DEMOTION_THRESHOLD "
+                f"({self.scoring_demotion_threshold}) must be strictly less than "
+                f"SCORING_PROMOTION_THRESHOLD ({self.scoring_promotion_threshold}).",
+            )
+        return self
 
 
 settings = Settings()

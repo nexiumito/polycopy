@@ -254,3 +254,84 @@ DASHBOARD_HOST=0.0.0.0
 | Page blanche | CDN (HTMX / Chart.js / Pico.css) bloqué | Premier chargement nécessite internet, ensuite cache navigateur. |
 | Le navigateur Windows ne voit rien | Sous WSL2, `http://localhost:8787/` est normalement forwardé auto. Sinon `http://$(hostname -I):8787/`. | — |
 
+## 14. Activer la découverte automatique de traders (optionnel, M5)
+
+M5 permet au bot de **découvrir et scorer automatiquement** des wallets Polymarket, puis de promouvoir les meilleurs en cibles actives (copiées par le watcher). **Opt-in strict** : par défaut, le bot n'utilise que les `TARGET_WALLETS` listés dans `.env`.
+
+⚠️ **Pré-requis bloquant** : lance le backtest avant d'activer en prod.
+
+```bash
+source .venv/bin/activate
+python scripts/score_backtest.py \
+  --wallets-file specs/m5_backtest_seed.txt \
+  --as-of 2026-01-15 \
+  --observe-days 30 \
+  --output backtest_v1_report.html
+```
+
+Ouvre `backtest_v1_report.html`. Si la corrélation Spearman score ↔ ROI observé est **≥ 0.30**, tu peux activer M5. Sinon, n'active pas en prod (la formule v1 ne prédit pas suffisamment — remontée à l'équipe pour itération en `SCORING_VERSION=v2`).
+
+### Activation
+
+Dans `.env` :
+
+```env
+DISCOVERY_ENABLED=true
+DISCOVERY_INTERVAL_SECONDS=21600   # 6 h, default
+MAX_ACTIVE_TRADERS=10              # plafond dur — jamais retrait arbitraire
+TRADER_SHADOW_DAYS=7               # observation avant promotion
+SCORING_VERSION=v1
+SCORING_PROMOTION_THRESHOLD=0.65
+SCORING_DEMOTION_THRESHOLD=0.40
+```
+
+Relance le bot. Ouvre le dashboard M4.5 → onglet **Traders** (`http://127.0.0.1:8787/traders`) :
+
+- Tes wallets `pinned` (seed `TARGET_WALLETS`) apparaissent en premier.
+- Au 1er cycle (~6 h), des wallets `shadow` apparaissent.
+- Après `TRADER_SHADOW_DAYS` jours, si leur score reste ≥ 0.65, ils sont promus `active` (suivis par le watcher).
+
+### Désactivation à chaud
+
+```bash
+# .env
+DISCOVERY_ENABLED=false
+```
+
+Redémarre. Aucun wallet n'est retiré — l'état persiste en DB (les `active`/`shadow` déjà promus restent suivis par le watcher).
+
+### Blacklist
+
+Pour empêcher définitivement un wallet d'entrer dans `target_traders` :
+
+```bash
+# .env
+BLACKLISTED_WALLETS=0xabc,0xdef,0x123
+```
+
+Vérifié 2 fois par cycle (pre-bootstrap et pre-promotion). Même un wallet qui scorerait 1.0 sera refusé.
+
+### Retirer manuellement un trader actif
+
+M5 ne dépasse **jamais** `MAX_ACTIVE_TRADERS` : si le cap est atteint, il refuse d'ajouter + alerte `discovery_cap_reached`. Pour libérer une place, soit tu augmentes le cap, soit tu retires manuellement un wallet :
+
+```sql
+-- Via sqlite3 ou ton client DB préféré :
+UPDATE target_traders
+   SET status='paused', active=0
+ WHERE wallet_address='0xabc';
+```
+
+(Éditer `TARGET_WALLETS` dans `.env` et redémarrer ne retire **pas** un wallet déjà en DB — c'est voulu, pour éviter les toggles accidentels.)
+
+### Troubleshooting
+
+| Symptôme | Cause probable | Fix |
+|---|---|---|
+| Pas de log `discovery_starting` | `DISCOVERY_ENABLED` absent ou `false` | Édite `.env` → `DISCOVERY_ENABLED=true`. |
+| `discovery_cycle_failed` répété | Data API down ou rate-limited | `curl https://data-api.polymarket.com/trades?limit=5` pour tester. |
+| `discovery_cap_reached` répété | `MAX_ACTIVE_TRADERS` atteint | Augmente le cap ou retire manuellement un wallet (SQL ci-dessus). |
+| Score bloqué à 0.0 sur un wallet | Cold start (< `SCORING_MIN_CLOSED_MARKETS`) | Attendre — le wallet doit accumuler 10 positions résolues. |
+| `goldsky_cycle_failed` | URL subgraph obsolète | Mettre à jour `GOLDSKY_POSITIONS_SUBGRAPH_URL` (voir https://thegraph.com/hosted-service/subgraphs/polymarket). |
+| Toutes les promotions refusées | `DISCOVERY_SHADOW_BYPASS=false` + `TRADER_SHADOW_DAYS>0` | Normal, attendre N jours ou baisser `TRADER_SHADOW_DAYS`. |
+

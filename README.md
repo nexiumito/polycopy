@@ -104,6 +104,23 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
 | `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
 | `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
+| `DISCOVERY_ENABLED` | Active la découverte auto de traders (M5, opt-in) | `false` | non |
+| `DISCOVERY_INTERVAL_SECONDS` | Cadence d'un cycle scoring (1h–7j) | `21600` | non |
+| `DISCOVERY_CANDIDATE_POOL_SIZE` | Pool de candidats scannés par cycle | `100` | non |
+| `DISCOVERY_TOP_MARKETS_FOR_HOLDERS` | Marchés top-liquidité scannés via `/holders` | `20` | non |
+| `MAX_ACTIVE_TRADERS` | Plafond DUR sur les traders `active` | `10` | non |
+| `BLACKLISTED_WALLETS` | Wallets jamais ajoutés (CSV ou JSON array) | — | non |
+| `SCORING_VERSION` | Version de la formule de scoring | `v1` | non |
+| `SCORING_MIN_CLOSED_MARKETS` | Seuil cold start (sous → score=0, low_confidence) | `10` | non |
+| `SCORING_LOOKBACK_DAYS` | Fenêtre glissante metrics (jours) | `90` | non |
+| `SCORING_PROMOTION_THRESHOLD` | Score ≥ seuil → candidat promotion | `0.65` | non |
+| `SCORING_DEMOTION_THRESHOLD` | Score < seuil pendant K cycles → demote | `0.40` | non |
+| `SCORING_DEMOTION_HYSTERESIS_CYCLES` | K cycles sous seuil avant demote | `3` | non |
+| `TRADER_SHADOW_DAYS` | Jours d'observation 'shadow' avant 'active' | `7` | non |
+| `DISCOVERY_SHADOW_BYPASS` | Bypass shadow si `TRADER_SHADOW_DAYS=0` | `false` | non |
+| `DISCOVERY_BACKEND` | `data_api` (default), `goldsky`, `hybrid` | `data_api` | non |
+| `GOLDSKY_POSITIONS_SUBGRAPH_URL` | URL subgraph pnl/positions (opt-in) | voir `.env.example` | non |
+| `GOLDSKY_PNL_SUBGRAPH_URL` | URL subgraph PnL (opt-in) | voir `.env.example` | non |
 
 ## Going live (passage du dry-run au mode réel)
 
@@ -152,6 +169,52 @@ Pour les activer (5 min) :
 - `order_filled_large` (INFO) — fill taker ≥ `ALERT_LARGE_ORDER_USD_THRESHOLD`.
 
 Anti-spam : cooldown in-memory de `ALERT_COOLDOWN_SECONDS` par `cooldown_key` (reset au boot).
+
+## Découverte automatique de traders (optionnel, M5)
+
+Polycopy peut découvrir et scorer des wallets Polymarket publics automatiquement, puis promouvoir les meilleurs en cibles actives. **Opt-in strict** : par défaut, le bot ne suit que les wallets listés dans `TARGET_WALLETS`.
+
+⚠️ **Pré-requis bloquant** : lance le backtest avant d'activer en prod.
+
+```bash
+python scripts/score_backtest.py \
+  --wallets-file specs/m5_backtest_seed.txt \
+  --as-of 2026-01-15 \
+  --observe-days 30 \
+  --output backtest_v1_report.html
+```
+
+Tu dois obtenir une corrélation Spearman ≥ 0.30 entre `score_at_T` et `observed_roi_t_to_t30`. Sinon → ne pas activer M5 en prod (la formule v1 sous-performe, ouvrir une issue pour itérer en `SCORING_VERSION=v2`).
+
+### Activation
+
+```env
+DISCOVERY_ENABLED=true
+DISCOVERY_INTERVAL_SECONDS=21600   # 6 h
+MAX_ACTIVE_TRADERS=10              # plafond dur
+TRADER_SHADOW_DAYS=7               # observation avant promotion
+SCORING_VERSION=v1
+```
+
+### Comment ça marche
+
+1. Toutes les `DISCOVERY_INTERVAL_SECONDS`, M5 scanne les top-holders des marchés Polymarket actifs (`/holders` fan-out sur les 20 marchés les plus liquides) + le feed global `/trades`.
+2. Pour chaque candidat, fetch `/positions` + `/activity`, calcule un score ∈ [0, 1] avec la formule v1 : `0.30·win_rate + 0.30·roi_norm + 0.20·diversity + 0.20·volume_norm`.
+3. Wallets avec score ≥ `SCORING_PROMOTION_THRESHOLD` passent en `status='shadow'` (observation `TRADER_SHADOW_DAYS` jours) puis promus en `status='active'` (le watcher les copie).
+4. Wallets `active` avec score < `SCORING_DEMOTION_THRESHOLD` pendant `SCORING_DEMOTION_HYSTERESIS_CYCLES` cycles consécutifs passent en `paused` (plus copiés).
+5. Tes `TARGET_WALLETS` restent **`pinned`** — jamais retirés par M5, immuables.
+
+Le `.env` n'est **pas** modifié automatiquement ; tous les wallets auto-découverts vivent en DB (`target_traders.status`). Tu gardes le contrôle par `MAX_ACTIVE_TRADERS` (cap dur) + `BLACKLISTED_WALLETS` (exclusion absolue) + édition manuelle SQL si besoin.
+
+### Observer M5 en live
+
+Dashboard M4.5 doit être actif. Ouvre `http://127.0.0.1:8787/traders` : table avec scores, statuts, timestamps. Auto-refresh 10 s.
+
+`http://127.0.0.1:8787/backtest` : statut du rapport backtest.
+
+Logs structurés émis par cycle : `discovery_starting`, `discovery_cycle_started`, `discovery_candidates_built`, `score_computed`, `trader_promoted`, `trader_demoted`, `discovery_cycle_completed`, `discovery_stopped`.
+
+Alertes Telegram (si config M4 active) : `trader_promoted` (INFO), `trader_demoted` (WARNING), `discovery_cap_reached` (WARNING), `discovery_cycle_failed` (ERROR).
 
 ## Dashboard local (optionnel, M4.5)
 
@@ -221,7 +284,17 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M3** : Executor (signature CLOB + POST, dry-run par défaut)
 - [x] **M4** : Monitoring (Telegram, snapshots PnL, kill switch, Alembic, rapport HTML)
 - [x] **M4.5** : Dashboard local (FastAPI + HTMX + Chart.js, read-only, opt-in)
-- [ ] **M5** : Scoring de traders + sélection automatique
+- [x] **M5** : Scoring de traders + sélection automatique (opt-in, read-only)
+
+### Après M5 (roadmap UX/expérience, pas de nouveau module fonctionnel)
+
+- Dashboard 2026-style (design moderne, KPIs visuels clairs, onboarding "je comprends tout en 10 s")
+- Bot Telegram plus bavard (start/stop, heartbeat périodique, résumé quotidien)
+- Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
+  comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans
+  capital engagé
+- README plus accueillant (tutorial interactif, captures, comparaison avec
+  d'autres bots Polymarket)
 
 ## Avertissement
 

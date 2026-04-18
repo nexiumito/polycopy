@@ -13,6 +13,8 @@ from polycopy.storage.dtos import (
     MyOrderDTO,
     PnlSnapshotDTO,
     StrategyDecisionDTO,
+    TraderEventDTO,
+    TraderScoreDTO,
 )
 from polycopy.storage.models import (
     DetectedTrade,
@@ -21,9 +23,15 @@ from polycopy.storage.models import (
     PnlSnapshot,
     StrategyDecision,
     TargetTrader,
+    TraderEvent,
+    TraderScore,
 )
 
 log = structlog.get_logger(__name__)
+
+
+_TraderStatus = Literal["shadow", "active", "paused", "pinned"]
+_StatusTransition = Literal["shadow", "active", "paused"]
 
 
 class TargetTraderRepository:
@@ -33,34 +41,194 @@ class TargetTraderRepository:
         self._session_factory = session_factory
 
     async def list_active(self) -> list[TargetTrader]:
-        """Retourne tous les traders actifs."""
+        """Retourne les traders actuellement suivis par le Watcher.
+
+        Defense in depth M5 : filtre sur ``active=True`` **ET**
+        ``status IN ('active', 'pinned')``. Si l'invariante glisse (bug M5),
+        on protège le watcher d'aller poller un wallet en `shadow` ou `paused`.
+        """
         async with self._session_factory() as session:
-            stmt = select(TargetTrader).where(TargetTrader.active.is_(True))
+            stmt = select(TargetTrader).where(
+                TargetTrader.active.is_(True),
+                TargetTrader.status.in_(("active", "pinned")),
+            )
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def list_all(self) -> list[TargetTrader]:
+        """Retourne TOUS les traders (tous statuts), pour cycle de scoring M5."""
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def list_by_status(self, status: _TraderStatus) -> list[TargetTrader]:
+        """Retourne les traders d'un statut donné."""
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.status == status)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def count_by_status(self, status: _TraderStatus) -> int:
+        """Compte les traders d'un statut donné (utilisé pour le cap MAX_ACTIVE_TRADERS)."""
+        async with self._session_factory() as session:
+            stmt = select(func.count(TargetTrader.id)).where(TargetTrader.status == status)
+            result = await session.execute(stmt)
+            return int(result.scalar_one())
+
+    async def get(self, wallet_address: str) -> TargetTrader | None:
+        """Fetch un trader par adresse (lowercase)."""
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(
+                TargetTrader.wallet_address == wallet_address.lower(),
+            )
+            return (await session.execute(stmt)).scalar_one_or_none()
 
     async def upsert(
         self,
         wallet_address: str,
         label: str | None = None,
     ) -> TargetTrader:
-        """Insère ou réactive un trader cible. Adresse normalisée en lowercase."""
+        """Insère ou réactive un trader cible (`pinned`). Adresse normalisée en lowercase.
+
+        Usage M1/M2/M3/M4 : appelé au boot pour les wallets `TARGET_WALLETS` env.
+        Les traders re-poussés par ce chemin sont toujours ``pinned`` (whitelist
+        user autoritaire) — M5 ne les demote jamais.
+        """
         wallet_lower = wallet_address.lower()
         async with self._session_factory() as session:
             stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
             existing = (await session.execute(stmt)).scalar_one_or_none()
             if existing is not None:
                 existing.active = True
+                existing.status = "pinned"
+                existing.pinned = True
                 if label is not None:
                     existing.label = label
                 await session.commit()
                 await session.refresh(existing)
                 return existing
-            trader = TargetTrader(wallet_address=wallet_lower, label=label, active=True)
+            trader = TargetTrader(
+                wallet_address=wallet_lower,
+                label=label,
+                active=True,
+                status="pinned",
+                pinned=True,
+            )
             session.add(trader)
             await session.commit()
             await session.refresh(trader)
             return trader
+
+    async def insert_shadow(
+        self,
+        wallet_address: str,
+        *,
+        label: str | None = None,
+        discovered_at: datetime | None = None,
+    ) -> TargetTrader:
+        """Insère un wallet auto-découvert en ``status='shadow'`` (observation M5).
+
+        ``active=False`` — le watcher ne le pollera pas jusqu'à la promotion.
+        ``pinned=False`` — M5 peut promote/demote librement.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is not None:
+                return existing
+            trader = TargetTrader(
+                wallet_address=wallet_lower,
+                label=label,
+                active=False,
+                status="shadow",
+                pinned=False,
+                discovered_at=discovered_at or datetime.now(tz=UTC),
+            )
+            session.add(trader)
+            await session.commit()
+            await session.refresh(trader)
+            return trader
+
+    async def update_score(
+        self,
+        wallet_address: str,
+        *,
+        score: float,
+        scoring_version: str,
+        scored_at: datetime | None = None,
+    ) -> None:
+        """Overwrite ``target_traders.score`` + ``last_scored_at`` + ``scoring_version``."""
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                return
+            trader.score = score
+            trader.scoring_version = scoring_version
+            trader.last_scored_at = scored_at or datetime.now(tz=UTC)
+            await session.commit()
+
+    async def transition_status(
+        self,
+        wallet_address: str,
+        *,
+        new_status: _StatusTransition,
+        reset_hysteresis: bool = False,
+    ) -> TargetTrader:
+        """Change atomiquement le statut d'un trader.
+
+        - Met ``active=True`` si ``new_status='active'``, sinon ``active=False``.
+        - Set ``promoted_at`` à l'instant si transition vers ``'active'``.
+        - Reset ``consecutive_low_score_cycles=0`` si ``reset_hysteresis=True``.
+        - **Raise ValueError** si le wallet est ``pinned`` — les pinned sont
+          intouchables par M5 (spec §2.4 + §2.5, safeguard non-négociable).
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                raise ValueError(f"TargetTrader not found for wallet {wallet_lower}")
+            if trader.pinned:
+                raise ValueError(
+                    f"Cannot transition_status on pinned wallet {wallet_lower} "
+                    f"(from={trader.status!r} to={new_status!r})",
+                )
+            trader.status = new_status
+            trader.active = new_status == "active"
+            if new_status == "active":
+                trader.promoted_at = datetime.now(tz=UTC)
+            if reset_hysteresis:
+                trader.consecutive_low_score_cycles = 0
+            await session.commit()
+            await session.refresh(trader)
+            return trader
+
+    async def increment_low_score(self, wallet_address: str) -> int:
+        """Incrémente `consecutive_low_score_cycles`, retourne la nouvelle valeur."""
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                raise ValueError(f"TargetTrader not found for wallet {wallet_lower}")
+            trader.consecutive_low_score_cycles += 1
+            await session.commit()
+            return trader.consecutive_low_score_cycles
+
+    async def reset_low_score(self, wallet_address: str) -> None:
+        """Remet `consecutive_low_score_cycles=0`."""
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                return
+            trader.consecutive_low_score_cycles = 0
+            await session.commit()
 
 
 class DetectedTradeRepository:
@@ -357,3 +525,135 @@ class PnlSnapshotRepository:
             stmt = stmt.order_by(PnlSnapshot.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+
+# --- M5 discovery repositories ------------------------------------------------
+
+
+class TraderScoreRepository:
+    """Repository append-only des scores historiques (1 ligne par wallet × cycle)."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(self, dto: TraderScoreDTO) -> TraderScore:
+        """Persiste un score M5 avec son snapshot de metrics."""
+        record = TraderScore(
+            target_trader_id=dto.target_trader_id,
+            wallet_address=dto.wallet_address.lower(),
+            score=dto.score,
+            scoring_version=dto.scoring_version,
+            low_confidence=dto.low_confidence,
+            metrics_snapshot=dto.metrics_snapshot,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def latest_for_wallet(self, wallet_address: str) -> TraderScore | None:
+        """Dernier score connu pour un wallet (ou None)."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(TraderScore)
+                .where(TraderScore.wallet_address == wallet_address.lower())
+                .order_by(TraderScore.cycle_at.desc())
+                .limit(1)
+            )
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def list_for_wallet(
+        self,
+        wallet_address: str,
+        *,
+        limit: int = 100,
+    ) -> list[TraderScore]:
+        """Historique de scores pour un wallet, ordre chronologique décroissant."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(TraderScore)
+                .where(TraderScore.wallet_address == wallet_address.lower())
+                .order_by(TraderScore.cycle_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def latest_per_wallet(self, *, limit: int = 200) -> list[TraderScore]:
+        """Pour le dashboard /traders : 1 ligne par wallet, le score le plus récent.
+
+        Implémenté en sous-requête `max(cycle_at) group by wallet_address`.
+        """
+        async with self._session_factory() as session:
+            latest_at = (
+                select(
+                    TraderScore.wallet_address,
+                    func.max(TraderScore.cycle_at).label("max_cycle_at"),
+                )
+                .group_by(TraderScore.wallet_address)
+                .subquery()
+            )
+            stmt = (
+                select(TraderScore)
+                .join(
+                    latest_at,
+                    (TraderScore.wallet_address == latest_at.c.wallet_address)
+                    & (TraderScore.cycle_at == latest_at.c.max_cycle_at),
+                )
+                .order_by(TraderScore.score.desc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+
+class TraderEventRepository:
+    """Repository append-only des événements du lifecycle discovery (audit trail)."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(self, dto: TraderEventDTO) -> TraderEvent:
+        """Persiste un événement (non effacé même après demote/remove)."""
+        record = TraderEvent(
+            wallet_address=dto.wallet_address.lower(),
+            event_type=dto.event_type,
+            from_status=dto.from_status,
+            to_status=dto.to_status,
+            score_at_event=dto.score_at_event,
+            scoring_version=dto.scoring_version,
+            reason=dto.reason,
+            event_metadata=dto.event_metadata,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def list_recent(
+        self,
+        *,
+        since: datetime | None = None,
+        limit: int = 200,
+    ) -> list[TraderEvent]:
+        """Derniers événements, ordre chronologique décroissant."""
+        async with self._session_factory() as session:
+            stmt = select(TraderEvent)
+            if since is not None:
+                stmt = stmt.where(TraderEvent.at >= since)
+            stmt = stmt.order_by(TraderEvent.at.desc()).limit(limit)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def count_by_event_type_since(self, since: datetime) -> dict[str, int]:
+        """Agrégation par event_type sur la fenêtre — utilisé pour KPIs dashboard Home."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(TraderEvent.event_type, func.count(TraderEvent.id))
+                .where(TraderEvent.at >= since)
+                .group_by(TraderEvent.event_type)
+            )
+            result = await session.execute(stmt)
+            return {row[0]: int(row[1]) for row in result.all()}

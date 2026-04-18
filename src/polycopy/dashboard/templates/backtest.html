@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}backtest{% endblock %}
+{% block content %}
+<h2>Backtest M5</h2>
+<p>
+  Le backtest M5 évalue la formule de scoring sur ~50 wallets seed en regardant
+  la corrélation Spearman entre le score à T et le ROI observé sur 30 jours suivants.
+  <strong>Cible : Spearman ≥ 0.30</strong> avant d'activer
+  <code>DISCOVERY_ENABLED=true</code> en prod.
+</p>
+{% if report_exists %}
+<article>
+  <header>
+    <strong>Rapport disponible</strong>
+  </header>
+  <p>
+    Un fichier <code>backtest_v1_report.html</code> est présent à la racine du projet.
+  </p>
+  <p>
+    <small>
+      Le dashboard ne le sert pas directement (principe read-only strict, pas de
+      mount ad-hoc). Ouvre-le manuellement :
+      <code>open backtest_v1_report.html</code> ou double-clique dans ton explorateur.
+    </small>
+  </p>
+</article>
+{% else %}
+<article>
+  <header>Aucun rapport trouvé</header>
+  <p>Génère-en un :</p>
+  <pre><code>source .venv/bin/activate
+python scripts/score_backtest.py \
+  --wallets-file specs/m5_backtest_seed.txt \
+  --as-of 2026-01-15 \
+  --observe-days 30 \
+  --output backtest_v1_report.html</code></pre>
+  <p>
+    <small>
+      Le rapport HTML contient la corrélation Spearman, une table par wallet et
+      un aperçu de la distribution des scores. Si Spearman &lt; 0.30, ne pas
+      activer <code>DISCOVERY_ENABLED=true</code> en prod — itérer la formule en
+      <code>SCORING_VERSION=v2</code>.
+    </small>
+  </p>
+</article>
+{% endif %}
+{% endblock %}

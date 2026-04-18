@@ -51,6 +51,45 @@ class GammaApiClient:
         self._cache[condition_id] = (self._now(), market)
         return market
 
+    async def list_top_markets(
+        self,
+        *,
+        limit: int = 20,
+        only_active: bool = True,
+    ) -> list[MarketMetadata]:
+        """Top-N marchés triés par liquidité descendante (usage M5 `/holders` bootstrap).
+
+        Non-caché : appelé ~1 fois par cycle discovery (6h).
+        """
+        params: dict[str, Any] = {
+            "limit": limit,
+            "order": "liquidityNum",
+            "ascending": "false",
+        }
+        if only_active:
+            params["active"] = "true"
+            params["closed"] = "false"
+        response = await self._http.get(
+            f"{self.BASE_URL}/markets",
+            params=params,
+            timeout=self.DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise httpx.HTTPStatusError(
+                f"unexpected payload type: {type(data).__name__}",
+                request=response.request,
+                response=response,
+            )
+        markets: list[MarketMetadata] = []
+        for item in data:
+            try:
+                markets.append(MarketMetadata.model_validate(item))
+            except Exception:  # noqa: BLE001 — skip on schema drift
+                log.warning("gamma_top_market_parse_skipped")
+        return markets
+
     @retry(
         retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
         wait=wait_exponential(multiplier=1, min=1, max=30),

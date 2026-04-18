@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy import func, select
@@ -22,6 +23,9 @@ from polycopy.storage.models import (
     MyPosition,
     PnlSnapshot,
     StrategyDecision,
+    TargetTrader,
+    TraderEvent,
+    TraderScore,
 )
 
 _MAX_LIMIT = 200
@@ -69,6 +73,29 @@ class HomeKpis:
     # À M4.5 les Alert M4 ne sont pas en DB (cf. spec §6.2) → toujours None.
     last_alert_event: str | None
     last_alert_at: datetime | None
+    # --- M5 discovery KPIs ------------------------------------------------
+    discovery_last_cycle_at: datetime | None = None
+    discovery_cycles_24h: int = 0
+    discovery_promotions_24h: int = 0
+    discovery_demotions_24h: int = 0
+    discovery_shadow_count: int = 0
+    discovery_active_count: int = 0
+    discovery_paused_count: int = 0
+
+
+@dataclass(frozen=True)
+class TraderRow:
+    """Ligne pour la page `/traders` (1 ligne = 1 wallet + latest score)."""
+
+    wallet_address: str
+    label: str | None
+    status: str
+    pinned: bool
+    score: float | None
+    scoring_version: str | None
+    last_scored_at: datetime | None
+    discovered_at: datetime | None
+    consecutive_low_score_cycles: int
 
 
 @dataclass(frozen=True)
@@ -120,6 +147,41 @@ async def fetch_home_kpis(
         ).all()
         orders_24h_by_status = {str(row[0]): int(row[1]) for row in orders_rows}
 
+        # M5 KPIs : count per status + événements dernières 24h.
+        status_counts_rows = (
+            await session.execute(
+                select(TargetTrader.status, func.count(TargetTrader.id)).group_by(
+                    TargetTrader.status
+                ),
+            )
+        ).all()
+        status_counts = {str(r[0]): int(r[1]) for r in status_counts_rows}
+
+        event_counts_rows = (
+            await session.execute(
+                select(TraderEvent.event_type, func.count(TraderEvent.id))
+                .where(TraderEvent.at >= since_24h)
+                .group_by(TraderEvent.event_type),
+            )
+        ).all()
+        events_24h = {str(r[0]): int(r[1]) for r in event_counts_rows}
+
+        last_cycle = (
+            await session.execute(
+                select(func.max(TraderScore.cycle_at)),
+            )
+        ).scalar_one_or_none()
+
+        discovery_cycles_24h = int(
+            (
+                await session.execute(
+                    select(func.count(func.distinct(TraderScore.cycle_at))).where(
+                        TraderScore.cycle_at >= since_24h,
+                    ),
+                )
+            ).scalar_one()
+        )
+
     return HomeKpis(
         latest_total_usdc=(
             float(latest_snapshot.total_usdc) if latest_snapshot is not None else None
@@ -132,6 +194,14 @@ async def fetch_home_kpis(
         orders_24h_by_status=orders_24h_by_status,
         last_alert_event=None,
         last_alert_at=None,
+        discovery_last_cycle_at=last_cycle,
+        discovery_cycles_24h=discovery_cycles_24h,
+        discovery_promotions_24h=int(events_24h.get("promoted_active", 0)),
+        discovery_demotions_24h=int(events_24h.get("demoted_paused", 0)),
+        discovery_shadow_count=int(status_counts.get("shadow", 0)),
+        discovery_active_count=int(status_counts.get("active", 0))
+        + int(status_counts.get("pinned", 0)),
+        discovery_paused_count=int(status_counts.get("paused", 0)),
     )
 
 
@@ -265,3 +335,80 @@ async def fetch_pnl_series(
 def aggregate_orders_by_status(orders: list[MyOrder]) -> dict[str, int]:
     """Petit helper in-memory pour afficher un compteur par status côté page."""
     return dict(Counter(o.status for o in orders))
+
+
+# --- M5 discovery queries ---------------------------------------------------
+
+
+_VALID_TRADER_STATUSES = frozenset({"shadow", "active", "paused", "pinned"})
+
+
+async def list_traders(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[TraderRow]:
+    """Liste les traders pour la page `/traders`.
+
+    Trié par ``score DESC NULLS LAST`` par défaut. Filtre ``status`` optionnel
+    (invalide → ignoré, cf. pattern UX M4.5).
+    """
+    limit = _clamp_limit(limit)
+    offset = _clamp_offset(offset)
+    async with session_factory() as session:
+        stmt = select(TargetTrader)
+        if status is not None and status in _VALID_TRADER_STATUSES:
+            stmt = stmt.where(TargetTrader.status == status)
+        # SQLite : score None au bout via coalesce(..., -1.0).
+        stmt = (
+            stmt.order_by(
+                func.coalesce(TargetTrader.score, -1.0).desc(),
+                TargetTrader.added_at.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await session.execute(stmt)
+        traders = list(result.scalars().all())
+    return [
+        TraderRow(
+            wallet_address=t.wallet_address,
+            label=t.label,
+            status=t.status,
+            pinned=bool(t.pinned),
+            score=float(t.score) if t.score is not None else None,
+            scoring_version=t.scoring_version,
+            last_scored_at=t.last_scored_at,
+            discovered_at=t.discovered_at,
+            consecutive_low_score_cycles=int(t.consecutive_low_score_cycles),
+        )
+        for t in traders
+    ]
+
+
+async def count_traders_by_status(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> dict[str, int]:
+    """Compte de traders par status (pour sidebar /traders)."""
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(TargetTrader.status, func.count(TargetTrader.id)).group_by(
+                    TargetTrader.status
+                ),
+            )
+        ).all()
+    return {str(r[0]): int(r[1]) for r in rows}
+
+
+def backtest_report_path() -> Path:
+    """Chemin canonique du rapport backtest (convention `/backtest` page)."""
+    # Path au niveau repo root (2 niveaux au-dessus de src/polycopy/dashboard).
+    return Path(__file__).resolve().parents[3] / "backtest_v1_report.html"
+
+
+def backtest_report_exists() -> bool:
+    """True si le backtest a déjà été généré à la racine du repo."""
+    return backtest_report_path().is_file()

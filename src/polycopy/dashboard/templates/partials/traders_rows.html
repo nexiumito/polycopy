@@ -1,0 +1,45 @@
+<section>
+  <p>
+    <small>
+      {% for s, n in counts.items() %}
+        <kbd>{{ s }}: {{ n }}</kbd>
+      {% endfor %}
+      {% if not counts %}<em>Aucun trader en DB.</em>{% endif %}
+    </small>
+  </p>
+</section>
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th>Wallet</th>
+      <th>Label</th>
+      <th>Status</th>
+      <th>Score</th>
+      <th>Version</th>
+      <th>Last scored</th>
+      <th>Discovered</th>
+      <th>Low-cycles</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.wallet_address }}</code></td>
+      <td>{{ r.label or "—" }}</td>
+      <td>
+        <mark>{{ r.status }}</mark>
+        {% if r.pinned %}<small> (pinned)</small>{% endif %}
+      </td>
+      <td>{{ "%.3f"|format(r.score) if r.score is not none else "—" }}</td>
+      <td><small>{{ r.scoring_version or "—" }}</small></td>
+      <td><small>{{ r.last_scored_at.strftime("%Y-%m-%d %H:%MZ") if r.last_scored_at else "—" }}</small></td>
+      <td><small>{{ r.discovered_at.strftime("%Y-%m-%d") if r.discovered_at else "—" }}</small></td>
+      <td>{{ r.consecutive_low_score_cycles }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p><small>Aucun trader correspondant à ce filtre.</small></p>
+{% endif %}

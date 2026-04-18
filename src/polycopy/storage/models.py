@@ -8,7 +8,7 @@ Tables structurelles M3+ : `my_orders`, `my_positions`, `pnl_snapshots`
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -21,20 +21,63 @@ def _now_utc() -> datetime:
 
 
 class TargetTrader(Base):
-    """Wallet observé par le watcher. Adresse stockée en lowercase."""
+    """Wallet observé par le watcher. Adresse stockée en lowercase.
+
+    M5 étend ce modèle avec le lifecycle ``status``, le flag ``pinned`` (seed
+    `TARGET_WALLETS`, jamais retiré par M5), le compteur d'hystérésis demote,
+    et des timestamps d'audit (`discovered_at`, `promoted_at`, `last_scored_at`).
+    """
 
     __tablename__ = "target_traders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     wallet_address: Mapped[str] = mapped_column(String(42), unique=True, index=True)
     label: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    score: Mapped[float | None] = mapped_column(Float, nullable=True)  # peuplé à M5
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)  # overwrite par cycle M5
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=_now_utc,
         nullable=False,
     )
+    # --- M5 extensions (0003 migration) ----------------------------------
+    # status ∈ {'shadow', 'active', 'paused', 'pinned'}. Dérivé en sync avec `active`
+    # (active=True ⟺ status ∈ {'active', 'pinned'}). Indexé pour les queries
+    # par status dans le dashboard + pipeline discovery.
+    status: Mapped[str] = mapped_column(
+        String(8),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
+    # True ⟺ wallet vient de TARGET_WALLETS env. Jamais demote-able par M5.
+    pinned: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+    # Hystérésis demote : nombre de cycles consécutifs sous demotion_threshold.
+    consecutive_low_score_cycles: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    discovered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    promoted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_scored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    scoring_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class DetectedTrade(Base):
@@ -158,3 +201,61 @@ class PnlSnapshot(Base):
     open_positions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cash_pnl_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+# --- Populated from M5 onwards ----------------------------------------------
+
+
+class TraderScore(Base):
+    """Score historique append-only d'un wallet pour un cycle M5.
+
+    Une ligne par `(wallet, cycle)`. Jamais d'update. Permet audit a posteriori
+    et comparaison entre versions de formule (`scoring_version`).
+    """
+
+    __tablename__ = "trader_scores"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_trader_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    wallet_address: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    scoring_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    cycle_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        index=True,
+        nullable=False,
+    )
+    low_confidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    metrics_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (Index("ix_trader_scores_wallet_cycle", "wallet_address", "cycle_at"),)
+
+
+class TraderEvent(Base):
+    """Audit trail append-only : chaque décision M5 sur un wallet.
+
+    Écrit avec un event_type descriptif (`discovered`, `promoted_active`,
+    `demoted_paused`, `kept`, `skipped_blacklist`, `skipped_cap`,
+    `manual_override`) + snapshot du score à l'instant et `scoring_version`.
+    """
+
+    __tablename__ = "trader_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wallet_address: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        index=True,
+        nullable=False,
+    )
+    from_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    score_at_event: Mapped[float | None] = mapped_column(Float, nullable=True)
+    scoring_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    event_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (Index("ix_trader_events_wallet_at", "wallet_address", "at"),)

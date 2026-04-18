@@ -76,3 +76,47 @@ class MyOrderDTO(BaseModel):
     status: Literal["SIMULATED", "SENT"]
     simulated: bool
     clob_order_id: str | None = None
+
+
+# --- M5 discovery DTOs --------------------------------------------------------
+
+
+TraderEventType = Literal[
+    "discovered",
+    "scored",
+    "promoted_active",
+    "demoted_paused",
+    "kept",
+    "skipped_blacklist",
+    "skipped_cap",
+    "manual_override",
+    "revived_shadow",
+]
+
+
+class TraderScoreDTO(BaseModel):
+    """DTO append pour `TraderScoreRepository.insert`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target_trader_id: int
+    wallet_address: str
+    score: float
+    scoring_version: str
+    low_confidence: bool
+    metrics_snapshot: dict[str, Any]
+
+
+class TraderEventDTO(BaseModel):
+    """DTO append pour `TraderEventRepository.insert` (audit trail discovery)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    wallet_address: str
+    event_type: TraderEventType
+    from_status: str | None = None
+    to_status: str | None = None
+    score_at_event: float | None = None
+    scoring_version: str | None = None
+    reason: str | None = None
+    event_metadata: dict[str, Any] | None = None

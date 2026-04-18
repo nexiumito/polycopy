@@ -38,6 +38,7 @@ src/polycopy/
 ├── storage/      Models SQLAlchemy + repositories
 ├── monitoring/   Logs, metrics, alertes
 ├── dashboard/    FastAPI + HTMX + Chart.js, localhost-only, read-only (M4.5, opt-in)
+├── discovery/    Pool candidats + scoring + decisions (M5, opt-in, read-only)
 ├── config.py     Pydantic Settings (env vars uniquement)
 └── __main__.py   Entrypoint asyncio
 ```
@@ -61,6 +62,17 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
   - À partir de M3 : auth L1+L2 via `py-clob-client` (jamais d'appels REST directs sauf si le SDK n'expose pas l'endpoint).
 - **CLOB WebSocket** : `wss://ws-subscriptions-clob.polymarket.com`
   - Channel `market` pour les prix temps réel
+- **Data API endpoints M5** (découverte + metrics, public no-auth) :
+  - `GET /holders?market=<conditionId>&limit=20` — top holders d'un marché (bootstrap).
+  - `GET /trades?limit=500&filterType=CASH&filterAmount=100&takerOnly=true` — feed global (bootstrap).
+  - `GET /value?user=<addr>` — sanity check capital (pré-filtre pool).
+  - `GET /positions?user=<addr>&sortBy=CASHPNL` — historique positions (calcul win_rate/ROI).
+  - **Pièges confirmés** (§14.5 spec M5) : (1) `/trades` ne renvoie **pas** `usdcSize` — recalculer `size × price` client-side. (2) Le filtre `outcomeIndex` / `pseudonym` peuvent être null sur `/holders`.
+- **Goldsky subgraph** (`DISCOVERY_BACKEND=goldsky|hybrid`, opt-in, public) :
+  - URL default : `pnl-subgraph/0.0.14/gn` (⚠️ la spec initiale mentionnait `positions-subgraph/0.0.7` qui n'a **pas** de `realizedPnl` — utiliser `pnl-subgraph` / entité `userPositions`).
+  - Numbers retournés en string BigInt (échelle USDC 10⁶, parser via `Decimal`).
+  - Versions drift : hardcoder un fallback en code, permettre override via env (`GOLDSKY_POSITIONS_SUBGRAPH_URL`).
+- **Pas de leaderboard endpoint** côté Polymarket public — le bootstrap M5 dérive via `/holders` + `/trades` (décision §14.3 #1 + §2.1 spec M5).
 
 ## Sécurité — RÈGLES STRICTES
 
@@ -82,6 +94,7 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
 - **Monitoring M4** : kill switch déclenché EXCLUSIVEMENT par `PnlSnapshotWriter`, **jamais en dry-run** (sécurité critique). `RiskManager` (M2) reste inchangé — pas de refactor.
 - **Migrations Alembic** : `alembic upgrade head` tourne au boot (`init_db`). Si DB M3 préexistante sans `alembic_version` → auto-stamp baseline puis upgrade. Manuel : `alembic stamp head` documenté dans `docs/setup.md`.
 - **Dashboard M4.5** : bind `127.0.0.1` exclusif par défaut, opt-in via `DASHBOARD_ENABLED=true`. `DASHBOARD_HOST=0.0.0.0` = responsabilité de l'utilisateur (documenté avec ⚠️). Aucun endpoint write (toutes les routes sont `GET`, vérifié en test). Aucun secret (Telegram token, private key, funder, CLOB L2 creds) ne doit apparaître dans les responses HTML/JSON — vérifié par `test_dashboard_security.py`. Swagger/OpenAPI désactivés (`docs_url=None`, `openapi_url=None`).
+- **Discovery M5** : `DISCOVERY_ENABLED=false` par défaut. Read-only stricte (Data API + Gamma + Goldsky publics, aucune creds CLOB). Un wallet auto-découvert reste en `status='shadow'` pendant `TRADER_SHADOW_DAYS` jours avant `active` (capital safety — bypass uniquement avec `TRADER_SHADOW_DAYS=0` ET `DISCOVERY_SHADOW_BYPASS=true` ET log WARNING au boot). `MAX_ACTIVE_TRADERS` est un cap dur — M5 ne retire **jamais** arbitrairement un wallet existant pour faire place. `BLACKLISTED_WALLETS` est une exclusion absolue vérifiée 2× (pre-bootstrap + pre-promotion). Les wallets de `TARGET_WALLETS` env deviennent **`pinned`** (jamais demote-ables — `transition_status` raise `ValueError` sur pinned). Toute décision (`promote/demote/keep/skip`) est loggée structlog ET écrite dans `trader_events` (audit trail). Formule de scoring versionnée via `SCORING_VERSION` — pas de rewrite rétroactif des `trader_scores` historiques. `GOLDSKY_API_KEY` (hypothétique, Goldsky fair-use sans clé à v1) discipline identique à `TELEGRAM_BOT_TOKEN`. Throttle `asyncio.Semaphore(5)` in-process sur `DiscoveryDataApiClient` — pic ≤ ~60 req/min.
 
 ## Tests
 
