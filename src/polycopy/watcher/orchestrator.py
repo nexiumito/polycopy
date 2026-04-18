@@ -15,6 +15,7 @@ from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.repositories import (
     DetectedTradeRepository,
     TargetTraderRepository,
+    TradeLatencyRepository,
 )
 from polycopy.watcher.data_api_client import DataApiClient
 from polycopy.watcher.wallet_poller import WalletPoller
@@ -56,6 +57,11 @@ class WatcherOrchestrator:
             wallets=wallets,
             interval=self._settings.poll_interval_seconds,
         )
+        latency_repo: TradeLatencyRepository | None = (
+            TradeLatencyRepository(self._session_factory)
+            if self._settings.latency_instrumentation_enabled
+            else None
+        )
         async with httpx.AsyncClient() as http_client:
             api_client = DataApiClient(http_client)
             pollers = [
@@ -65,6 +71,8 @@ class WatcherOrchestrator:
                     repo=trade_repo,
                     interval_seconds=self._settings.poll_interval_seconds,
                     out_queue=self._out_queue,
+                    latency_repo=latency_repo,
+                    instrumentation_enabled=self._settings.latency_instrumentation_enabled,
                 )
                 for wallet in wallets
             ]

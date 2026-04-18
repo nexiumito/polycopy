@@ -57,6 +57,8 @@
 
 > **Status M2** ✅ — implémenté. Pipeline `MarketFilter → PositionSizer → SlippageChecker → RiskManager` exécuté à chaque `DetectedTrade` reçu via `asyncio.Queue` partagée avec le Watcher. Décisions persistées dans `strategy_decisions`. Voir `specs/M2-strategy-engine.md` et `src/polycopy/strategy/`.
 
+> **Status M11** ✅ — pipeline temps réel phase 1. Trois leviers additifs, tous derrière feature flags default `true` : (A) `ClobMarketWSClient` consomme le channel `market` (read-only public, sub/unsub lazy, cache in-memory mid-price, reconnect tenacity, watchdog 30 s, LRU cap 500 tokens) et alimente `SlippageChecker` avec fallback HTTP transparent si WS down ou flag off. (B) Cache Gamma à TTL adaptatif par segment via `_cache_policy.compute_ttl` (résolu → 1 an, proche résolution → 10 s, actif → 300 s, inactif → 3600 s) remplace le TTL 60 s uniforme M2. (C) Instrumentation latence : `trade_id` uuid hex généré par `WalletPoller`, propagé via DTOs, bindé en contextvar structlog ; 6 stages chronométrés avec `time.perf_counter_ns` (`watcher_detected_ms`, `strategy_enriched_ms`, `strategy_filtered_ms`, `strategy_sized_ms`, `strategy_risk_checked_ms`, `executor_submitted_ms`), persistés dans la nouvelle table `trade_latency_samples` (migration 0005 additive, purge 7 jours au boot + scheduler quotidien). Dashboard `/latency` rend un bar chart p50/p95/p99 par stage avec filtre `?since=`. Cible 2-3 s end-to-end vs ~10-15 s pré-M11. Voir `specs/M11-realtime-pipeline-phase1.md`.
+
 Pipeline en étages, chaque étage peut rejeter le trade avec une raison loggée :
 
 1. **MarketFilter** : vérifie liquidité ≥ seuil, expiration ≥ seuil, marché actif (via Gamma API, cache 60s)

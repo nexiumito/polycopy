@@ -340,6 +340,71 @@ class Settings(BaseSettings):
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return v
 
+    # --- Pipeline temps réel (M11, opt-in par défaut) --------------------
+    strategy_clob_ws_enabled: bool = Field(
+        True,
+        description=(
+            "M11 : active le client WebSocket CLOB `market` channel dans "
+            "SlippageChecker. Si false → fallback HTTP /midpoint strict "
+            "(comportement M2..M10). Read-only public, aucune creds."
+        ),
+    )
+    strategy_clob_ws_url: str = Field(
+        "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        description="URL du WebSocket CLOB market (override test/staging).",
+    )
+    strategy_clob_ws_max_subscribed: int = Field(
+        500,
+        ge=50,
+        le=5000,
+        description=(
+            "Cap dur nombre de tokens subscribés simultanément (anti-leak "
+            "mémoire). Au-delà, LRU unsub le plus ancien."
+        ),
+    )
+    strategy_clob_ws_inactivity_unsub_seconds: int = Field(
+        300,
+        ge=60,
+        le=3600,
+        description=(
+            "Unsub auto après N secondes d'inactivité sur un token (GC mémoire, cf. §3.4 spec M11)."
+        ),
+    )
+    strategy_clob_ws_health_check_seconds: int = Field(
+        30,
+        ge=5,
+        le=300,
+        description=(
+            "Période du watchdog : si aucun message reçu depuis 2x cette "
+            "valeur, statut → `down` et reconnect forcé."
+        ),
+    )
+    strategy_gamma_adaptive_cache_enabled: bool = Field(
+        True,
+        description=(
+            "M11 : active le cache Gamma à TTL adaptatif par segment (résolu "
+            "/ proche résolution / actif / inactif). Si false → TTL 60 s "
+            "uniforme M2."
+        ),
+    )
+    latency_sample_retention_days: int = Field(
+        7,
+        ge=1,
+        le=90,
+        description=(
+            "M11 : rétention des rows `trade_latency_samples`. Purge au boot "
+            "+ quotidien via LatencyPurgeScheduler."
+        ),
+    )
+    latency_instrumentation_enabled: bool = Field(
+        True,
+        description=(
+            "M11 : active l'instrumentation latence globale (6 stages + "
+            "insert DB). Si false → pipeline tourne sans latence loggée "
+            "(secours si surcharge CPU)."
+        ),
+    )
+
     # --- Discovery (M5, optionnel, opt-in strict) ------------------------
     discovery_enabled: bool = Field(
         False,

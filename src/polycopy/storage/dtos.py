@@ -7,7 +7,13 @@ from pydantic import BaseModel, ConfigDict
 
 
 class DetectedTradeDTO(BaseModel):
-    """Représentation d'un trade prête pour insertion en base."""
+    """Représentation d'un trade prête pour insertion en base.
+
+    M11 : ``trade_id`` (uuid hex) ajouté pour l'instrumentation latence
+    cross-queue (`structlog.contextvars.bind_contextvars`). Nullable pour
+    backward-compat tests M1..M10 ; généré par le `WalletPoller` au moment
+    de l'insertion quand l'instrumentation est active (cf. spec M11 §5.1).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -23,6 +29,7 @@ class DetectedTradeDTO(BaseModel):
     outcome: str | None = None
     slug: str | None = None
     raw_json: dict[str, Any]
+    trade_id: str | None = None
 
 
 class StrategyDecisionDTO(BaseModel):

@@ -1,10 +1,10 @@
 """Repositories SQLAlchemy 2.0 async pour la couche storage."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,6 +24,7 @@ from polycopy.storage.models import (
     PnlSnapshot,
     StrategyDecision,
     TargetTrader,
+    TradeLatencySample,
     TraderEvent,
     TraderScore,
 )
@@ -805,3 +806,58 @@ class TraderEventRepository:
             )
             result = await session.execute(stmt)
             return {row[0]: int(row[1]) for row in result.all()}
+
+
+# --- M11 pipeline latency samples ---------------------------------------------
+
+
+class TradeLatencyRepository:
+    """Repository append-only pour ``trade_latency_samples`` (M11).
+
+    6 rows par trade (1 par stage du pipeline). Chaque ``insert`` ouvre sa
+    propre session courte (cohérent avec ``PnlSnapshotRepository``). Le
+    volume attendu reste modeste (~300 rows/j à 50 trades/j), donc pas de
+    batching v1 — cf. risque §11.3 spec M11 pour l'option de batching future.
+    """
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(
+        self,
+        trade_id: str,
+        stage_name: str,
+        duration_ms: float,
+    ) -> None:
+        """Persiste un échantillon (append-only, pas de retour d'objet)."""
+        async with self._session_factory() as session:
+            session.add(
+                TradeLatencySample(
+                    trade_id=trade_id,
+                    stage_name=stage_name,
+                    duration_ms=duration_ms,
+                ),
+            )
+            await session.commit()
+
+    async def list_since(self, since: datetime) -> list[TradeLatencySample]:
+        """Retourne les échantillons depuis ``since`` (ordre timestamp asc)."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(TradeLatencySample)
+                .where(TradeLatencySample.timestamp >= since)
+                .order_by(TradeLatencySample.timestamp.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def purge_older_than(self, *, days: int) -> int:
+        """Supprime les rows plus anciens que ``days`` jours. Retourne le rowcount."""
+        cutoff = datetime.now(tz=UTC) - timedelta(days=days)
+        async with self._session_factory() as session:
+            stmt = delete(TradeLatencySample).where(TradeLatencySample.timestamp < cutoff)
+            result = await session.execute(stmt)
+            await session.commit()
+            # ``Result.rowcount`` existe sur les DELETE mais n'est pas typé sur
+            # ``Result[Any]`` ; CursorResult l'expose correctement — cast silent.
+            return int(getattr(result, "rowcount", 0) or 0)

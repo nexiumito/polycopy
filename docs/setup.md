@@ -539,3 +539,86 @@ Captures **manuelles** restantes (à faire 1 fois quand le design change) :
 - `vscode-env-edit.png` : screenshot VSCode ouvrant `.env` avec `TARGET_WALLETS=0x...` souligné.
 
 Le seed DB utilise des timestamps fixes (`SEED_REFERENCE_DT = 2026-04-18 12:00 UTC`) + `random.seed(42)` pour reproductibilité pixel-identique. Les vrais wallets ne sont **jamais** seedés — uniquement des adresses placeholder `0x111…111`, `0x222…222`, etc.
+
+---
+
+## 20. Pipeline temps réel M11 (WS CLOB + cache adaptatif + latence)
+
+M11 introduit trois leviers additifs (tous **opt-in par défaut**) ciblant la latence end-to-end 2-3 s :
+
+### Feature flags (`.env`)
+
+```env
+# WebSocket CLOB `market` — cache mid-price in-memory pour SlippageChecker.
+# false → fallback HTTP /midpoint strict (comportement M2..M10).
+STRATEGY_CLOB_WS_ENABLED=true
+
+# Cache Gamma TTL adaptatif (résolu / proche résolution / actif / inactif).
+# false → TTL 60 s uniforme M2.
+STRATEGY_GAMMA_ADAPTIVE_CACHE_ENABLED=true
+
+# Instrumentation latence (6 stages, DB append-only, purge 7 jours).
+# false → pipeline sans latence loggée (secours si surcharge CPU).
+LATENCY_INSTRUMENTATION_ENABLED=true
+```
+
+### Onglet `/latency`
+
+Si `DASHBOARD_ENABLED=true`, `http://127.0.0.1:8787/latency` affiche un bar chart Chart.js par stage (p50/p95/p99/count) avec filtre `?since=1h|24h|7d|30d`. Les 6 stages :
+
+| Stage | Sémantique |
+|---|---|
+| `watcher_detected_ms` | Wall-clock `now − trade.timestamp_onchain` |
+| `strategy_enriched_ms` | `MarketFilter.check` (lookup Gamma) |
+| `strategy_filtered_ms` | Cumulatif MarketFilter + PositionSizer + SlippageChecker + RiskManager |
+| `strategy_sized_ms` | `PositionSizer.check` seul (query `my_positions`) |
+| `strategy_risk_checked_ms` | `RiskManager.check` |
+| `executor_submitted_ms` | Durée de `execute_order` (POST CLOB ou simu M8) |
+
+### Smoke test latence (1 h d'observation)
+
+```bash
+EXECUTION_MODE=dry_run DRY_RUN_REALISTIC_FILL=true \
+STRATEGY_CLOB_WS_ENABLED=true \
+STRATEGY_GAMMA_ADAPTIVE_CACHE_ENABLED=true \
+LATENCY_INSTRUMENTATION_ENABLED=true \
+DASHBOARD_ENABLED=true \
+python -m polycopy --verbose
+# Puis, dans un autre terminal après ~1h d'observation :
+# - Ouvrir http://127.0.0.1:8787/latency : cibles attendues p95 < 5 s, p99 < 10 s.
+# - grep gamma_cache_hit_rate ~/.polycopy/logs/polycopy.log → > 70 % attendu.
+# - grep ws_connection_status_change ~/.polycopy/logs/polycopy.log → < 3 transitions/h.
+```
+
+### Rollback rapide (3 flags off)
+
+```bash
+STRATEGY_CLOB_WS_ENABLED=false \
+STRATEGY_GAMMA_ADAPTIVE_CACHE_ENABLED=false \
+LATENCY_INSTRUMENTATION_ENABLED=false \
+python -m polycopy --verbose
+# Comportement M2..M10 strict : pas de connexion WS, cache Gamma TTL 60 s uniforme,
+# aucune row dans trade_latency_samples.
+```
+
+### Rafraîchir la fixture WS si Polymarket fait évoluer le schéma
+
+```bash
+python scripts/capture_clob_ws_fixture.py <ASSET_ID> --count 30 \
+  --out tests/fixtures/clob_ws_market_sample.jsonl
+```
+
+Le schéma Pydantic des messages est dans [`src/polycopy/strategy/clob_ws_client.py`](../src/polycopy/strategy/clob_ws_client.py) ; toute divergence capturée doit être reflétée là d'abord, puis dans les tests unitaires.
+
+### Migration Alembic 0005
+
+Le boot (`init_db`) appelle `alembic upgrade head` automatiquement. Si tu as besoin de tester le downgrade manuellement :
+
+```bash
+# Downgrade à M8 :
+alembic downgrade 0004_m8_dry_run_realistic
+# Re-upgrade à M11 :
+alembic upgrade head
+```
+
+La table `trade_latency_samples` est purgée au boot + toutes les 24 h par `LatencyPurgeScheduler` (retention `LATENCY_SAMPLE_RETENTION_DAYS`, défaut 7 jours).

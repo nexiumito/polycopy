@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}latence{% endblock %}
+{% block heading %}Latence pipeline{% endblock %}
+{% block content %}
+
+<div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+  <nav class="flex flex-wrap gap-2 text-sm">
+    {% for opt in [("1 h", "1h"), ("24 h", "24h"), ("7 j", "7d"), ("30 j", "30d")] %}
+      {% set label, val = opt %}
+      <a href="/latency?since={{ val }}" class="filter-chip {% if since == val %}filter-chip-active{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <p class="text-xs" style="color: var(--color-muted);">
+    p50 / p95 / p99 par stage (M11) — rétention 7 jours.
+  </p>
+</div>
+
+<article class="rounded-xl border p-4"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <div class="relative" style="height: 300px;">
+    <canvas id="latency-chart"></canvas>
+  </div>
+  <p class="mt-3 text-xs" style="color: var(--color-muted);">
+    Chaque stage mesure une étape du pipeline (cf. spec M11 §5.2).
+  </p>
+</article>
+
+<section class="mt-6 rounded-xl border overflow-hidden"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <table class="w-full text-sm">
+    <thead style="background: var(--color-surface-elevated);">
+      <tr>
+        <th class="text-left px-4 py-2">Stage</th>
+        <th class="text-right px-4 py-2">p50 (ms)</th>
+        <th class="text-right px-4 py-2">p95 (ms)</th>
+        <th class="text-right px-4 py-2">p99 (ms)</th>
+        <th class="text-right px-4 py-2">Count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for stage, stats in percentiles.items() %}
+        <tr class="border-t" style="border-color: var(--color-border);">
+          <td class="px-4 py-2 font-mono">{{ stage }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.2f"|format(stats["p50"]) }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.2f"|format(stats["p95"]) }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.2f"|format(stats["p99"]) }}</td>
+          <td class="px-4 py-2 text-right">{{ stats["count"]|int }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<script id="latency-data" type="application/json">{{ percentiles | tojson }}</script>
+
+<script>
+(function () {
+  const raw = document.getElementById("latency-data").textContent;
+  const data = JSON.parse(raw);
+  const stages = Object.keys(data);
+  const p50 = stages.map(function (s) { return data[s].p50; });
+  const p95 = stages.map(function (s) { return data[s].p95; });
+  const p99 = stages.map(function (s) { return data[s].p99; });
+  const ctx = document.getElementById("latency-chart");
+  if (!ctx) return;
+  const cssVar = function (name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  };
+  const profit = cssVar("--color-profit", "#30a46c");
+  const warning = cssVar("--color-warning", "#f5a623");
+  const loss = cssVar("--color-loss", "#e5484d");
+  new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: stages,
+      datasets: [
+        { label: "p50", data: p50, backgroundColor: profit },
+        { label: "p95", data: p95, backgroundColor: warning },
+        { label: "p99", data: p99, backgroundColor: loss },
+      ],
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: cssVar("--color-muted", "#9ba7b8") }, grid: { display: false } },
+        y: {
+          ticks: { color: cssVar("--color-muted", "#9ba7b8") },
+          title: { display: true, text: "ms", color: cssVar("--color-muted", "#9ba7b8") },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: cssVar("--color-text", "#e6edf3") } },
+      },
+    },
+  });
+})();
+</script>
+
+{% endblock %}

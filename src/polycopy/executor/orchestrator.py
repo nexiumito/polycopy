@@ -1,6 +1,14 @@
-"""Orchestrateur Executor : consomme `approved_orders_queue` et exécute."""
+"""Orchestrateur Executor : consomme `approved_orders_queue` et exécute.
+
+M11 : wrap chaque appel ``execute_order`` avec un timer
+``executor_submitted_ms`` (stage 6). L'instrumentation est conditionnée à
+``settings.latency_instrumentation_enabled`` ET
+``approved.trade_id is not None`` — no-op sur les chemins M2..M10 stricts.
+"""
 
 import asyncio
+import contextlib
+import time
 from typing import TYPE_CHECKING
 
 import httpx
@@ -14,7 +22,11 @@ from polycopy.executor.dry_run_resolution_watcher import DryRunResolutionWatcher
 from polycopy.executor.dtos import ExecutorAuthError
 from polycopy.executor.pipeline import execute_order
 from polycopy.executor.wallet_state_reader import WalletStateReader
-from polycopy.storage.repositories import MyOrderRepository, MyPositionRepository
+from polycopy.storage.repositories import (
+    MyOrderRepository,
+    MyPositionRepository,
+    TradeLatencyRepository,
+)
 from polycopy.strategy.dtos import OrderApproved
 from polycopy.strategy.gamma_client import GammaApiClient
 
@@ -53,6 +65,11 @@ class ExecutorOrchestrator:
         self._settings = settings
         self._queue = approved_orders_queue
         self._alerts = alerts_queue
+        self._latency_repo: TradeLatencyRepository | None = (
+            TradeLatencyRepository(session_factory)
+            if settings.latency_instrumentation_enabled
+            else None
+        )
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale jusqu'à `stop_event.set()`.
@@ -145,6 +162,14 @@ class ExecutorOrchestrator:
                 continue
             except asyncio.CancelledError:
                 raise
+            # M11 : (re)bind trade_id contextvar côté executor + stage 6 timer.
+            token = None
+            if approved.trade_id is not None:
+                token = structlog.contextvars.bind_contextvars(trade_id=approved.trade_id)
+            instrumented = (
+                self._settings.latency_instrumentation_enabled and approved.trade_id is not None
+            )
+            t0 = time.perf_counter_ns() if instrumented else 0
             try:
                 await execute_order(
                     approved,
@@ -167,6 +192,24 @@ class ExecutorOrchestrator:
                 raise
             except Exception:
                 log.exception("executor_loop_error", tx_hash=approved.tx_hash)
+            finally:
+                if instrumented and approved.trade_id is not None:
+                    duration_ms = (time.perf_counter_ns() - t0) / 1e6
+                    log.info(
+                        "stage_complete",
+                        stage_name="executor_submitted_ms",
+                        stage_duration_ms=round(duration_ms, 3),
+                    )
+                    if self._latency_repo is not None:
+                        with contextlib.suppress(Exception):
+                            await self._latency_repo.insert(
+                                approved.trade_id,
+                                "executor_submitted_ms",
+                                duration_ms,
+                            )
+                if token is not None:
+                    with contextlib.suppress(Exception):
+                        structlog.contextvars.unbind_contextvars("trade_id")
 
     def _push_auth_alert(self) -> None:
         """Push un ``Alert`` CRITICAL avant ``stop_event.set()``. No-op sans queue."""

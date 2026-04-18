@@ -164,6 +164,29 @@ def build_pages_router() -> APIRouter:
             {"report_exists": queries.backtest_report_exists()},
         )
 
+    @router.get("/latency", response_class=HTMLResponse)
+    async def latency_page(
+        request: Request,
+        sf: SFDep,
+        since: str = "24h",
+    ) -> HTMLResponse:
+        """Onglet M11 — histogramme latence par stage p50/p95/p99.
+
+        ``since`` ∈ ``{1h, 24h, 7d, 30d}``. Fallback défensif sur 24h.
+        """
+        percentiles = await queries.compute_latency_percentiles(
+            sf,
+            since=queries.parse_since(since),
+        )
+        return _render(
+            request,
+            "latency.html",
+            {
+                "since": since,
+                "percentiles": percentiles,
+            },
+        )
+
     @router.get("/logs", response_class=HTMLResponse)
     async def logs_page(
         request: Request,

@@ -51,7 +51,13 @@ class MarketMetadata(BaseModel):
 
 
 class OrderApproved(BaseModel):
-    """Event poussé sur `approved_orders_queue` (consommé par l'Executor à M3)."""
+    """Event poussé sur `approved_orders_queue` (consommé par l'Executor à M3).
+
+    M11 : ``trade_id`` (uuid hex) propagé depuis le ``DetectedTradeDTO`` pour
+    rebinder le contextvar structlog côté executor et compléter la chaîne
+    d'instrumentation (stage 6 = ``executor_submitted_ms``). Nullable pour
+    backward-compat tests M2..M10.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -62,6 +68,7 @@ class OrderApproved(BaseModel):
     side: Literal["BUY", "SELL"]
     my_size: float
     my_price: float
+    trade_id: str | None = None
 
 
 @dataclass

@@ -1,6 +1,17 @@
-"""Orchestrateur du Strategy Engine : consomme la queue watcher, run pipeline, persiste."""
+"""Orchestrateur du Strategy Engine : consomme la queue watcher, run pipeline, persiste.
+
+M11 : instancie (conditionnellement) le ``ClobMarketWSClient`` et le passe à
+``run_pipeline`` ; wrap ``run_pipeline`` avec un timer
+``strategy_filtered_ms`` (stage 3, cumulatif MarketFilter + PositionSizer +
+SlippageChecker + RiskManager). Rebind le ``trade_id`` contextvar à
+l'entrée pour permettre aux logs downstream de porter l'id.
+"""
+
+from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from typing import TYPE_CHECKING
 
 import httpx
@@ -8,8 +19,12 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.storage.dtos import DetectedTradeDTO, StrategyDecisionDTO
-from polycopy.storage.repositories import StrategyDecisionRepository
+from polycopy.storage.repositories import (
+    StrategyDecisionRepository,
+    TradeLatencyRepository,
+)
 from polycopy.strategy.clob_read_client import ClobReadClient
+from polycopy.strategy.clob_ws_client import ClobMarketWSClient
 from polycopy.strategy.dtos import OrderApproved, PipelineContext
 from polycopy.strategy.gamma_client import GammaApiClient
 from polycopy.strategy.pipeline import run_pipeline
@@ -29,10 +44,10 @@ class StrategyOrchestrator:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        settings: "Settings",
+        settings: Settings,
         detected_trades_queue: asyncio.Queue[DetectedTradeDTO],
         approved_orders_queue: asyncio.Queue[OrderApproved],
-        alerts_queue: "asyncio.Queue[Alert] | None" = None,
+        alerts_queue: asyncio.Queue[Alert] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
@@ -41,6 +56,12 @@ class StrategyOrchestrator:
         # Strategy n'émet pas d'alertes à M4 mais accepte la queue par cohérence.
         self._alerts = alerts_queue
         self._decision_repo = StrategyDecisionRepository(session_factory)
+        self._latency_repo: TradeLatencyRepository | None = (
+            TradeLatencyRepository(session_factory)
+            if settings.latency_instrumentation_enabled
+            else None
+        )
+        self._ws_client: ClobMarketWSClient | None = None
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale jusqu'à ce que `stop_event` soit set."""
@@ -48,28 +69,50 @@ class StrategyOrchestrator:
             "strategy_started",
             pipeline_steps=["MarketFilter", "PositionSizer", "SlippageChecker", "RiskManager"],
             available_capital_stub=self._settings.risk_available_capital_usd_stub,
+            ws_enabled=self._settings.strategy_clob_ws_enabled,
+            latency_instrumentation=self._settings.latency_instrumentation_enabled,
         )
         async with httpx.AsyncClient() as http_client:
-            gamma_client = GammaApiClient(http_client)
+            gamma_client = GammaApiClient(http_client, settings=self._settings)
             clob_client = ClobReadClient(http_client)
-            while not stop_event.is_set():
-                try:
-                    trade = await asyncio.wait_for(
-                        self._in_queue.get(),
-                        timeout=_QUEUE_GET_TIMEOUT_SECONDS,
+            if self._settings.strategy_clob_ws_enabled:
+                self._ws_client = ClobMarketWSClient(self._settings)
+
+            async with asyncio.TaskGroup() as tg:
+                if self._ws_client is not None:
+                    tg.create_task(
+                        self._ws_client.run(stop_event),
+                        name="clob_ws_client",
                     )
-                except TimeoutError:
-                    continue
-                except asyncio.CancelledError:
-                    raise
-                try:
-                    await self._handle_trade(trade, gamma_client, clob_client)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("pipeline_error", tx_hash=trade.tx_hash)
-                    await self._persist_pipeline_error(trade)
+                tg.create_task(
+                    self._consume_loop(stop_event, gamma_client, clob_client),
+                    name="strategy_consumer",
+                )
         log.info("strategy_stopped")
+
+    async def _consume_loop(
+        self,
+        stop_event: asyncio.Event,
+        gamma_client: GammaApiClient,
+        clob_client: ClobReadClient,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                trade = await asyncio.wait_for(
+                    self._in_queue.get(),
+                    timeout=_QUEUE_GET_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            try:
+                await self._handle_trade(trade, gamma_client, clob_client)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("pipeline_error", tx_hash=trade.tx_hash)
+                await self._persist_pipeline_error(trade)
 
     async def _handle_trade(
         self,
@@ -77,13 +120,37 @@ class StrategyOrchestrator:
         gamma_client: GammaApiClient,
         clob_client: ClobReadClient,
     ) -> None:
-        decision, reason, ctx = await run_pipeline(
-            trade,
-            gamma_client=gamma_client,
-            clob_client=clob_client,
-            session_factory=self._session_factory,
-            settings=self._settings,
-        )
+        # M11 : (re)bind trade_id contextvar côté strategy pour propager dans
+        # tous les logs de cette task asyncio.
+        token = None
+        if trade.trade_id is not None:
+            token = structlog.contextvars.bind_contextvars(trade_id=trade.trade_id)
+        instrumented = self._settings.latency_instrumentation_enabled and trade.trade_id is not None
+        t0 = time.perf_counter_ns() if instrumented else 0
+        try:
+            decision, reason, ctx = await run_pipeline(
+                trade,
+                gamma_client=gamma_client,
+                clob_client=clob_client,
+                session_factory=self._session_factory,
+                settings=self._settings,
+                ws_client=self._ws_client,
+                latency_repo=self._latency_repo,
+            )
+        finally:
+            if instrumented and trade.trade_id is not None:
+                duration_ms = (time.perf_counter_ns() - t0) / 1e6
+                log.info(
+                    "stage_complete",
+                    stage_name="strategy_filtered_ms",
+                    stage_duration_ms=round(duration_ms, 3),
+                )
+                if self._latency_repo is not None:
+                    await self._latency_repo.insert(
+                        trade.trade_id,
+                        "strategy_filtered_ms",
+                        duration_ms,
+                    )
         await self._persist_decision(trade, decision, reason, ctx)
         bound = log.bind(
             tx_hash=trade.tx_hash,
@@ -102,6 +169,7 @@ class StrategyOrchestrator:
                 side=trade.side,
                 my_size=ctx.my_size,
                 my_price=ctx.midpoint,
+                trade_id=trade.trade_id,
             )
             try:
                 self._out_queue.put_nowait(event)
@@ -110,6 +178,9 @@ class StrategyOrchestrator:
             bound.info("order_approved")
         else:
             bound.info("order_rejected")
+        if token is not None:
+            with contextlib.suppress(Exception):
+                structlog.contextvars.unbind_contextvars("trade_id")
 
     async def _persist_decision(
         self,

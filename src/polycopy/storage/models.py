@@ -232,6 +232,30 @@ class PnlSnapshot(Base):
     is_dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+class TradeLatencySample(Base):
+    """Échantillon de latence par stage du pipeline (M11, append-only).
+
+    6 rows par trade (1 par stage du pipeline). Purgée à 7 jours par
+    ``TradeLatencyRepository.purge_older_than`` — appelé au boot + quotidien
+    par ``LatencyPurgeScheduler``. Zéro PII : ``trade_id`` est un uuid hex
+    interne, pas une adresse wallet ni un tx_hash (cf. spec M11 §10.3).
+    """
+
+    __tablename__ = "trade_latency_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    stage_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        nullable=False,
+    )
+
+    __table_args__ = (Index("ix_trade_latency_samples_stage_ts", "stage_name", "timestamp"),)
+
+
 # --- Populated from M5 onwards ----------------------------------------------
 
 

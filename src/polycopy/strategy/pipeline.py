@@ -5,8 +5,16 @@ Premier rejet = arrêt du pipeline. Tous OK = `OrderApproved`.
 
 Pas d'abstraction `AbstractFilter` à M2 — 4 classes concrètes (rule of three
 pas encore atteinte, cf. `CLAUDE.md`).
+
+M11 : ``SlippageChecker`` accepte un ``ws_client`` optionnel qui sert de
+cache mid-price court-circuitant le HTTP ``/midpoint`` quand il est
+disponible. Backward-compat absolue si ``ws_client=None`` → comportement
+M2..M10 strict.
 """
 
+from __future__ import annotations
+
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -22,6 +30,8 @@ from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.storage.repositories import TradeLatencyRepository
+    from polycopy.strategy.clob_ws_client import ClobMarketWSClient
 
 log = structlog.get_logger(__name__)
 
@@ -29,7 +39,7 @@ log = structlog.get_logger(__name__)
 class MarketFilter:
     """Vérifie via Gamma que le marché est tradable et a une expiration assez lointaine."""
 
-    def __init__(self, gamma_client: GammaApiClient, settings: "Settings") -> None:
+    def __init__(self, gamma_client: GammaApiClient, settings: Settings) -> None:
         self._gamma = gamma_client
         self._settings = settings
 
@@ -82,7 +92,7 @@ class PositionSizer:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        settings: "Settings",
+        settings: Settings,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
@@ -105,14 +115,32 @@ class PositionSizer:
 
 
 class SlippageChecker:
-    """Compare le mid CLOB courant au prix source ; rejette si > `MAX_SLIPPAGE_PCT`."""
+    """Compare le mid CLOB courant au prix source ; rejette si > `MAX_SLIPPAGE_PCT`.
 
-    def __init__(self, clob_client: ClobReadClient, settings: "Settings") -> None:
+    M11 : lookup du cache WS EN PREMIER (si ``ws_client`` fourni ET
+    ``strategy_clob_ws_enabled``) ; fallback HTTP ``/midpoint`` si WS
+    indisponible (flag off, token jamais vu, WS down, cache stale). Le
+    contrat ``FilterResult(passed=False, reason="no_orderbook")`` est
+    strictement préservé quand WS ET HTTP retournent ``None``.
+    """
+
+    def __init__(
+        self,
+        clob_client: ClobReadClient,
+        settings: Settings,
+        ws_client: ClobMarketWSClient | None = None,
+    ) -> None:
         self._clob = clob_client
         self._settings = settings
+        self._ws = ws_client
 
     async def check(self, ctx: PipelineContext) -> FilterResult:
-        mid = await self._clob.get_midpoint(ctx.trade.asset_id)
+        mid: float | None = None
+        if self._ws is not None and self._settings.strategy_clob_ws_enabled:
+            await self._ws.subscribe(ctx.trade.asset_id)
+            mid = await self._ws.get_mid_price(ctx.trade.asset_id)
+        if mid is None:
+            mid = await self._clob.get_midpoint(ctx.trade.asset_id)
         if mid is None:
             return FilterResult(passed=False, reason="no_orderbook")
         ctx.midpoint = mid
@@ -131,7 +159,7 @@ class RiskManager:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        settings: "Settings",
+        settings: Settings,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
@@ -150,24 +178,59 @@ class RiskManager:
         return FilterResult(passed=True)
 
 
+# Map filtre → stage name (cf. spec M11 §5.2). SlippageChecker est absent :
+# son coût est inclus dans le stage cumulatif `strategy_filtered_ms` mesuré
+# par l'orchestrator autour de `run_pipeline`, pas dans un stage propre.
+_STAGE_BY_FILTER: dict[str, str] = {
+    "MarketFilter": "strategy_enriched_ms",
+    "PositionSizer": "strategy_sized_ms",
+    "RiskManager": "strategy_risk_checked_ms",
+}
+
+
 async def run_pipeline(
     trade: DetectedTradeDTO,
     *,
     gamma_client: GammaApiClient,
     clob_client: ClobReadClient,
     session_factory: async_sessionmaker[AsyncSession],
-    settings: "Settings",
+    settings: Settings,
+    ws_client: ClobMarketWSClient | None = None,
+    latency_repo: TradeLatencyRepository | None = None,
 ) -> tuple[Literal["APPROVED", "REJECTED"], str | None, PipelineContext]:
-    """Exécute les 4 filtres en séquence. Premier rejet = arrêt."""
+    """Exécute les 4 filtres en séquence. Premier rejet = arrêt.
+
+    M11 : ``ws_client`` alimente ``SlippageChecker`` (cache mid-price) ;
+    ``latency_repo`` persiste les échantillons ``strategy_enriched_ms`` /
+    ``strategy_sized_ms`` / ``strategy_risk_checked_ms`` quand
+    ``settings.latency_instrumentation_enabled=True`` ET
+    ``trade.trade_id is not None``.
+    """
     ctx = PipelineContext(trade=trade)
     filters = (
         ("MarketFilter", MarketFilter(gamma_client, settings)),
         ("PositionSizer", PositionSizer(session_factory, settings)),
-        ("SlippageChecker", SlippageChecker(clob_client, settings)),
+        ("SlippageChecker", SlippageChecker(clob_client, settings, ws_client)),
         ("RiskManager", RiskManager(session_factory, settings)),
     )
+    instrumented = settings.latency_instrumentation_enabled and trade.trade_id is not None
     for name, f in filters:
-        result = await f.check(ctx)
+        stage_name = _STAGE_BY_FILTER.get(name)
+        if instrumented and stage_name is not None:
+            t0 = time.perf_counter_ns()
+            result = await f.check(ctx)
+            duration_ms = (time.perf_counter_ns() - t0) / 1e6
+            log.info(
+                "stage_complete",
+                stage_name=stage_name,
+                stage_duration_ms=round(duration_ms, 3),
+                filter_name=name,
+                passed=result.passed,
+            )
+            if latency_repo is not None and trade.trade_id is not None:
+                await latency_repo.insert(trade.trade_id, stage_name, duration_ms)
+        else:
+            result = await f.check(ctx)
         ctx.record_filter(name, result)
         if not result.passed:
             return "REJECTED", result.reason, ctx

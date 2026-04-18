@@ -27,6 +27,7 @@ from polycopy.storage.models import (
     PnlSnapshot,
     StrategyDecision,
     TargetTrader,
+    TradeLatencySample,
     TraderEvent,
     TraderScore,
 )
@@ -728,6 +729,64 @@ async def get_pnl_milestones(
 
     milestones.sort(key=lambda m: m.at, reverse=True)
     return milestones[:_PNL_MILESTONES_CAP]
+
+
+# --- M11 /latency queries -----------------------------------------------------
+
+
+_LATENCY_STAGES_ORDER: tuple[str, ...] = (
+    "watcher_detected_ms",
+    "strategy_enriched_ms",
+    "strategy_filtered_ms",
+    "strategy_sized_ms",
+    "strategy_risk_checked_ms",
+    "executor_submitted_ms",
+)
+
+
+def _percentile(sorted_samples: list[float], p: float) -> float:
+    """Percentile naïf (nearest-rank). Retourne ``0.0`` si la liste est vide."""
+    if not sorted_samples:
+        return 0.0
+    idx = min(int(p * len(sorted_samples)), len(sorted_samples) - 1)
+    return sorted_samples[idx]
+
+
+async def compute_latency_percentiles(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    since: timedelta,
+) -> dict[str, dict[str, float]]:
+    """Retourne ``{stage_name: {p50, p95, p99, count}}`` sur la fenêtre ``since``.
+
+    SQLite n'expose pas ``PERCENTILE_CONT`` natif → calcul Python côté client
+    (volume ~6 × trades/fenêtre = quelques milliers max, négligeable).
+    """
+    cutoff = datetime.now(tz=UTC) - since
+    async with session_factory() as session:
+        stmt = select(
+            TradeLatencySample.stage_name,
+            TradeLatencySample.duration_ms,
+        ).where(TradeLatencySample.timestamp >= cutoff)
+        rows = (await session.execute(stmt)).all()
+    by_stage: dict[str, list[float]] = {}
+    for stage_name, ms in rows:
+        by_stage.setdefault(stage_name, []).append(float(ms))
+    # Préserve l'ordre logique des 6 stages + ajoute stages surprises in-tail.
+    stage_order = list(_LATENCY_STAGES_ORDER)
+    for stage in by_stage:
+        if stage not in stage_order:
+            stage_order.append(stage)
+    result: dict[str, dict[str, float]] = {}
+    for stage in stage_order:
+        samples = sorted(by_stage.get(stage, []))
+        result[stage] = {
+            "p50": _percentile(samples, 0.50),
+            "p95": _percentile(samples, 0.95),
+            "p99": _percentile(samples, 0.99),
+            "count": float(len(samples)),
+        }
+    return result
 
 
 # Cache module-scope du SHA git (1 résolution par process — git n'est pas dans la hot path).

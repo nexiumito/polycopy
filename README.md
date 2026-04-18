@@ -456,6 +456,8 @@ python scripts/score_backtest.py \
                   Dashboard FastAPI (read-only) + Discovery (M5)
 ```
 
+**M11 — pipeline temps réel** : le CLOB WebSocket `market` channel alimente un cache mid-price in-memory consommé par `SlippageChecker` (fallback HTTP `/midpoint` transparent), le cache Gamma adopte un TTL adaptatif par segment (résolu / proche / actif / inactif) au lieu de 60 s uniforme, et chaque trade est instrumenté avec 6 stages de latence visibles dans le dashboard `/latency` (p50/p95/p99). Cible : ~2-3 s end-to-end vs ~10-15 s pré-M11.
+
 Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [specs/](specs/).
 
 ---

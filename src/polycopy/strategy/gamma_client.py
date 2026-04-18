@@ -1,8 +1,18 @@
-"""Client async pour la Gamma API Polymarket (`GET /markets`)."""
+"""Client async pour la Gamma API Polymarket (`GET /markets`).
+
+M11 : refactor du cache in-memory derrière ``_CacheEntry`` (TTL par entrée)
+pour supporter le TTL adaptatif par segment (`_cache_policy.compute_ttl`).
+Comportement M2 (TTL 60 s uniforme) préservé via
+``settings.strategy_gamma_adaptive_cache_enabled=False``.
+"""
+
+from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
@@ -14,41 +24,89 @@ from tenacity import (
     wait_exponential,
 )
 
+from polycopy.strategy._cache_policy import compute_ttl
 from polycopy.strategy.dtos import MarketMetadata
+
+if TYPE_CHECKING:
+    from polycopy.config import Settings
 
 log = structlog.get_logger(__name__)
 _tenacity_log = logging.getLogger(__name__)
 
+_HIT_RATE_LOG_INTERVAL_SECONDS: float = 300.0
+
+
+@dataclass(frozen=True)
+class _CacheEntry:
+    """Entrée du cache Gamma avec TTL propre (M11)."""
+
+    market: MarketMetadata
+    cached_at: datetime
+    ttl_seconds: int
+
 
 class GammaApiClient:
-    """Client REST `https://gamma-api.polymarket.com/markets` avec cache TTL 60s."""
+    """Client REST ``https://gamma-api.polymarket.com/markets``.
+
+    Cache in-memory par ``condition_id`` :
+    - M2 (default) : TTL uniforme 60 s.
+    - M11 (``strategy_gamma_adaptive_cache_enabled=True``) : TTL adaptatif
+      selon segment (résolu / proche résolution / actif / inactif), cf.
+      ``_cache_policy.compute_ttl``.
+    """
 
     BASE_URL = "https://gamma-api.polymarket.com"
     DEFAULT_TIMEOUT = 10.0
     CACHE_TTL = timedelta(seconds=60)
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        settings: Settings | None = None,
+    ) -> None:
         self._http = http_client
-        self._cache: dict[str, tuple[datetime, MarketMetadata]] = {}
+        self._settings = settings
+        self._cache: dict[str, _CacheEntry] = {}
+        self._hits: int = 0
+        self._misses: int = 0
+        # On utilise `time.monotonic()` plutôt que `self._now()` pour le throttle
+        # du log `gamma_cache_hit_rate` : indépendant du monkeypatch `_now` dans
+        # les tests M2 (qui inspectent le call count sur les branches cache).
+        self._last_log_monotonic: float = time.monotonic()
 
     async def get_market(self, condition_id: str) -> MarketMetadata | None:
-        """Retourne le marché ou `None` si Gamma renvoie un array vide.
+        """Retourne le marché ou ``None`` si Gamma renvoie un array vide.
 
-        Cache TTL 60s par `condition_id`. Utilise `_now()` qui peut être
-        monkeypatché par les tests.
+        Cache policy : miss → HTTP + insert. Hit si ``now - cached_at <
+        ttl_seconds``. Compteurs ``_hits`` / ``_misses`` remontent un log
+        ``gamma_cache_hit_rate`` toutes les 5 minutes (§4.4 spec M11).
+
+        Note : le pattern `self._now()` est appelé **par branche** pour
+        préserver la sémantique M2 (cf. `test_gamma_client.py` qui inspecte
+        le nombre d'appels).
         """
         cached = self._cache.get(condition_id)
-        if cached is not None:
-            cached_at, market = cached
-            if self._now() - cached_at < self.CACHE_TTL:
-                log.debug("gamma_cache_hit", condition_id=condition_id)
-                return market
+        if cached is not None and (
+            (self._now() - cached.cached_at).total_seconds() < cached.ttl_seconds
+        ):
+            self._hits += 1
+            log.debug("gamma_cache_hit", condition_id=condition_id)
+            self._maybe_log_hit_rate()
+            return cached.market
+        self._misses += 1
         log.debug("gamma_cache_miss", condition_id=condition_id)
         markets = await self._fetch(condition_id)
         if not markets:
+            self._maybe_log_hit_rate()
             return None
         market = MarketMetadata.model_validate(markets[0])
-        self._cache[condition_id] = (self._now(), market)
+        now = self._now()
+        self._cache[condition_id] = _CacheEntry(
+            market=market,
+            cached_at=now,
+            ttl_seconds=self._ttl_for(market, now),
+        )
+        self._maybe_log_hit_rate()
         return market
 
     async def get_markets_by_condition_ids(
@@ -145,6 +203,37 @@ class GammaApiClient:
                 response=response,
             )
         return data
+
+    def _ttl_for(self, market: MarketMetadata, now: datetime) -> int:
+        """Compute TTL en respectant le feature flag M11.
+
+        - Flag ON (default) → ``compute_ttl`` adaptatif.
+        - Flag OFF → TTL 60 s uniforme M2 (``CACHE_TTL.total_seconds()``).
+        """
+        if self._settings is not None and self._settings.strategy_gamma_adaptive_cache_enabled:
+            return compute_ttl(market, now)
+        return int(self.CACHE_TTL.total_seconds())
+
+    def _maybe_log_hit_rate(self) -> None:
+        """Émet ``gamma_cache_hit_rate`` toutes les 5 min puis reset les compteurs.
+
+        Utilise ``time.monotonic()`` (indépendant de ``_now()`` pour les tests).
+        """
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_log_monotonic < _HIT_RATE_LOG_INTERVAL_SECONDS:
+            return
+        total = self._hits + self._misses
+        ratio = (self._hits / total) if total else 0.0
+        log.info(
+            "gamma_cache_hit_rate",
+            hit_rate=round(ratio, 4),
+            hits=self._hits,
+            misses=self._misses,
+            window_seconds=int(_HIT_RATE_LOG_INTERVAL_SECONDS),
+        )
+        self._last_log_monotonic = now_monotonic
+        self._hits = 0
+        self._misses = 0
 
     @staticmethod
     def _now() -> datetime:

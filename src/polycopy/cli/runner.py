@@ -32,6 +32,8 @@ from polycopy.monitoring.orchestrator import MonitoringOrchestrator
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
+from polycopy.storage.latency_purge_scheduler import LatencyPurgeScheduler
+from polycopy.storage.repositories import TradeLatencyRepository
 from polycopy.strategy.dtos import OrderApproved
 from polycopy.strategy.orchestrator import StrategyOrchestrator
 from polycopy.watcher.orchestrator import WatcherOrchestrator
@@ -117,6 +119,21 @@ async def _async_main() -> None:
     try:
         await init_db(engine, session_factory, settings.target_wallets)
 
+        # M11 : purge au boot des échantillons de latence obsolètes.
+        if settings.latency_instrumentation_enabled:
+            latency_repo = TradeLatencyRepository(session_factory)
+            try:
+                deleted = await latency_repo.purge_older_than(
+                    days=settings.latency_sample_retention_days,
+                )
+                log.info(
+                    "latency_purge_boot_completed",
+                    deleted=deleted,
+                    retention_days=settings.latency_sample_retention_days,
+                )
+            except Exception:
+                log.exception("latency_purge_boot_error")
+
         detected_trades_queue: asyncio.Queue[DetectedTradeDTO] = asyncio.Queue(
             maxsize=_QUEUE_MAXSIZE,
         )
@@ -158,6 +175,13 @@ async def _async_main() -> None:
         if settings.discovery_enabled:
             discovery = DiscoveryOrchestrator(session_factory, settings, alerts_queue)
 
+        latency_purge: LatencyPurgeScheduler | None = None
+        if settings.latency_instrumentation_enabled:
+            latency_purge = LatencyPurgeScheduler(
+                TradeLatencyRepository(session_factory),
+                settings,
+            )
+
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(watcher.run_forever(stop_event))
@@ -168,6 +192,8 @@ async def _async_main() -> None:
                     tg.create_task(dashboard.run_forever(stop_event))
                 if discovery is not None:
                     tg.create_task(discovery.run_forever(stop_event))
+                if latency_purge is not None:
+                    tg.create_task(latency_purge.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:
