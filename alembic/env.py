@@ -8,6 +8,7 @@ car ``command.upgrade`` est sync de toute façon. Voir ``specs/M4-monitoring.md`
 
 from __future__ import annotations
 
+import logging
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
@@ -18,7 +19,13 @@ from polycopy.storage.models import Base
 
 config = context.config
 
-if config.config_file_name is not None:
+# M9 : si polycopy a déjà configuré le root logger (présence d'un handler),
+# on **skip** `fileConfig` qui sinon resetterait `root.handlers` et
+# remplacerait notre `RotatingFileHandler` par un `StreamHandler(stderr)`.
+# En CLI standalone (`alembic upgrade head`), root est nu → fileConfig
+# active la console alembic comme avant.
+_root_already_configured = bool(logging.getLogger().handlers)
+if config.config_file_name is not None and not _root_already_configured:
     fileConfig(config.config_file_name)
 
 

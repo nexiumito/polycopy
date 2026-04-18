@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}logs{% endblock %}
+{% block heading %}Logs <span class="text-xs ml-2" style="color: var(--color-muted);">M9 viewer</span>{% endblock %}
+{% block content %}
+
+{% if not logs_enabled %}
+<article class="rounded-xl border p-6"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <div class="flex items-start gap-4">
+    <i data-lucide="file-x" class="w-8 h-8" style="color: var(--color-muted);"></i>
+    <div>
+      <h2 class="text-base font-semibold">Onglet logs désactivé</h2>
+      <p class="text-sm mt-2" style="color: var(--color-muted);">
+        Raison : <code>{{ disabled_reason }}</code>.
+      </p>
+      <p class="text-sm mt-2" style="color: var(--color-muted);">
+        Active via <code>DASHBOARD_LOGS_ENABLED=true</code> dans ton <code>.env</code> puis
+        relance le bot.
+      </p>
+    </div>
+  </div>
+</article>
+{% else %}
+
+<form id="logs-filter-form"
+      hx-get="/partials/logs-tail"
+      hx-target="#logs-container"
+      hx-swap="innerHTML"
+      hx-trigger="change from:select[name='levels'], change from:input[name='events'], keyup delay:400ms from:input[name='q'], submit"
+      class="flex flex-wrap items-end gap-3 mb-4 p-3 rounded-lg border"
+      style="border-color: var(--color-border); background: var(--color-surface);">
+
+  <label class="flex flex-col gap-1 text-xs" style="color: var(--color-muted);">
+    Niveau
+    <select name="levels" multiple size="3"
+            class="text-xs rounded-md border px-2 py-1"
+            style="border-color: var(--color-border); background: var(--color-bg); color: var(--color-text);">
+      {% for lvl in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] %}
+        <option value="{{ lvl }}" {% if lvl in filter_levels %}selected{% endif %}>{{ lvl }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label class="flex flex-col gap-1 text-xs flex-1 min-w-[200px]" style="color: var(--color-muted);">
+    Recherche texte (max 200 chars)
+    <input type="text" name="q" value="{{ filter_q }}" maxlength="200"
+           placeholder="ex: trade_detected, 0xabc, slippage…"
+           class="text-xs rounded-md border px-2 py-1"
+           style="border-color: var(--color-border); background: var(--color-bg); color: var(--color-text);">
+  </label>
+
+  <label class="flex flex-col gap-1 text-xs" style="color: var(--color-muted);">
+    Événements (CSV)
+    <input type="text" name="events" value="{{ filter_events|join(',') }}" maxlength="400"
+           placeholder="trade_detected,order_filled"
+           class="text-xs rounded-md border px-2 py-1"
+           style="border-color: var(--color-border); background: var(--color-bg); color: var(--color-text);">
+  </label>
+
+  <label class="flex items-center gap-1 text-xs" style="color: var(--color-muted);">
+    <input type="checkbox" id="live-tail-toggle">
+    Live tail (2 s)
+  </label>
+
+  <a href="/logs/download"
+     class="text-xs rounded-md border px-3 py-1 inline-flex items-center gap-1"
+     style="border-color: var(--color-border); color: var(--color-text);">
+    <i data-lucide="download" class="w-3.5 h-3.5"></i> Télécharger .log
+  </a>
+</form>
+
+<div id="logs-container" class="space-y-1">
+  {% include "partials/logs_tail.html" %}
+</div>
+
+<script>
+  (function () {
+    const toggle = document.getElementById('live-tail-toggle');
+    const container = document.getElementById('logs-container');
+    const form = document.getElementById('logs-filter-form');
+    if (!toggle || !container || !form) return;
+    let pollHandle = null;
+
+    function reload() {
+      htmx.ajax('GET', '/partials/logs-tail?' + new URLSearchParams(new FormData(form)).toString(),
+                { target: '#logs-container', swap: 'innerHTML' });
+    }
+
+    toggle.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        reload();
+        pollHandle = setInterval(() => {
+          if (document.visibilityState === 'visible') reload();
+        }, 2000);
+      } else if (pollHandle !== null) {
+        clearInterval(pollHandle);
+        pollHandle = null;
+      }
+    });
+  })();
+</script>
+{% endif %}
+
+{% endblock %}

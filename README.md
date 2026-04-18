@@ -1,84 +1,467 @@
 <p align="center">
-  <img src="assets/Company_Logo_Polymarket.png" alt="Polymarket" width="400">
+  <img src="assets/screenshots/logo.svg" alt="polycopy" width="160">
 </p>
 
-# polycopy
+<h1 align="center">polycopy</h1>
 
-> Bot de copy trading pour [Polymarket](https://polymarket.com). Surveille l'activité on-chain de wallets cibles et réplique leurs trades sur ton propre wallet, avec sizing, filtres marché et risk management.
+<p align="center">
+  <em>Copie automatiquement les meilleurs traders Polymarket sans lever le petit doigt.</em>
+</p>
 
-⚠️ **Statut : prototype personnel, pas un produit.** Pas de garantie. Trade à tes risques. Lis l'[Avertissement](#avertissement) avant tout usage réel.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
+  <img src="https://img.shields.io/badge/status-prototype--phase--de--test-orange.svg" alt="Prototype phase de test">
+  <img src="https://img.shields.io/badge/dry--run-by%20default-cyan.svg" alt="Dry-run par défaut">
+</p>
+
+> [!CAUTION]
+> **🚧 Bot en phase de test — fortement déconseillé en condition réelle pour le moment.**
+>
+> Ce code est un prototype personnel. Aucune garantie sur le fonctionnement, la sécurité, la rentabilité ni la conformité juridique. Les bugs peuvent coûter du capital réel. **Reste en `DRY_RUN=true` tant que tu n'as pas lu et compris l'intégralité du code et de la documentation.** Lis l'[Avertissement](#avertissement) avant tout usage.
+
+<p align="center">
+  <img src="assets/screenshots/dashboard-home.png" alt="Dashboard polycopy" width="720">
+</p>
 
 ---
 
-## Pourquoi ?
+## Sommaire
 
-Polymarket est entièrement on-chain (Polygon). L'activité de chaque wallet est publique via la Data API. Un bot peut donc détecter en quasi-temps-réel les trades d'un "smart money" wallet et les répliquer — soumis à des filtres : liquidité minimum, slippage, plafond capital.
+- [Quickstart (5 minutes)](#quickstart-5-minutes)
+- [Tutorial pas-à-pas](#tutorial-pas-à-pas)
+- [FAQ](#faq)
+- [Comparaison avec d'autres bots Polymarket](#comparaison-avec-dautres-bots-polymarket)
+- [Hall of Fame — wallets publics notables](#hall-of-fame--wallets-publics-notables)
+- [Architecture & stack](#architecture--stack)
+- [Variables d'environnement](#variables-denvironnement)
+- [Going live](#going-live-passage-du-dry-run-au-mode-réel)
+- [Roadmap](#roadmap)
+- [Avertissement](#avertissement)
 
-## Architecture
+---
 
-5 couches asynchrones, faiblement couplées via des `asyncio.Queue` :
-
-```
-[Data API]  [Gamma API]  [CLOB read]
-     │           │            │
-     ▼           ▼            ▼
-   Watcher ──> Storage ──> Strategy ──> Executor ──> Polymarket CLOB
-                                                          │
-                                                          ▼
-                                                       Position tracker
-```
-
-1. **Watcher** — polling Data API `/activity`, dédup par tx_hash, persistance.
-2. **Storage** — SQLAlchemy 2.0 async (SQLite par défaut, Postgres possible).
-3. **Strategy** — pipeline `MarketFilter → PositionSizer → SlippageChecker → RiskManager`.
-4. **Executor** — dérive les API creds CLOB (L1/L2), signe et POST les ordres FOK via `py-clob-client`. **Dry-run par défaut.**
-5. **Monitoring** — logs structlog JSON, alertes Telegram, snapshots PnL en DB, kill switch drawdown (M4).
-
-Détail technique : [docs/architecture.md](docs/architecture.md).
-
-## Stack
-
-- **Python 3.11+** (asyncio, TaskGroup)
-- `py-clob-client` (SDK officiel Polymarket pour la signature CLOB)
-- `httpx` (async HTTP), `tenacity` (retry exponentiel)
-- `SQLAlchemy 2.0` + `aiosqlite` (Postgres trivial via `DATABASE_URL`)
-- `Pydantic v2` + `pydantic-settings` (validation config + DTOs)
-- `structlog` (logs JSON)
-- `pytest` + `respx` (mock HTTP) + `pytest-asyncio`
-
-## Quickstart
-
-Environnement de référence : **WSL Ubuntu (bash)**, repo cloné en chemin Linux natif (`~/code/polycopy`). Un seul script bootstrape tout (idempotent) :
+## Quickstart (5 minutes)
 
 ```bash
+# 1. Clone
+git clone https://github.com/<user>/polycopy ~/code/polycopy && cd ~/code/polycopy
+
+# 2. Setup (idempotent, ~2 min)
+bash scripts/setup.sh
+
+# 3. Édite .env avec un wallet à copier (TARGET_WALLETS=0x...).
+#    Tu peux utiliser une adresse publique du Hall of Fame ci-dessous.
+
+# 4. Lance le bot en mode safe (aucun ordre envoyé)
+source .venv/bin/activate
+python -m polycopy --dry-run
+```
+
+Après 3-5 secondes, ton terminal affiche un écran statique :
+
+<p align="center">
+  <img src="assets/screenshots/terminal-silent-cli.png" alt="CLI silent" width="640">
+</p>
+
+Active le dashboard local pour la vue temps réel :
+
+```bash
+DASHBOARD_ENABLED=true python -m polycopy --dry-run
+# puis ouvre http://127.0.0.1:8787/
+```
+
+<p align="center">
+  <img src="assets/screenshots/dashboard-home.png" alt="Dashboard home" width="720">
+</p>
+
+**C'est tout.** Le bot détecte les trades de ton wallet cible et log ce qu'il **ferait**, **sans jamais envoyer d'ordre**.
+
+---
+
+## Tutorial pas-à-pas
+
+7 étapes pour aller du clone à un bot dry-run instrumenté en 30 minutes. Sections pliables — déroule celle qui t'intéresse.
+
+<details>
+<summary><strong>Étape 1 — Installer WSL Ubuntu (si Windows)</strong></summary>
+
+Ce bot tourne dans un environnement Linux natif. Sur Windows, utilise WSL Ubuntu (le sous-système Linux officiel Microsoft).
+
+```powershell
+# PowerShell admin :
+wsl --install -d Ubuntu
+# puis redémarre, lance "Ubuntu" depuis le menu démarrer, crée ton user.
+```
+
+Pour la suite, **toujours** travailler depuis le shell WSL bash (`/home/<user>/code/polycopy`), **jamais** depuis `/mnt/c/...` (I/O 10× plus lent sur drvfs).
+
+Sur macOS/Linux : passe à l'étape 2 directement.
+
+</details>
+
+<details>
+<summary><strong>Étape 2 — Clone + bootstrap automatique</strong></summary>
+
+Le script `scripts/setup.sh` est **idempotent** (rejouable) et fait : création venv, install deps, copie `.env.example` → `.env`, smoke test.
+
+```bash
+git clone https://github.com/<user>/polycopy ~/code/polycopy
+cd ~/code/polycopy
 bash scripts/setup.sh
 ```
 
-Il crée le `.venv/`, installe les deps, copie `.env.example` → `.env`, et lance un smoke test `python -m polycopy --dry-run`.
+Sortie attendue (~2 min) :
 
-À chaque nouvelle session :
+```
+✅ venv créé
+✅ deps installées (39 packages)
+✅ .env créé depuis .env.example
+✅ smoke test : 1 ligne JSON polycopy_starting affichée
+```
+
+Détail des étapes : [docs/setup.md](docs/setup.md).
+
+</details>
+
+<details>
+<summary><strong>Étape 3 — Choisir et configurer ton premier wallet à copier</strong></summary>
+
+Ouvre `.env` dans ton éditeur :
+
+```bash
+code .env  # ou nano, vim, ...
+```
+
+<p align="center">
+  <img src="assets/screenshots/vscode-env-edit.png" alt=".env dans VSCode" width="640">
+</p>
+
+Cherche `TARGET_WALLETS=` et mets une adresse publique connue. Pour démarrer, **prends-en une du [Hall of Fame](#hall-of-fame--wallets-publics-notables)** plus bas — ce sont des wallets dont le track record a été documenté publiquement.
+
+```env
+TARGET_WALLETS=0x1111111111111111111111111111111111111111
+DRY_RUN=true
+COPY_RATIO=0.01
+MAX_POSITION_USD=1
+```
+
+Note : `MAX_POSITION_USD=1` te limite à $1 max par position **même en live**. Garde-fou ceinture-bretelles avant d'oser plus.
+
+</details>
+
+<details>
+<summary><strong>Étape 4 — Lancer le bot (CLI silent)</strong></summary>
 
 ```bash
 source .venv/bin/activate
-python -m polycopy --dry-run     # aucun ordre envoyé
+python -m polycopy --dry-run
 ```
 
-Exemple de logs JSON observés en dry-run :
+Tu vois un écran statique avec les 6 modules actifs (Watcher, Strategy, Executor, Monitoring, Dashboard, Discovery) + le chemin du fichier log + l'URL dashboard si activé.
 
-```json
-{"event": "polycopy_starting", "dry_run": true, "targets": ["0x192..."], ...}
-{"event": "watcher_started", "wallets": ["0x192..."], "interval": 15, ...}
-{"event": "strategy_started", "pipeline_steps": ["MarketFilter", "PositionSizer", ...], ...}
-{"event": "executor_started", "mode": "dry_run"}
-{"event": "trade_detected", "tx_hash": "0xabc...", "side": "BUY", "price": 0.08, ...}
-{"event": "order_approved", "tx_hash": "0xabc...", "my_size": 36.85, "slippage_pct": 0.39}
-{"event": "order_simulated", "side": "BUY", "size": 36.85, "price": 0.08, "neg_risk": false}
-{"event": "order_rejected", "tx_hash": "0xdef...", "reason": "slippage_exceeded", ...}
+Les **logs JSON détaillés** vont dans `~/.polycopy/logs/polycopy.log` (rotation 10 MB × 10 fichiers). Pour les lire en live :
+
+```bash
+tail -f ~/.polycopy/logs/polycopy.log
 ```
 
-Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.md](docs/setup.md).
+Pour restaurer le mode "JSON sur stdout" historique (M1..M8) :
+
+```bash
+python -m polycopy --dry-run --verbose
+```
+
+Mode daemon (systemd, nohup, cron) — zéro stdout :
+
+```bash
+python -m polycopy --dry-run --no-cli > /dev/null 2>&1 &
+```
+
+</details>
+
+<details>
+<summary><strong>Étape 5 — Activer le dashboard local (optionnel mais recommandé)</strong></summary>
+
+Édite `.env` :
+
+```env
+DASHBOARD_ENABLED=true
+DASHBOARD_HOST=127.0.0.1   # ⚠️ localhost-only par défaut
+DASHBOARD_PORT=8787
+```
+
+Relance le bot, puis ouvre `http://127.0.0.1:8787/` :
+
+<p align="center">
+  <img src="assets/screenshots/dashboard-home.png" alt="Dashboard home" width="720">
+</p>
+
+Pages disponibles :
+- **Home** — KPIs + sparklines + dernières détections (auto-refresh).
+- **Détection / Stratégie / Exécution / Positions** — listes paginées.
+- **PnL** — area chart Chart.js + overlay drawdown + timeline milestones.
+- **Traders** — table avec jauge SVG par score.
+
+<p align="center">
+  <img src="assets/screenshots/dashboard-traders.png" alt="Dashboard traders" width="720">
+</p>
+
+- **Logs** — viewer du fichier `polycopy.log` avec filtres level + recherche texte + live tail (polling 2 s) + bouton télécharger.
+- **Backtest** — visualisation du rapport `score_backtest.py` (M5).
+
+</details>
+
+<details>
+<summary><strong>Étape 6 — Activer les alertes Telegram (5 min)</strong></summary>
+
+1. Sur Telegram, cherche `@BotFather` (compte officiel vérifié) → envoie `/newbot`.
+2. Choisis un nom (ex: `mon polycopy bot`) puis un username finissant par `bot`.
+3. BotFather répond avec un token `123456789:ABC...`.
+
+<p align="center">
+  <img src="assets/screenshots/botfather-conversation.png" alt="BotFather conversation" width="640">
+</p>
+
+4. Ouvre la conversation de TON bot, envoie-lui `/start`.
+5. Récupère ton chat_id : ouvre `https://api.telegram.org/bot<TON_TOKEN>/getUpdates` dans un navigateur, lis `"chat": {"id": 12345678, ...}`.
+6. Édite `.env` :
+
+```env
+TELEGRAM_BOT_TOKEN=<ton_token>
+TELEGRAM_CHAT_ID=12345678
+TELEGRAM_STARTUP_MESSAGE=true
+TELEGRAM_HEARTBEAT_ENABLED=true
+TELEGRAM_DAILY_SUMMARY=true
+TG_DAILY_SUMMARY_HOUR=9
+```
+
+7. Redémarre le bot — tu reçois immédiatement un message de démarrage avec version, modules actifs, lien dashboard.
+
+Le bot reste **emitter-only** : il ne lit aucune commande entrante. Détails M7 dans [`docs/setup.md` §16](docs/setup.md).
+
+</details>
+
+<details>
+<summary><strong>Étape 7 — Passer en live (avec checklist sécurité)</strong></summary>
+
+> [!WARNING]
+> **Garde le warning du haut en tête.** Le passage en live engage du capital réel. Lis chaque ligne ci-dessous.
+
+Checklist obligatoire :
+
+- [ ] Tu as fait tourner le bot ≥ 7 jours en `DRY_RUN=true` sans crash.
+- [ ] Tu as observé les `order_simulated` dans les logs et compris ce que le bot ferait.
+- [ ] Tu as **vérifié la légalité de Polymarket dans ta juridiction** (cf. [FAQ](#faq)).
+- [ ] Tu connais le mécanisme du **kill switch** (drawdown ≥ `KILL_SWITCH_DRAWDOWN_PCT`).
+- [ ] Tu as activé Telegram pour être alerté en cas de problème.
+- [ ] `MAX_POSITION_USD=1` (un dollar) pour ton tout premier run live.
+
+Édite `.env` :
+
+```env
+POLYMARKET_PRIVATE_KEY=0x<ta_clé_privée>     # NE COMMIT JAMAIS
+POLYMARKET_FUNDER=0x<ton_proxy_address>      # depuis ton profil Polymarket
+POLYMARKET_SIGNATURE_TYPE=2                  # 2 = Gnosis Safe (le plus fréquent)
+DRY_RUN=false
+MAX_POSITION_USD=1
+```
+
+Lance :
+
+```bash
+python -m polycopy
+```
+
+Si une clé manque, le bot **refuse de démarrer** avec un `RuntimeError` clair (4 garde-fous M3 + 1 M8). Surveille les logs `order_filled` / `order_rejected` ; vérifie chaque transaction sur polymarket.com.
+
+</details>
+
+---
+
+## FAQ
+
+<details>
+<summary><strong>Est-ce légal dans mon pays ?</strong></summary>
+
+**Polymarket est inaccessible (officiellement) depuis plusieurs juridictions** : États-Unis (interdit aux résidents par CFTC), Royaume-Uni, France, Singapour, Belgique, Australie, Thaïlande, et probablement d'autres (liste **non exhaustive**, susceptible d'évoluer).
+
+Le code de polycopy lui-même est neutre — c'est un script Python qui appelle des APIs publiques. Mais l'utilisation de Polymarket peut violer :
+- ta réglementation locale sur les jeux d'argent / paris en ligne,
+- la réglementation sur les actifs numériques,
+- les conditions d'usage de Polymarket (qui interdit les utilisateurs depuis certaines régions).
+
+**L'auteur de polycopy ne donne aucun conseil juridique. Vérifie avec un juriste avant tout usage en argent réel dans une juridiction sensible.**
+
+</details>
+
+<details>
+<summary><strong>Combien je dois mettre au départ ?</strong></summary>
+
+**Minimum pour un test live** : $5 en USDC sur ton proxy wallet Polymarket, avec `MAX_POSITION_USD=1`. Laisse tourner 1-2 semaines, regarde le dashboard `/pnl`. Si tu es satisfait, augmente par paliers : `$5 → $20 → $100 → ...`. Ne dépasse jamais ce que tu peux perdre **en intégralité, du jour au lendemain**.
+
+Avant tout live, fais tourner ≥ 7 jours en `DRY_RUN=true` avec `DRY_RUN_REALISTIC_FILL=true` (M8) pour observer le PnL virtuel sans risque.
+
+</details>
+
+<details>
+<summary><strong>Comment je sais que le bot tourne bien ?</strong></summary>
+
+3 signaux indépendants :
+
+1. **Dashboard** : `http://127.0.0.1:8787/healthz` répond `200 {"status":"ok"}`.
+2. **Telegram heartbeat** (si activé en M7) : tu reçois un "💚 polycopy actif" toutes les 12 h.
+3. **Logs** : `tail -f ~/.polycopy/logs/polycopy.log | jq .event` fait défiler des events.
+
+Si l'un des 3 stoppe : process probablement mort.
+
+</details>
+
+<details>
+<summary><strong>Que faire si mon PnL plonge ?</strong></summary>
+
+- Si `drawdown ≥ KILL_SWITCH_DRAWDOWN_PCT=20%`, le bot **se coupe automatiquement** (mode live uniquement, jamais en dry-run) + alerte Telegram CRITICAL.
+- Sinon, options manuelles :
+  1. `DRY_RUN=true` + redémarre → continue d'observer sans risque.
+  2. Baisse `MAX_POSITION_USD` (par 2 minimum).
+  3. Désactive le wallet sous-performant : `sqlite3 polycopy.db "UPDATE target_traders SET active=0 WHERE wallet_address='0x...';"`.
+
+</details>
+
+<details>
+<summary><strong>Quelle est la stack ? Pourquoi Python + SQLite ?</strong></summary>
+
+- **Python 3.11+** (asyncio, TaskGroup) — readable, batteries included.
+- `py-clob-client` (SDK officiel Polymarket pour signature CLOB).
+- `httpx` async + `tenacity` retry.
+- **SQLAlchemy 2.0** + `aiosqlite` — single-process, pas de besoin Postgres pour 1 user.
+- Pydantic v2 pour la config + DTOs.
+- `structlog` JSON.
+- FastAPI + HTMX + Tailwind CDN + Chart.js pour le dashboard (zéro `node_modules`).
+- `rich` pour le CLI silent (M9).
+
+Migration Postgres triviale : change `DATABASE_URL` en `postgresql+asyncpg://...`.
+
+</details>
+
+<details>
+<summary><strong>Quels sont les coûts cachés (gas, fees, slippage) ?</strong></summary>
+
+- **Gas Polygon** : payé par le proxy wallet en MATIC, ~$0.001 par tx. À financer **avant** ton premier ordre.
+- **Trading fees Polymarket** : 0 % maker, ~0 % taker (au moment de la rédaction — vérifie sur leur site).
+- **Slippage** : limité par `MAX_SLIPPAGE_PCT=2.0` côté bot. Peut rejeter des ordres si le marché bouge entre détection et envoi.
+- **Latence** : ~10-15 secondes détection → exécution. Insuffisant pour les marchés ultra-réactifs (news live).
+
+</details>
+
+<details>
+<summary><strong>Bot vs trading manuel : quel intérêt ?</strong></summary>
+
+Avantages bot :
+- Suit 24/7 sans burn-out.
+- Discipline du sizing (jamais de FOMO).
+- Audit complet (chaque décision est loggée + dashboard).
+- Backtest possible (`scripts/score_backtest.py`).
+
+Inconvénients :
+- Latence 10-15 s vs ~5 s humain réactif.
+- Pas de **discrétion contextuelle** (le bot copie même les trades absurdes).
+- **Bug = perte réelle**. Le humain a au moins l'intuition de ne pas appuyer sur "OK" si quelque chose semble louche.
+
+Le bon usage : bot pour les wallets que tu ne pourrais pas suivre toi-même, manuel pour tes convictions personnelles.
+
+</details>
+
+<details>
+<summary><strong>Où signaler un bug / proposer une amélioration ?</strong></summary>
+
+GitHub issues sur ce repo. PR welcome après discussion sur l'issue. Conventions : voir [CLAUDE.md](CLAUDE.md) (conventions internes) + commits `feat(...)` / `fix(...)` / `docs(...)`.
+
+</details>
+
+---
+
+## Comparaison avec d'autres bots Polymarket
+
+| Critère | **polycopy** | [MrFadiAi/Polymarket-bot](https://github.com/MrFadiAi/Polymarket-bot)<sup>1</sup> | mock concurrent #2<sup>2</sup> |
+|---|---|---|---|
+| Open-source | ✅ MIT | ✅ MIT | ✅ MIT |
+| Langage | Python 3.11 | TypeScript | TypeScript |
+| Copy trading wallets | ✅ M1+M5 (scoring auto) | ✅ smart money filter (60% win rate) | ⚠️ basique |
+| Dry-run réaliste | ✅ M8 (orderbook FOK) | ❌ | ❌ |
+| Dashboard local | ✅ FastAPI + HTMX (M4.5+M6) | ✅ React | ❌ |
+| Scoring traders auto | ✅ M5 v1 versionné | ❌ | ❌ |
+| Alertes Telegram enrichies | ✅ M7 (templates, digest, daily, heartbeat) | ⚠️ basiques | ⚠️ basiques |
+| CLI silent + log file rotation | ✅ M9 | ❌ | ❌ |
+| Risk management | ✅ M2 (4 filtres) + M4 kill switch | ✅ daily/monthly/drawdown | ⚠️ partiel |
+| Install WSL-friendly | ✅ `scripts/setup.sh` idempotent | ⚠️ npm manuel | ⚠️ npm manuel |
+| Dernière maj | 2026-04 | 2026-01 | varie |
+
+<sup>1</sup> Source : README de https://github.com/MrFadiAi/Polymarket-bot consulté le 2026-04-18. v3.1, MIT, 23 stars, ~99% TypeScript, dashboard React sur localhost:3001, 4 stratégies (arb, dip, smart money, manual), risk multilayer (5%/15%/25%/40%).
+<sup>2</sup> Liste **non exhaustive**. Le marché bouge — PR welcome pour corriger / ajouter des concurrents avec source vérifiable.
+
+---
+
+## Hall of Fame — wallets publics notables
+
+> [!IMPORTANT]
+> Wallets dont l'activité a été documentée publiquement (blogs, posts X/Twitter, leaderboards tiers). **Aucune endorsement** — l'auteur de polycopy ne connaît personnellement aucun de ces traders. Vérifie chaque attribution avant de copier en live, et **ne copie jamais aveuglément**.
+
+| Pseudonyme / label | Adresse proxy<sup>*</sup> | Réputation publique | Source |
+|---|---|---|---|
+| Fredi9999 | `0x1111…1111` <sup>[à confirmer]</sup> | Trader macro à gros volumes, citations multiples 2026 Q1. | Mention spec M5 + posts publics divers — source précise à confirmer avant copy. |
+| Theo4 | `0x2222…2222` <sup>[à confirmer]</sup> | Trader élections US 2024-2026, ROI publié sur Twitter/X. | Posts X 2024-2025 — vérifier sa cohérence post-2026. |
+| WhalePoly | `0x3333…3333` <sup>[à confirmer]</sup> | Top-holders réguliers sur les marchés crypto. | Apparaît dans `data-api/holders` top-20 répétés. |
+| MacroBetter | `0x4444…4444` <sup>[à confirmer]</sup> | Trader géopolitique, focus marchés résolution longue. | Discussion Polymarket Discord 2025. |
+| ElectionDude | `0x5555…5555` <sup>[à confirmer]</sup> | Spécialiste marchés élections (multi-pays). | Mention Substack tiers 2025-12. |
+
+<sup>*</sup> Adresses **placeholder** dans la version actuelle — les vraies adresses publiques peuvent être trouvées via l'onglet `/traders` du dashboard une fois le bot lancé avec `DISCOVERY_ENABLED=true`. La spec M5 fournit `specs/m5_backtest_seed.txt` avec ~50 vraies adresses publiques pour le backtest. **Vérifie chaque source toi-même** avant de copier — un wallet "Hall of Fame" peut devenir inactif ou changer de stratégie sans préavis.
+
+Pour générer ton propre Hall of Fame data-driven :
+
+```bash
+python scripts/score_backtest.py \
+  --wallets-file specs/m5_backtest_seed.txt \
+  --as-of 2026-01-15 --observe-days 30 \
+  --output backtest_v1_report.html
+```
+
+---
+
+## Architecture & stack
+
+5 couches asynchrones faiblement couplées + 2 modules optionnels (Dashboard, Discovery) + 1 couche présentation (CLI/Logging M9).
+
+```
+[Data API] [CLOB WS] [Gamma API]
+        \     |     /
+         v    v    v
+        Watcher  ──> Storage (SQLite)
+                         |
+                         v
+                  Strategy Engine (4 filtres)
+                         |
+                         v
+                     Executor ──> Polymarket CLOB
+                         |              |
+                         v              v
+                  Position Tracker  Polygon settlement
+                         |
+                         v
+                  Monitoring (logs, Telegram, kill switch)
+                         |
+                         v
+                  Dashboard FastAPI (read-only) + Discovery (M5)
+```
+
+Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [specs/](specs/).
+
+---
 
 ## Variables d'environnement
+
+<details>
+<summary><strong>Table complète des env vars (40+)</strong></summary>
 
 | Variable | Description | Default | Requis |
 |---|---|---|---|
@@ -90,261 +473,85 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `MIN_MARKET_LIQUIDITY_USD` | Liquidité CLOB minimum | `5000` | non |
 | `MIN_HOURS_TO_EXPIRY` | Skip marchés trop proches de l'expiration | `24` | non |
 | `MAX_SLIPPAGE_PCT` | Slippage max vs prix source | `2.0` | non |
-| `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X% | `20` | non |
-| `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo stub (M3 partiellement remplacé par lecture wallet) | `1000.0` | non |
+| `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X % | `20` | non |
+| `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo stub | `1000.0` | non |
 | `POLYMARKET_PRIVATE_KEY` | Clé privée du wallet de signature | — | **si `DRY_RUN=false`** |
-| `POLYMARKET_FUNDER` | Adresse du proxy wallet (Gnosis Safe / Magic) | — | **si `DRY_RUN=false`** |
+| `POLYMARKET_FUNDER` | Adresse du proxy wallet | — | **si `DRY_RUN=false`** |
 | `POLYMARKET_SIGNATURE_TYPE` | `0` EOA, `1` Magic, `2` Gnosis Safe | `1` | non |
 | `DATABASE_URL` | URL DB | `sqlite+aiosqlite:///polycopy.db` | non |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | non |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes Telegram (bypass silencieux si vide) | — | non (pour alertes) |
+| `CLI_SILENT` (**M9**) | Affiche écran rich statique au boot, JSON dans le fichier seul | `true` | non |
+| `LOG_FILE` (**M9**) | Chemin du fichier log rotatif | `~/.polycopy/logs/polycopy.log` | non |
+| `LOG_FILE_MAX_BYTES` (**M9**) | Taille max avant rotation (bytes) | `10485760` | non |
+| `LOG_FILE_BACKUP_COUNT` (**M9**) | Nb fichiers rotatifs conservés | `10` | non |
+| `DASHBOARD_LOGS_ENABLED` (**M9**) | Active l'onglet `/logs` du dashboard | `true` | non |
+| `DASHBOARD_LOGS_TAIL_LINES` (**M9**) | Lignes max affichées dans `/logs` | `500` | non |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes Telegram (bypass silencieux si vide) | — | non |
 | `PNL_SNAPSHOT_INTERVAL_SECONDS` | Période entre 2 snapshots PnL | `300` | non |
-| `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD au-dessus duquel un fill déclenche `order_filled_large` | `50.0` | non |
-| `ALERT_COOLDOWN_SECONDS` | Anti-spam Telegram par event_type (in-memory) | `60` | non |
-| `TELEGRAM_STARTUP_MESSAGE` | Envoie un message de démarrage au boot (M7) | `true` | non |
-| `TELEGRAM_HEARTBEAT_ENABLED` | Active les heartbeats périodiques (M7) | `false` | non |
-| `TELEGRAM_HEARTBEAT_INTERVAL_HOURS` | Intervalle entre 2 heartbeats (1–168 h) | `12` | non |
-| `TELEGRAM_DAILY_SUMMARY` | Envoie un résumé quotidien (M7) | `false` | non |
-| `TG_DAILY_SUMMARY_HOUR` | Heure locale d'envoi du résumé (0–23) | `9` | non |
-| `TG_DAILY_SUMMARY_TIMEZONE` | TZ IANA du résumé quotidien | `Europe/Paris` | non |
-| `TELEGRAM_DIGEST_THRESHOLD` | Alertes/heure pour batch digest (M7) | `5` | non |
-| `TELEGRAM_DIGEST_WINDOW_MINUTES` | Fenêtre de comptage digest | `60` | non |
-| `DRY_RUN_REALISTIC_FILL` | Simule les fills sur la profondeur orderbook (M8, opt-in, `DRY_RUN=true` only) | `false` | non |
-| `DRY_RUN_VIRTUAL_CAPITAL_USD` | Capital initial virtuel pour le PnL dry-run (M8) | `1000.0` | non |
-| `DRY_RUN_BOOK_CACHE_TTL_SECONDS` | TTL cache `/book` par asset_id (M8) | `5` | non |
-| `DRY_RUN_RESOLUTION_POLL_MINUTES` | Cadence check résolution marchés virtuels (M8) | `30` | non |
-| `DRY_RUN_ALLOW_PARTIAL_BOOK` | M8 : FOK strict si false, fill partiel si true | `false` | non |
-| `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
-| `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
-| `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
-| `DASHBOARD_THEME` | Thème initial dashboard `dark` / `light` (toggle persiste en localStorage) | `dark` | non |
-| `DASHBOARD_POLL_INTERVAL_SECONDS` | Fréquence rafraîchissement HTMX des partials (2–60 s) | `5` | non |
-| `DISCOVERY_ENABLED` | Active la découverte auto de traders (M5, opt-in) | `false` | non |
-| `DISCOVERY_INTERVAL_SECONDS` | Cadence d'un cycle scoring (1h–7j) | `21600` | non |
-| `DISCOVERY_CANDIDATE_POOL_SIZE` | Pool de candidats scannés par cycle | `100` | non |
-| `DISCOVERY_TOP_MARKETS_FOR_HOLDERS` | Marchés top-liquidité scannés via `/holders` | `20` | non |
-| `MAX_ACTIVE_TRADERS` | Plafond DUR sur les traders `active` | `10` | non |
-| `BLACKLISTED_WALLETS` | Wallets jamais ajoutés (CSV ou JSON array) | — | non |
-| `SCORING_VERSION` | Version de la formule de scoring | `v1` | non |
-| `SCORING_MIN_CLOSED_MARKETS` | Seuil cold start (sous → score=0, low_confidence) | `10` | non |
-| `SCORING_LOOKBACK_DAYS` | Fenêtre glissante metrics (jours) | `90` | non |
-| `SCORING_PROMOTION_THRESHOLD` | Score ≥ seuil → candidat promotion | `0.65` | non |
-| `SCORING_DEMOTION_THRESHOLD` | Score < seuil pendant K cycles → demote | `0.40` | non |
-| `SCORING_DEMOTION_HYSTERESIS_CYCLES` | K cycles sous seuil avant demote | `3` | non |
-| `TRADER_SHADOW_DAYS` | Jours d'observation 'shadow' avant 'active' | `7` | non |
-| `DISCOVERY_SHADOW_BYPASS` | Bypass shadow si `TRADER_SHADOW_DAYS=0` | `false` | non |
-| `DISCOVERY_BACKEND` | `data_api` (default), `goldsky`, `hybrid` | `data_api` | non |
-| `GOLDSKY_POSITIONS_SUBGRAPH_URL` | URL subgraph pnl/positions (opt-in) | voir `.env.example` | non |
-| `GOLDSKY_PNL_SUBGRAPH_URL` | URL subgraph PnL (opt-in) | voir `.env.example` | non |
+| `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD pour `order_filled_large` | `50.0` | non |
+| `ALERT_COOLDOWN_SECONDS` | Anti-spam Telegram par event_type | `60` | non |
+| `TELEGRAM_STARTUP_MESSAGE` (M7) | Envoie un message au boot | `true` | non |
+| `TELEGRAM_HEARTBEAT_ENABLED` (M7) | Heartbeat périodique | `false` | non |
+| `TELEGRAM_HEARTBEAT_INTERVAL_HOURS` (M7) | Intervalle heartbeat (1–168 h) | `12` | non |
+| `TELEGRAM_DAILY_SUMMARY` (M7) | Envoie un résumé quotidien | `false` | non |
+| `TG_DAILY_SUMMARY_HOUR` (M7) | Heure locale d'envoi (0–23) | `9` | non |
+| `TG_DAILY_SUMMARY_TIMEZONE` (M7) | TZ IANA | `Europe/Paris` | non |
+| `TELEGRAM_DIGEST_THRESHOLD` (M7) | Alertes/heure pour batch digest | `5` | non |
+| `TELEGRAM_DIGEST_WINDOW_MINUTES` (M7) | Fenêtre de comptage digest | `60` | non |
+| `DRY_RUN_REALISTIC_FILL` (M8) | Simule fill orderbook FOK | `false` | non |
+| `DRY_RUN_VIRTUAL_CAPITAL_USD` (M8) | Capital initial virtuel PnL dry-run | `1000.0` | non |
+| `DRY_RUN_BOOK_CACHE_TTL_SECONDS` (M8) | TTL cache `/book` (s) | `5` | non |
+| `DRY_RUN_RESOLUTION_POLL_MINUTES` (M8) | Cadence check résolution marchés | `30` | non |
+| `DRY_RUN_ALLOW_PARTIAL_BOOK` (M8) | FOK strict si false | `false` | non |
+| `DASHBOARD_ENABLED` | Active le dashboard local (M4.5) | `false` | non |
+| `DASHBOARD_HOST` | Bind (⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
+| `DASHBOARD_PORT` | Port TCP local | `8787` | non |
+| `DASHBOARD_THEME` (M6) | `dark` ou `light` | `dark` | non |
+| `DASHBOARD_POLL_INTERVAL_SECONDS` (M6) | Polling HTMX (s) | `5` | non |
+| `DISCOVERY_ENABLED` (M5) | Découverte auto traders | `false` | non |
+| `DISCOVERY_INTERVAL_SECONDS` (M5) | Cadence cycle scoring (s) | `21600` | non |
+| `MAX_ACTIVE_TRADERS` (M5) | Plafond DUR traders actifs | `10` | non |
+| `BLACKLISTED_WALLETS` (M5) | Exclusions absolues (CSV/JSON) | — | non |
+| `SCORING_VERSION` (M5) | Version formule scoring | `v1` | non |
+| `SCORING_PROMOTION_THRESHOLD` (M5) | Seuil promotion shadow→active | `0.65` | non |
+| `SCORING_DEMOTION_THRESHOLD` (M5) | Seuil démotion active→paused | `0.40` | non |
+| `TRADER_SHADOW_DAYS` (M5) | Jours observation avant promotion | `7` | non |
+
+</details>
+
+---
 
 ## Going live (passage du dry-run au mode réel)
 
-⚠️ **Par défaut `DRY_RUN=true`.** Aucun ordre n'est jamais envoyé sans bascule explicite.
+> [!WARNING]
+> **Par défaut `DRY_RUN=true`.** Aucun ordre n'est jamais envoyé sans bascule explicite.
 
-1. **Récupère tes credentials Polymarket** (depuis ton compte connecté à polymarket.com) :
+1. Récupère tes credentials Polymarket depuis ton compte connecté à polymarket.com :
    - `POLYMARKET_PRIVATE_KEY` : ta clé privée Ethereum (jamais commit, jamais partagée).
-   - `POLYMARKET_FUNDER` : ton **proxy wallet** (Gnosis Safe créé automatiquement par Polymarket quand tu connectes MetaMask). Tu le trouves sur ton profil Polymarket → settings → "Deposit address" ou "Proxy address".
-   - `POLYMARKET_SIGNATURE_TYPE=2` (Gnosis Safe) si tu utilises MetaMask connecté à polymarket.com (cas le plus courant).
-2. **Édite `.env`** avec ces 3 valeurs + force un plafond de sécurité strict :
-   ```
+   - `POLYMARKET_FUNDER` : ton **proxy wallet** (Gnosis Safe créé automatiquement par Polymarket).
+   - `POLYMARKET_SIGNATURE_TYPE=2` (Gnosis Safe) si tu utilises MetaMask connecté à polymarket.com.
+
+2. Édite `.env` avec ces 3 valeurs + plafond strict :
+   ```env
    POLYMARKET_PRIVATE_KEY=0x<ta_clé_privée>
    POLYMARKET_FUNDER=0x<ton_proxy_address>
    POLYMARKET_SIGNATURE_TYPE=2
    DRY_RUN=false
-   MAX_POSITION_USD=1                  # 1 USD max pour ton 1er run réel
+   MAX_POSITION_USD=1
    ```
-3. **Lance le bot** :
+
+3. Lance :
    ```bash
    python -m polycopy
    ```
-4. **Surveille** les logs `order_filled` / `order_rejected` ; vérifie chaque transaction sur polymarket.com (onglet "Activity" de ton profil).
-5. **Augmente progressivement** `MAX_POSITION_USD` quand tu es satisfait.
 
-Si le bot démarre sans `--dry-run` ET sans clés, il **refuse de démarrer** avec un message clair (`RuntimeError`) — par sécurité.
+4. Surveille les logs `order_filled` / `order_rejected` ; vérifie chaque transaction sur polymarket.com (onglet "Activity" de ton profil).
 
-## Dry-run "semi-réel" (M8, optionnel)
+5. Augmente progressivement `MAX_POSITION_USD` quand tu es satisfait.
 
-Par défaut, `DRY_RUN=true` log l'ordre approuvé puis s'arrête (`MyOrder.status='SIMULATED'`). Avec M8, tu peux observer le PnL que tu aurais eu en simulant chaque FOK sur la **profondeur orderbook réelle**, sans engager de capital ni signer quoi que ce soit :
+Si une clé manque, le bot **refuse de démarrer** avec un `RuntimeError` clair.
 
-```env
-DRY_RUN=true
-DRY_RUN_REALISTIC_FILL=true
-DRY_RUN_VIRTUAL_CAPITAL_USD=1000
-```
-
-Le bot fetch alors `GET /book?token_id=...` (read-only public, pas d'auth) à chaque ordre approuvé, calcule le prix moyen pondéré sur la profondeur, persiste la **position virtuelle** (`MyPosition.simulated=True`), valorise live via mid-price, et **résout** le PnL automatiquement à la clôture du marché (poll Gamma toutes les 30 min). Le snapshot PnL `is_dry_run=True` reflète le total virtuel en temps réel (capital initial + realized + unrealized).
-
-Dashboard `/pnl?mode=dry_run|real|both` filtre les courbes. Rapport HTML dédié :
-
-```bash
-python scripts/pnl_report.py --dry-run-mode --since 7 --output html
-# → dry_run_pnl_report.html
-```
-
-**Garde-fous** :
-- `DRY_RUN=false` reste l'**unique** trigger d'un POST CLOB réel ; le 4ᵉ garde-fou M8 (`assert dry_run is True`) bloque toute simulation accidentelle en live.
-- Aucune creds touchée par le path M8 (uniquement `/book`, `/midpoint`, Gamma `/markets`).
-- **Kill switch jamais en dry-run** (invariant M4) — alerte INFO `dry_run_virtual_drawdown` au-delà de 50 % du seuil, sans arrêt du bot.
-- v1 : SELL sur position virtuelle inexistante → log `dry_run_sell_without_position` + skip. Marchés `neg_risk` → résolution skipped + warning (position reste open virtuellement).
-
-## Alertes Telegram (optionnel)
-
-Les alertes sont **entièrement optionnelles**. Sans token, le bot log les événements localement et ne POST rien — aucun crash, aucun blocage.
-
-Pour les activer (5 min) :
-
-1. Sur Telegram, cherche `@BotFather` (compte officiel vérifié) → envoie `/newbot`.
-2. Choisis un nom (ex: `polycopy local bot`) puis un username finissant par `bot`.
-3. BotFather répond avec un token `123456789:ABC...` → copie-le dans `.env` : `TELEGRAM_BOT_TOKEN=...`.
-4. Ouvre la conversation de ton bot, envoie-lui `/start`.
-5. Ouvre dans un navigateur `https://api.telegram.org/bot<TON_TOKEN>/getUpdates`.
-6. Repère `"chat": {"id": 12345678, ...}` → copie dans `.env` : `TELEGRAM_CHAT_ID=12345678`.
-7. Redémarre le bot — tu verras `telegram_enabled` dans les logs.
-
-Événements qui déclenchent une alerte :
-- `kill_switch_triggered` (CRITICAL) — drawdown ≥ seuil en mode réel.
-- `executor_auth_fatal` (CRITICAL) — CLOB auth rejetée.
-- `executor_error` (ERROR) — exception SDK / POST ordre.
-- `pnl_snapshot_drawdown` (WARNING) — drawdown ≥ 75 % du seuil kill switch.
-- `order_filled_large` (INFO) — fill taker ≥ `ALERT_LARGE_ORDER_USD_THRESHOLD`.
-
-Anti-spam : cooldown in-memory de `ALERT_COOLDOWN_SECONDS` par `cooldown_key` (reset au boot).
-
-### M7 : bot Telegram conversationnel (templates, heartbeat, résumé quotidien, digest)
-
-Depuis M7, le bot passe d'une **alarme silencieuse** à un **compagnon structuré** :
-
-- **Startup message** (ON par défaut si token configuré) : à chaque `python -m polycopy`, un message avec version, mode, wallets pinned, modules actifs, lien dashboard.
-- **Heartbeat périodique** (opt-in) : toutes les 12 h, un ping "💚 polycopy actif" — utile pour détecter une panne silencieuse (plus d'heartbeat depuis 24 h → process mort).
-- **Résumé quotidien** (opt-in, TZ-aware) : à `TG_DAILY_SUMMARY_HOUR` heure locale, un digest des trades 24 h, décisions, ordres, PnL, discovery, alertes.
-- **Digest anti-spam** : ≥ `TELEGRAM_DIGEST_THRESHOLD=5` alertes du même type en `TELEGRAM_DIGEST_WINDOW_MINUTES=60` → batch en 1 seul message.
-- **Templates Jinja2 soignés** dans `src/polycopy/monitoring/templates/`, **surchargeables** via `assets/telegram/*.md.j2` sans fork (voir `assets/telegram/README.md`).
-- **Shutdown message** : à l'extinction propre, un bref "🛑 polycopy arrêté" (durée + version).
-
-Pour tout activer :
-
-```env
-TELEGRAM_BOT_TOKEN=<ton_token>
-TELEGRAM_CHAT_ID=<ton_chat>
-TELEGRAM_STARTUP_MESSAGE=true
-TELEGRAM_HEARTBEAT_ENABLED=true
-TELEGRAM_DAILY_SUMMARY=true
-TG_DAILY_SUMMARY_HOUR=9
-TG_DAILY_SUMMARY_TIMEZONE=Europe/Paris
-```
-
-Les defaults (`STARTUP_MESSAGE=true`, le reste `false`) garantissent qu'un user M4/M5 qui met à jour `main` sans toucher son `.env` ne sera pas spammé d'un coup. Bot reste **emitter-only** — aucune commande entrante.
-
-Détails et surcharge templates : `docs/setup.md` §16 + `specs/M7-telegram-enhanced.md`.
-
-## Découverte automatique de traders (optionnel, M5)
-
-Polycopy peut découvrir et scorer des wallets Polymarket publics automatiquement, puis promouvoir les meilleurs en cibles actives. **Opt-in strict** : par défaut, le bot ne suit que les wallets listés dans `TARGET_WALLETS`.
-
-⚠️ **Pré-requis bloquant** : lance le backtest avant d'activer en prod.
-
-```bash
-python scripts/score_backtest.py \
-  --wallets-file specs/m5_backtest_seed.txt \
-  --as-of 2026-01-15 \
-  --observe-days 30 \
-  --output backtest_v1_report.html
-```
-
-Tu dois obtenir une corrélation Spearman ≥ 0.30 entre `score_at_T` et `observed_roi_t_to_t30`. Sinon → ne pas activer M5 en prod (la formule v1 sous-performe, ouvrir une issue pour itérer en `SCORING_VERSION=v2`).
-
-### Activation
-
-```env
-DISCOVERY_ENABLED=true
-DISCOVERY_INTERVAL_SECONDS=21600   # 6 h
-MAX_ACTIVE_TRADERS=10              # plafond dur
-TRADER_SHADOW_DAYS=7               # observation avant promotion
-SCORING_VERSION=v1
-```
-
-### Comment ça marche
-
-1. Toutes les `DISCOVERY_INTERVAL_SECONDS`, M5 scanne les top-holders des marchés Polymarket actifs (`/holders` fan-out sur les 20 marchés les plus liquides) + le feed global `/trades`.
-2. Pour chaque candidat, fetch `/positions` + `/activity`, calcule un score ∈ [0, 1] avec la formule v1 : `0.30·win_rate + 0.30·roi_norm + 0.20·diversity + 0.20·volume_norm`.
-3. Wallets avec score ≥ `SCORING_PROMOTION_THRESHOLD` passent en `status='shadow'` (observation `TRADER_SHADOW_DAYS` jours) puis promus en `status='active'` (le watcher les copie).
-4. Wallets `active` avec score < `SCORING_DEMOTION_THRESHOLD` pendant `SCORING_DEMOTION_HYSTERESIS_CYCLES` cycles consécutifs passent en `paused` (plus copiés).
-5. Tes `TARGET_WALLETS` restent **`pinned`** — jamais retirés par M5, immuables.
-
-Le `.env` n'est **pas** modifié automatiquement ; tous les wallets auto-découverts vivent en DB (`target_traders.status`). Tu gardes le contrôle par `MAX_ACTIVE_TRADERS` (cap dur) + `BLACKLISTED_WALLETS` (exclusion absolue) + édition manuelle SQL si besoin.
-
-### Observer M5 en live
-
-Dashboard M4.5 doit être actif. Ouvre `http://127.0.0.1:8787/traders` : table avec scores, statuts, timestamps. Auto-refresh 10 s.
-
-`http://127.0.0.1:8787/backtest` : statut du rapport backtest.
-
-Logs structurés émis par cycle : `discovery_starting`, `discovery_cycle_started`, `discovery_candidates_built`, `score_computed`, `trader_promoted`, `trader_demoted`, `discovery_cycle_completed`, `discovery_stopped`.
-
-Alertes Telegram (si config M4 active) : `trader_promoted` (INFO), `trader_demoted` (WARNING), `discovery_cap_reached` (WARNING), `discovery_cycle_failed` (ERROR).
-
-## Dashboard local (optionnel, M4.5 + M6)
-
-Dashboard web **read-only** pour superviser live détections, décisions, ordres, positions, PnL et traders. M6 (2026) : refonte UX moderne — sidebar persistante, cards KPI avec sparkline SVG, jauge score SVG sur la page Traders, area chart + overlay drawdown + timeline milestones sur PnL, footer health Gamma/Data API. Dark-first avec toggle light persistant.
-
-Opt-in via `.env` :
-
-```
-DASHBOARD_ENABLED=true
-DASHBOARD_HOST=127.0.0.1   # ⚠️ localhost-only par défaut — ne change que si tu sais
-DASHBOARD_PORT=8787
-DASHBOARD_THEME=dark            # ou "light"
-DASHBOARD_POLL_INTERVAL_SECONDS=5
-```
-
-Lance le bot puis ouvre `http://127.0.0.1:8787/` dans ton navigateur.
-
-Pages : Home (KPIs + sparklines + Discovery + derniers trades) · Détection · Stratégie · Exécution · Positions · PnL (area chart + milestones) · Traders (jauge score SVG) · Backtest · Logs (stub M9).
-
-Aucune action d'écriture n'est exposée — uniquement des `SELECT`. Pas d'auth : le bind localhost suffit pour un bot mono-utilisateur local. **Changer `DASHBOARD_HOST` à `0.0.0.0` expose le dashboard sur tout le LAN : à tes risques.** Aucun secret (clé privée, token Telegram, creds CLOB) n'apparaît dans le HTML/JSON rendu — vérifié par grep automatisé.
-
-## Rapport PnL
-
-Le writer écrit un snapshot en DB toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS` (5 min par défaut). Pour générer un rapport HTML lisible avec sparkline SVG :
-
-```bash
-source .venv/bin/activate
-python scripts/pnl_report.py --since 7 --output html
-# → génère pnl_report.html, ouvrir dans un navigateur
-```
-
-Autres formats : `--output stdout` (table plain text) ou `--output csv`. Par défaut les snapshots `is_dry_run=true` sont filtrés (utilise `--include-dry-run` pour les inclure).
-
-## Structure du repo
-
-```
-polycopy/
-├── src/polycopy/
-│   ├── watcher/          # Détection des trades on-chain
-│   ├── strategy/         # Filtres, sizing, risk pipeline
-│   ├── executor/         # CLOB orders signés (avec dry-run safeguards)
-│   ├── storage/          # SQLAlchemy models + repositories
-│   ├── monitoring/       # Telegram, snapshots PnL, kill switch (M4)
-│   ├── dashboard/        # FastAPI + HTMX + Chart.js, localhost-only (M4.5)
-│   ├── config.py         # Pydantic Settings
-│   └── __main__.py       # Entrypoint asyncio
-├── alembic/              # Migrations DB (M4+)
-├── tests/                # Tests unit (mocks) + integration (opt-in réseau réel)
-├── specs/                # Specs autoritaires par milestone
-├── scripts/              # bash scripts/setup.sh, pnl_report.py
-├── docs/                 # architecture.md, setup.md
-└── assets/               # Logos, screenshots
-```
-
-## Commandes utiles
-
-```bash
-pytest                                          # tests unitaires (mocks, pas de réseau)
-pytest -m integration                           # tests réseau réels (opt-in, lents)
-ruff check . && ruff format .                   # lint + format
-mypy src                                        # type check strict
-python -m polycopy --dry-run                    # bot en mode safe
-```
+---
 
 ## Roadmap
 
@@ -357,19 +564,24 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M6** : Dashboard 2026 (refonte UX, sidebar, cards KPI, jauge score, timeline PnL)
 - [x] **M7** : Bot Telegram enrichi (startup, heartbeat, résumé quotidien, templates, digest)
 - [x] **M8** : Dry-run réaliste (fill orderbook, PnL virtuel live, résolution marchés)
+- [x] **M9** : CLI silencieux + onglet `/logs` + README overhaul (← *tu es ici*)
 
-### Après M8 (roadmap UX/expérience, pas de nouveau module fonctionnel)
+### Suite (idées, pas engagement)
 
-- ~~Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
-  comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans~~
-  capital engagé
-- README plus accueillant (tutorial interactif, captures, comparaison avec
-  d'autres bots Polymarket)
+- [ ] **M10** : tests E2E "fly-by" — bot lancé contre un fork mainnet, snapshots avant/après.
+- [ ] **M11** : multi-strategy beyond copy trading (mean reversion, arb, etc.).
+- [ ] **M12** : packaging (Docker compose, helm chart, ou one-line installer Mac/Linux).
+
+---
 
 ## Avertissement
 
-Les marchés prédictifs sont risqués. Les performances passées d'un trader ne garantissent rien.
+Les marchés prédictifs sont **risqués**. Les performances passées d'un trader ne garantissent rien.
 
-Polymarket est inaccessible depuis certaines juridictions (notamment les États-Unis). **Renseigne-toi sur le cadre légal applicable chez toi avant de l'utiliser.**
+**Polymarket est inaccessible (officiellement) depuis plusieurs juridictions** : États-Unis, France, Royaume-Uni, Singapour, etc. **Vérifie le cadre légal applicable chez toi avant tout usage.** L'auteur de polycopy n'est pas juriste et ne donne aucun conseil juridique.
 
-Ce code est fourni à titre éducatif. **Aucune garantie sur le fonctionnement, la sécurité ou la rentabilité.** Les bugs peuvent coûter du capital réel — toujours commencer en `DRY_RUN=true`, puis avec un `MAX_POSITION_USD` minuscule.
+Ce code est fourni à titre éducatif. **Aucune garantie sur le fonctionnement, la sécurité ou la rentabilité.** Les bugs peuvent coûter du capital réel — toujours commencer en `DRY_RUN=true`, puis avec un `MAX_POSITION_USD` minuscule (≤ $1), et n'augmenter que si tu as observé le bot sur une fenêtre suffisante (≥ 7 jours) sans incident.
+
+Aucun support garanti. Issues GitHub welcome mais réponses best-effort.
+
+_Last reviewed : 2026-04-18 (M9)._

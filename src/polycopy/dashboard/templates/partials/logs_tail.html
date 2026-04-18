@@ -1,0 +1,27 @@
+{# Fragment HTMX : liste des entries log filtrées (M9). #}
+{% if not entries %}
+  <p class="text-sm py-4" style="color: var(--color-muted);">Aucun log trouvé pour ces filtres.</p>
+{% else %}
+  <p class="text-xs mb-2" style="color: var(--color-muted);">
+    {{ entries|length }} entrée(s) — du plus ancien au plus récent.
+  </p>
+  {% for entry in entries %}
+    {% set lvl = (entry.level or "info")|lower %}
+    <details class="rounded border text-xs"
+             style="border-color: var(--color-border); background: var(--color-surface);">
+      <summary class="flex items-center gap-3 px-3 py-1.5 cursor-pointer">
+        <time class="font-mono" style="color: var(--color-muted);">
+          {{ entry.timestamp|humanize_dt if entry.timestamp else "—" }}
+        </time>
+        <span class="px-1.5 py-0.5 rounded font-mono uppercase"
+              style="
+                background: {% if lvl == 'error' or lvl == 'critical' %}var(--color-loss){% elif lvl == 'warning' %}var(--color-warning){% elif lvl == 'debug' %}var(--color-neutral){% else %}var(--color-profit){% endif %};
+                color: var(--color-bg);
+              ">{{ entry.level }}</span>
+        <code class="font-mono">{{ entry.event }}</code>
+      </summary>
+      <pre class="text-xs mx-3 my-2 p-2 rounded overflow-x-auto"
+           style="background: var(--color-bg); color: var(--color-text);"><code>{{ entry.all_fields() | tojson(indent=2) }}</code></pre>
+    </details>
+  {% endfor %}
+{% endif %}

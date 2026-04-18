@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="polycopy logo">
+  <title>polycopy</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#30a46c"/>
+      <stop offset="100%" stop-color="#208354"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="168" height="168" rx="32" ry="32" fill="#0b1220" stroke="url(#g)" stroke-width="6"/>
+  <text x="50%" y="56%" text-anchor="middle" dominant-baseline="middle"
+        font-family="Inter, system-ui, sans-serif" font-weight="800" font-size="110"
+        fill="url(#g)">p</text>
+  <circle cx="146" cy="46" r="10" fill="#f5a623"/>
+</svg>

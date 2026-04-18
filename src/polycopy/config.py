@@ -5,6 +5,7 @@ Aucune valeur sensible en dur dans le code.
 """
 
 import json
+from pathlib import Path
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -196,6 +197,44 @@ class Settings(BaseSettings):
     # --- Logs ---
     log_level: str = "INFO"
 
+    # --- CLI / Logs M9 (silent CLI + rotation fichier) -------------------
+    cli_silent: bool = Field(
+        True,
+        description=(
+            "BREAKING M8→M9. Si true, le terminal affiche un écran rich "
+            "statique au boot ; les logs JSON ne sont PAS streamés sur stdout. "
+            "Flag --verbose ou CLI_SILENT=false restaure le comportement M1..M8."
+        ),
+    )
+    log_file: Path = Field(
+        Path("~/.polycopy/logs/polycopy.log"),
+        description=(
+            "Chemin du fichier log rotatif (toujours écrit, même en --verbose). "
+            "Expanded via Path.expanduser(). Permissions 0o600 + parent 0o700."
+        ),
+    )
+    log_file_max_bytes: int = Field(
+        10_485_760,
+        ge=1_048_576,
+        description="Taille max d'un fichier log avant rotation (default 10 MB).",
+    )
+    log_file_backup_count: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description="Nb de fichiers rotatifs conservés (default 10).",
+    )
+
+    @field_validator("log_file", mode="before")
+    @classmethod
+    def _expand_log_file(cls, v: object) -> object:
+        """Expanduser sur le chemin log_file (~ → /home/<user>) au boot."""
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        if isinstance(v, Path):
+            return v.expanduser()
+        return v
+
     # --- Dashboard (M4.5, optionnel) ---
     dashboard_enabled: bool = Field(
         False,
@@ -233,6 +272,24 @@ class Settings(BaseSettings):
         description=(
             "Cadence du polling HTMX des partials Home/listes (s). "
             "UI cosmétique — gain log de fond vs M4.5 (3s → 5s)."
+        ),
+    )
+
+    # --- Dashboard M9 : onglet /logs (lecture fichier) -------------------
+    dashboard_logs_enabled: bool = Field(
+        True,
+        description=(
+            "Active l'onglet /logs (lecture du fichier LOG_FILE, filtres + "
+            "live tail HTMX 2s). Si false, /logs renvoie un stub config-disabled."
+        ),
+    )
+    dashboard_logs_tail_lines: int = Field(
+        500,
+        ge=50,
+        le=5000,
+        description=(
+            "Nb max de lignes affichées dans /logs (anti-RAM browser). "
+            "Au-delà → bouton Télécharger .log."
         ),
     )
 

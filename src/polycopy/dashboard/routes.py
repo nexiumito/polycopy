@@ -11,8 +11,13 @@ from typing import Annotated, Any, Literal, cast
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,7 +26,11 @@ from polycopy.config import Settings
 from polycopy.dashboard import queries
 from polycopy.dashboard.health_check import ExternalHealthChecker
 from polycopy.dashboard.jinja_filters import all_filters
+from polycopy.dashboard.log_reader import filter_entries, read_log_tail
 from polycopy.dashboard.middleware import StructlogAccessMiddleware
+
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_MAX_EVENT_FILTERS = 20
 
 log = structlog.get_logger(__name__)
 
@@ -151,11 +160,98 @@ def build_pages_router() -> APIRouter:
         )
 
     @router.get("/logs", response_class=HTMLResponse)
-    async def logs_stub(request: Request) -> HTMLResponse:
-        """Stub M9 — renseigne l'utilisateur que la page arrive plus tard."""
-        return _render(request, "logs_stub.html", {})
+    async def logs_page(
+        request: Request,
+        settings: STDep,
+        levels: Annotated[list[str] | None, Query()] = None,
+        events: Annotated[list[str] | None, Query()] = None,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> HTMLResponse:
+        """Onglet logs M9 — lecture fichier `LOG_FILE` + filtres serveur."""
+        if not settings.dashboard_logs_enabled:
+            return _render(
+                request,
+                "logs.html",
+                {
+                    "logs_enabled": False,
+                    "disabled_reason": "DASHBOARD_LOGS_ENABLED=false",
+                    "entries": [],
+                    "filter_levels": [],
+                    "filter_events": [],
+                    "filter_q": "",
+                },
+            )
+        validated_levels = _validate_levels(levels)
+        validated_events = _validate_events(events)
+        all_entries = read_log_tail(settings.log_file, settings.dashboard_logs_tail_lines)
+        filtered = filter_entries(
+            all_entries,
+            levels=set(validated_levels) if validated_levels else None,
+            event_types=set(validated_events) if validated_events else None,
+            q=q,
+        )
+        return _render(
+            request,
+            "logs.html",
+            {
+                "logs_enabled": True,
+                "disabled_reason": "",
+                "entries": filtered,
+                "filter_levels": validated_levels,
+                "filter_events": validated_events,
+                "filter_q": q or "",
+            },
+        )
+
+    @router.get("/logs/download")
+    async def logs_download(settings: STDep) -> FileResponse:
+        """Téléchargement du fichier `LOG_FILE` complet (filename hardcodé)."""
+        if not settings.dashboard_logs_enabled:
+            raise HTTPException(status_code=403, detail="Logs download disabled")
+        log_file = settings.log_file
+        if not log_file.exists():
+            raise HTTPException(status_code=404, detail="Log file not found")
+        return FileResponse(
+            path=str(log_file),
+            media_type="text/plain",
+            filename="polycopy.log",
+        )
 
     return router
+
+
+def _validate_levels(levels: list[str] | None) -> list[str]:
+    """Valide la liste de levels — rejette tout invalide via 400."""
+    if not levels:
+        return []
+    cleaned: list[str] = []
+    for lvl in levels:
+        upper = lvl.upper().strip()
+        if upper not in _VALID_LOG_LEVELS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid level '{lvl}' (allowed: {sorted(_VALID_LOG_LEVELS)})",
+            )
+        cleaned.append(upper)
+    return cleaned
+
+
+def _validate_events(events: list[str] | None) -> list[str]:
+    """Valide la liste d'event_types : cap 20, accepte CSV via virgule."""
+    if not events:
+        return []
+    flat: list[str] = []
+    for raw in events:
+        for piece in raw.split(","):
+            piece = piece.strip()  # noqa: PLW2901
+            if piece:
+                flat.append(piece)
+    if len(flat) > _MAX_EVENT_FILTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many event filters (max {_MAX_EVENT_FILTERS})",
+        )
+    return flat
 
 
 def build_partials_router() -> APIRouter:
@@ -293,6 +389,36 @@ def build_partials_router() -> APIRouter:
             "drawdown_pct": series.drawdown_pct,
         }
         return JSONResponse(payload)
+
+    @router.get("/logs-tail", response_class=HTMLResponse)
+    async def logs_tail_partial(
+        request: Request,
+        settings: STDep,
+        levels: Annotated[list[str] | None, Query()] = None,
+        events: Annotated[list[str] | None, Query()] = None,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> HTMLResponse:
+        """Fragment HTMX rafraîchi par live tail (polling 2 s)."""
+        if not settings.dashboard_logs_enabled:
+            return _render(
+                request,
+                "partials/logs_tail.html",
+                {"entries": []},
+            )
+        validated_levels = _validate_levels(levels)
+        validated_events = _validate_events(events)
+        all_entries = read_log_tail(settings.log_file, settings.dashboard_logs_tail_lines)
+        filtered = filter_entries(
+            all_entries,
+            levels=set(validated_levels) if validated_levels else None,
+            event_types=set(validated_events) if validated_events else None,
+            q=q,
+        )
+        return _render(
+            request,
+            "partials/logs_tail.html",
+            {"entries": filtered},
+        )
 
     @router.get("/traders-rows", response_class=HTMLResponse)
     async def traders_rows(

@@ -450,3 +450,91 @@ Contient : équity curve virtuelle, drawdown max, Δ total_usdc, snapshots déta
 | Alerte `dry_run_virtual_drawdown` | Drawdown ≥ 50 % du seuil `KILL_SWITCH_DRAWDOWN_PCT` | INFO only — **aucun** kill switch en dry-run (invariant M4). Sert à signaler la tendance, pas à arrêter le bot. |
 | Passage au live | Mettre `DRY_RUN=false` + clés + `MAX_POSITION_USD=1` | Le flag `DRY_RUN_REALISTIC_FILL` est **ignoré** en live (cohérent, jamais de fill virtuel en prod). 4ᵉ garde-fou M8 raise `AssertionError` si quelqu'un appelle la branche M8 avec `dry_run=False`. |
 
+
+---
+
+## 18. CLI silencieux + fichier log rotatif (M9)
+
+À partir de M9, `python -m polycopy --dry-run` n'inonde plus le terminal de JSON. Tu vois un écran statique `rich` avec les 6 modules + chemin du fichier log + URL dashboard si activé. Les **logs JSON détaillés** vont dans `~/.polycopy/logs/polycopy.log` (rotation automatique 10 MB × 10 fichiers).
+
+### Modes CLI
+
+| Mode | Commande | Stdout | Fichier log |
+|---|---|---|---|
+| Silent (défaut M9) | `python -m polycopy --dry-run` | écran rich statique | ✅ JSON |
+| Verbose (legacy M1..M8) | `python -m polycopy --dry-run --verbose` | écran rich + JSON streamé | ✅ JSON |
+| Daemon (systemd, nohup) | `python -m polycopy --dry-run --no-cli` | rien | ✅ JSON |
+
+### Configurer le fichier log
+
+`.env` :
+
+```env
+LOG_FILE=/tmp/polycopy-experiment.log     # chemin custom
+LOG_FILE_MAX_BYTES=5242880                # 5 MB par fichier
+LOG_FILE_BACKUP_COUNT=5                   # garde 5 backups
+```
+
+Permissions appliquées automatiquement : `0o700` sur le parent, `0o600` sur le fichier (lecture/écriture user uniquement). **Ne partage pas le fichier log tel quel** — il contient wallets publics + condition_ids + timestamps qui révèlent ta stratégie.
+
+### Tail / inspection
+
+```bash
+# Suivre en live :
+tail -f ~/.polycopy/logs/polycopy.log | jq .
+
+# Filtrer par event_type :
+grep '"event": "trade_detected"' ~/.polycopy/logs/polycopy.log | jq .
+
+# Compter les ordres rejetés :
+grep -c '"event": "order_rejected"' ~/.polycopy/logs/polycopy.log
+```
+
+### Onglet `/logs` du dashboard
+
+Si `DASHBOARD_ENABLED=true` ET `DASHBOARD_LOGS_ENABLED=true` (default), `http://127.0.0.1:8787/logs` te donne un viewer avec :
+
+- 500 dernières entries (configurable via `DASHBOARD_LOGS_TAIL_LINES`).
+- Filtres serveur : levels (5 niveaux stdlib), `q` recherche texte (max 200 chars), events (cap 20).
+- Live tail : checkbox toggle, polling HTMX 2 s.
+- Bouton télécharger → `/logs/download` sert le fichier complet en `text/plain`.
+
+Désactiver l'onglet : `DASHBOARD_LOGS_ENABLED=false` → la page rend un stub explicatif.
+
+### Troubleshooting M9
+
+| Symptôme | Cause probable | Action |
+|---|---|---|
+| Fichier log vide | Permissions parent dir `~/.polycopy/logs/` | `ls -la ~/.polycopy/logs/` puis `chmod 700` si besoin. |
+| Écran rich pas affiché | Terminal non-TTY (CI, pipe) | Rich détecte auto et fallback ASCII. Force mode daemon : `--no-cli`. |
+| Rotation jamais déclenchée | `LOG_FILE_MAX_BYTES` trop haut vs volume | Baisse la valeur ou laisse le fichier grossir. |
+| `/logs` 404 | `DASHBOARD_ENABLED=false` ou `DASHBOARD_LOGS_ENABLED=false` | Active dans `.env`. |
+| `/logs/download` 403 | `DASHBOARD_LOGS_ENABLED=false` | Active. |
+| `/logs/download` 404 | `LOG_FILE` n'existe pas encore (bot pas lancé) | Lance le bot, attends 1 ligne loggée. |
+| `/logs?levels=BOGUS` 400 | Level non standard | Utilise un de DEBUG/INFO/WARNING/ERROR/CRITICAL. |
+
+---
+
+## 19. Regénérer les screenshots du README (opt-in)
+
+Les PNG du README (`assets/screenshots/`) sont générés via Playwright headless. **Opt-in** car ~150 MB d'install Chromium.
+
+```bash
+pip install -e ".[docs]"
+playwright install chromium
+
+# Terminal 1 : populate la DB de démo + lance le bot
+python scripts/seed_demo_db.py
+DASHBOARD_ENABLED=true python -m polycopy --dry-run
+
+# Terminal 2 : capture les 3 PNG dashboard
+python scripts/capture_screenshots.py --output assets/screenshots/
+```
+
+Captures **manuelles** restantes (à faire 1 fois quand le design change) :
+
+- `terminal-silent-cli.png` : screenshot de ton terminal après `python -m polycopy --dry-run` (1280×400 recommandé).
+- `botfather-conversation.png` : screenshot Telegram Desktop de la conversation BotFather (cropped sur les 8 messages clés).
+- `vscode-env-edit.png` : screenshot VSCode ouvrant `.env` avec `TARGET_WALLETS=0x...` souligné.
+
+Le seed DB utilise des timestamps fixes (`SEED_REFERENCE_DT = 2026-04-18 12:00 UTC`) + `random.seed(42)` pour reproductibilité pixel-identique. Les vrais wallets ne sont **jamais** seedés — uniquement des adresses placeholder `0x111…111`, `0x222…222`, etc.

@@ -106,6 +106,12 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 
 > **Status M6** ✅ — refonte UX. Même back-end, templates réécrits en Tailwind CDN JIT + palette Radix Colors + typo Inter + icônes Lucide. Sidebar gauche, 4 KPI cards Home avec sparkline SVG, jauge score SVG sur Traders, area chart + overlay drawdown + timeline milestones sur PnL, footer avec health Gamma/Data API (cache 30 s). Dark-first, toggle light en localStorage. Responsive mobile via `<details>` sidebar. Stub `/logs` (M9) et toggle dry-run/réel sur PnL préparé (M8). 3 nouvelles routes GET-only : `/logs`, `/api/health-external`, `/api/version`. Aucun secret ne fuite — vérifié par grep automatisé sur les templates source. Voir `specs/M6-dashboard-2026.md`.
 
+> **Status M9** ✅ — onglet `/logs` fonctionnel. Lecture du fichier `~/.polycopy/logs/polycopy.log` (pas DB), filtres serveur (levels enum strict, events cap 20, q max 200 chars), live tail HTMX polling 2 s (pas de WebSocket — invariant M4.5 préservé), bouton `/logs/download` (filename hardcodé `polycopy.log`). Stub conservé si `DASHBOARD_LOGS_ENABLED=false`. Toutes les routes restent GET. Voir `specs/M9-silent-cli-and-readme.md`.
+
+## Module : CLI / Logging (M9)
+
+> **Status M9** ✅ — couche présentation au boot. Écran `rich` statique (panel + 6 modules + dashboard URL + log file path), couleur cyan en dry-run / rouge en LIVE. Fichier log rotatif `RotatingFileHandler` (10 MB × 10 par défaut) toujours actif, **même en `--verbose`** (double stream). Permissions 0o600 sur le fichier, 0o700 sur le parent. Flag `--verbose` restaure le mode M1..M8 (stream JSON stdout). Flag `--no-cli` mode daemon (zéro stdout). `__main__.py` réduit à 3 lignes — toute la logique boot vit dans `src/polycopy/cli/runner.py`. Re-render conditionnel sur status change uniquement (pas de `rich.live.Live`). Aucun secret loggé — vérifié par grep automatisé. Voir `specs/M9-silent-cli-and-readme.md`.
+
 ## Module : Discovery (optionnel, M5)
 
 > **Status M5** ✅ — implémenté. Module de découverte et scoring automatique de wallets candidats. Opt-in strict via `DISCOVERY_ENABLED=true`. Read-only sur Data API publique + Gamma + Goldsky (backend opt-in). Aucune signature CLOB, aucune dépendance aux credentials L2. Voir `specs/M5-trader-scoring.md` et `src/polycopy/discovery/`.
