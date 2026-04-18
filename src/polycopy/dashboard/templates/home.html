@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}home{% endblock %}
+{% block content %}
+<h2>Home</h2>
+<p>Snapshot live des KPIs. Rafraîchi toutes les 3 s.</p>
+<section id="kpis"
+         hx-get="/partials/kpis"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement KPIs…</p>
+</section>
+{% endblock %}

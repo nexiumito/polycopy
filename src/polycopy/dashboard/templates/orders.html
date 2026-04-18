@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}exécution{% endblock %}
+{% block content %}
+<h2>Exécution</h2>
+<nav>
+  <ul>
+    <li><a href="/orders">Tous</a></li>
+    <li><a href="/orders?status=FILLED">FILLED</a></li>
+    <li><a href="/orders?status=SENT">SENT</a></li>
+    <li><a href="/orders?status=SIMULATED">SIMULATED</a></li>
+    <li><a href="/orders?status=REJECTED">REJECTED</a></li>
+    <li><a href="/orders?status=FAILED">FAILED</a></li>
+  </ul>
+</nav>
+<section id="orders-rows"
+         hx-get="/partials/orders-rows?status={{ status | urlencode }}"
+         hx-trigger="load, every 3s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement ordres…</p>
+</section>
+{% endblock %}

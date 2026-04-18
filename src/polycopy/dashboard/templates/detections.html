@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}détection{% endblock %}
+{% block content %}
+<h2>Détection</h2>
+<form>
+  <label>
+    Wallet cible (filtre)
+    <input type="text" name="wallet" value="{{ wallet }}" placeholder="0x...">
+  </label>
+  <button type="submit">Filtrer</button>
+</form>
+<section id="detections-rows"
+         hx-get="/partials/detections-rows?wallet={{ wallet | urlencode }}"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement trades…</p>
+</section>
+{% endblock %}

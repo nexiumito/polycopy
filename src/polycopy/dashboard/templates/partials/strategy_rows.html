@@ -1,0 +1,38 @@
+{% from "macros.html" import pagination_footer %}
+{% if rows %}
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Timestamp (UTC)</th>
+      <th>Tx</th>
+      <th>Décision</th>
+      <th>Raison</th>
+      <th>my_size</th>
+      <th>my_price</th>
+      <th>Slippage %</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in rows %}
+    <tr>
+      <td><small>{{ d.decided_at.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
+      <td><code>{{ d.tx_hash[:10] }}…</code></td>
+      <td>
+        {% if d.decision == "APPROVED" %}
+          <mark>APPROVED</mark>
+        {% else %}
+          <del>REJECTED</del>
+        {% endif %}
+      </td>
+      <td><small>{{ d.reason or "—" }}</small></td>
+      <td>{{ "%.2f" | format(d.my_size) if d.my_size is not none else "—" }}</td>
+      <td>{{ "%.4f" | format(d.my_price) if d.my_price is not none else "—" }}</td>
+      <td>{{ "%.2f" | format(d.slippage_pct) if d.slippage_pct is not none else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{{ pagination_footer("/strategy", offset, limit, rows | length >= limit) }}
+{% else %}
+<p><small>Aucune décision enregistrée.</small></p>
+{% endif %}

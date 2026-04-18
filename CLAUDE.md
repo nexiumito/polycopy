@@ -37,6 +37,7 @@ src/polycopy/
 ├── executor/     Construction & envoi ordres CLOB
 ├── storage/      Models SQLAlchemy + repositories
 ├── monitoring/   Logs, metrics, alertes
+├── dashboard/    FastAPI + HTMX + Chart.js, localhost-only, read-only (M4.5, opt-in)
 ├── config.py     Pydantic Settings (env vars uniquement)
 └── __main__.py   Entrypoint asyncio
 ```
@@ -80,6 +81,7 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
 - `TELEGRAM_BOT_TOKEN` ne doit JAMAIS être commit ni loggé, même partiellement. Le token est visible dans l'URL des appels `sendMessage` — HTTPS exclusif (httpx default), pas de log d'URL en clair, rotation immédiate si token compromis. Bypass silencieux si absent (aucun crash).
 - **Monitoring M4** : kill switch déclenché EXCLUSIVEMENT par `PnlSnapshotWriter`, **jamais en dry-run** (sécurité critique). `RiskManager` (M2) reste inchangé — pas de refactor.
 - **Migrations Alembic** : `alembic upgrade head` tourne au boot (`init_db`). Si DB M3 préexistante sans `alembic_version` → auto-stamp baseline puis upgrade. Manuel : `alembic stamp head` documenté dans `docs/setup.md`.
+- **Dashboard M4.5** : bind `127.0.0.1` exclusif par défaut, opt-in via `DASHBOARD_ENABLED=true`. `DASHBOARD_HOST=0.0.0.0` = responsabilité de l'utilisateur (documenté avec ⚠️). Aucun endpoint write (toutes les routes sont `GET`, vérifié en test). Aucun secret (Telegram token, private key, funder, CLOB L2 creds) ne doit apparaître dans les responses HTML/JSON — vérifié par `test_dashboard_security.py`. Swagger/OpenAPI désactivés (`docs_url=None`, `openapi_url=None`).
 
 ## Tests
 

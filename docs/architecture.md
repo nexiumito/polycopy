@@ -90,6 +90,16 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 - **Rapport PnL manuel** : `scripts/pnl_report.py --since 7 --output html` génère un HTML statique avec stats + sparkline SVG natif (zéro dep).
 - **Migrations DB** : `alembic upgrade head` au boot dans `init_db` ; auto-stamp baseline si DB M3 préexistante sans `alembic_version`.
 
+## Module : Dashboard (optionnel)
+
+> **Status M4.5** ✅ — implémenté. FastAPI + HTMX + Chart.js. Lancé dans le même `asyncio.TaskGroup` que les autres modules si `DASHBOARD_ENABLED=true`. Bind `127.0.0.1:8787` par défaut. Read-only strict (zéro endpoint write, zéro auth applicative — bind localhost suffit). Voir `specs/M4.5-dashboard.md` et `src/polycopy/dashboard/`.
+
+- **Routes** : 6 pages (Home, Détection, Stratégie, Exécution, Positions, PnL) + ~6 partials HTMX + 1 endpoint JSON pour Chart.js + `/healthz`.
+- **Real-time** : HTMX polling `hx-trigger="every 3s"` sur les partials, `setInterval(fetch, 5000)` pour le graph Chart.js.
+- **Frontend** : Pico.css classless + HTMX + Chart.js via CDN. Zéro build step.
+- **Sécurité** : bind explicite `127.0.0.1`, aucun secret loggé ni rendu (Telegram token, private key, funder, CLOB L2 creds), `SELECT`-only via `session_factory`. Swagger / OpenAPI désactivés.
+- **Lifecycle** : uvicorn in-process, shutdown via watchdog `server.should_exit = True` déclenché par le `stop_event` partagé avec `__main__`.
+
 ## Latence & timing
 
 Latence cible détection → exécution : **~10-15 secondes** sur le path heureux.

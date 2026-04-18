@@ -96,5 +96,27 @@ class Settings(BaseSettings):
     # --- Logs ---
     log_level: str = "INFO"
 
+    # --- Dashboard (M4.5, optionnel) ---
+    dashboard_enabled: bool = Field(
+        False,
+        description=(
+            "Opt-in strict. Si false, __main__ n'instancie pas le DashboardOrchestrator "
+            "(zéro overhead, zéro port ouvert)."
+        ),
+    )
+    dashboard_host: str = Field(
+        "127.0.0.1",
+        description=(
+            "Bind explicite localhost-only. Changer à ses risques — "
+            "DASHBOARD_HOST=0.0.0.0 expose le dashboard sur toutes les interfaces."
+        ),
+    )
+    dashboard_port: int = Field(
+        8787,
+        ge=1,
+        le=65535,
+        description="Port TCP local du dashboard.",
+    )
+
 
 settings = Settings()

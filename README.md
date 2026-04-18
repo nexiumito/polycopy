@@ -101,6 +101,9 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `PNL_SNAPSHOT_INTERVAL_SECONDS` | Période entre 2 snapshots PnL | `300` | non |
 | `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD au-dessus duquel un fill déclenche `order_filled_large` | `50.0` | non |
 | `ALERT_COOLDOWN_SECONDS` | Anti-spam Telegram par event_type (in-memory) | `60` | non |
+| `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
+| `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
+| `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
 
 ## Going live (passage du dry-run au mode réel)
 
@@ -150,6 +153,24 @@ Pour les activer (5 min) :
 
 Anti-spam : cooldown in-memory de `ALERT_COOLDOWN_SECONDS` par `cooldown_key` (reset au boot).
 
+## Dashboard local (optionnel, M4.5)
+
+Dashboard web **read-only** pour superviser live les détections, décisions, ordres, positions et PnL (graph Chart.js).
+
+Opt-in via `.env` :
+
+```
+DASHBOARD_ENABLED=true
+DASHBOARD_HOST=127.0.0.1   # ⚠️ localhost-only par défaut — ne change que si tu sais
+DASHBOARD_PORT=8787
+```
+
+Lance le bot puis ouvre `http://127.0.0.1:8787/` dans ton navigateur.
+
+Pages : Home (KPIs) · Détection · Stratégie · Exécution · Positions · PnL.
+
+Aucune action d'écriture n'est exposée — uniquement des `SELECT`. Pas d'auth : le bind localhost suffit pour un bot mono-utilisateur local. **Changer `DASHBOARD_HOST` à `0.0.0.0` expose le dashboard sur tout le LAN : à tes risques.**
+
 ## Rapport PnL
 
 Le writer écrit un snapshot en DB toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS` (5 min par défaut). Pour générer un rapport HTML lisible avec sparkline SVG :
@@ -172,6 +193,7 @@ polycopy/
 │   ├── executor/         # CLOB orders signés (avec dry-run safeguards)
 │   ├── storage/          # SQLAlchemy models + repositories
 │   ├── monitoring/       # Telegram, snapshots PnL, kill switch (M4)
+│   ├── dashboard/        # FastAPI + HTMX + Chart.js, localhost-only (M4.5)
 │   ├── config.py         # Pydantic Settings
 │   └── __main__.py       # Entrypoint asyncio
 ├── alembic/              # Migrations DB (M4+)
@@ -198,6 +220,7 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M2** : Strategy Engine (filtres + sizing pipeline)
 - [x] **M3** : Executor (signature CLOB + POST, dry-run par défaut)
 - [x] **M4** : Monitoring (Telegram, snapshots PnL, kill switch, Alembic, rapport HTML)
+- [x] **M4.5** : Dashboard local (FastAPI + HTMX + Chart.js, read-only, opt-in)
 - [ ] **M5** : Scoring de traders + sélection automatique
 
 ## Avertissement

@@ -1,0 +1,34 @@
+{% from "macros.html" import pagination_footer %}
+{% if rows %}
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Timestamp (UTC)</th>
+      <th>Wallet</th>
+      <th>Side</th>
+      <th>Size</th>
+      <th>USDC</th>
+      <th>Prix</th>
+      <th>Slug</th>
+      <th>Tx</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for trade in rows %}
+    <tr>
+      <td><small>{{ trade.timestamp.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
+      <td><code>{{ trade.target_wallet[:8] }}…{{ trade.target_wallet[-4:] }}</code></td>
+      <td>{{ trade.side }}</td>
+      <td>{{ "%.2f" | format(trade.size) }}</td>
+      <td>{{ "%.2f" | format(trade.usdc_size) }}</td>
+      <td>{{ "%.4f" | format(trade.price) }}</td>
+      <td><small>{{ trade.slug or "—" }}</small></td>
+      <td><code>{{ trade.tx_hash[:10] }}…</code></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{{ pagination_footer("/detections", offset, limit, rows | length >= limit) }}
+{% else %}
+<p><small>Aucun trade détecté pour ce filtre.</small></p>
+{% endif %}

@@ -1,0 +1,32 @@
+{% from "macros.html" import pagination_footer %}
+{% if rows %}
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Opened at (UTC)</th>
+      <th>Closed at (UTC)</th>
+      <th>Condition</th>
+      <th>Asset</th>
+      <th>Size</th>
+      <th>Avg price</th>
+      <th>Etat</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in rows %}
+    <tr>
+      <td><small>{{ p.opened_at.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
+      <td><small>{{ p.closed_at.strftime("%Y-%m-%d %H:%M:%SZ") if p.closed_at else "—" }}</small></td>
+      <td><code>{{ p.condition_id[:10] }}…</code></td>
+      <td><code>{{ p.asset_id[:10] }}…</code></td>
+      <td>{{ "%.4f" | format(p.size) }}</td>
+      <td>{{ "%.4f" | format(p.avg_price) }}</td>
+      <td>{% if p.closed_at %}<del>closed</del>{% else %}<mark>open</mark>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{{ pagination_footer("/positions", offset, limit, rows | length >= limit) }}
+{% else %}
+<p><small>Aucune position pour ce filtre.</small></p>
+{% endif %}

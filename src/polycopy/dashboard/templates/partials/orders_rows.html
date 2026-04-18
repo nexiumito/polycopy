@@ -1,0 +1,36 @@
+{% from "macros.html" import status_badge, pagination_footer %}
+{% if rows %}
+<table role="grid">
+  <thead>
+    <tr>
+      <th>Sent at (UTC)</th>
+      <th>Source Tx</th>
+      <th>Side</th>
+      <th>Size</th>
+      <th>Prix</th>
+      <th>Tick</th>
+      <th>Neg-risk</th>
+      <th>Status</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for o in rows %}
+    <tr>
+      <td><small>{{ o.sent_at.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
+      <td><code>{{ o.source_tx_hash[:10] }}…</code></td>
+      <td>{{ o.side }}</td>
+      <td>{{ "%.2f" | format(o.size) }}</td>
+      <td>{{ "%.4f" | format(o.price) }}</td>
+      <td>{{ o.tick_size }}</td>
+      <td>{{ "oui" if o.neg_risk else "non" }}</td>
+      <td>{{ status_badge(o.status) }}</td>
+      <td><small>{{ o.error_msg or "—" }}</small></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{{ pagination_footer("/orders", offset, limit, rows | length >= limit) }}
+{% else %}
+<p><small>Aucun ordre pour ce filtre.</small></p>
+{% endif %}

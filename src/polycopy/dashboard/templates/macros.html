@@ -1,0 +1,32 @@
+{#
+  Macros Jinja réutilisables. Minimalistes (règle rule-of-three).
+#}
+
+{% macro kpi_card(label, value) -%}
+<article>
+  <header><small>{{ label }}</small></header>
+  <strong style="font-size: 1.6rem">{{ value }}</strong>
+</article>
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+{% if status == "FILLED" or status == "SENT" %}
+<mark>{{ status }}</mark>
+{% elif status == "REJECTED" or status == "FAILED" %}
+<del>{{ status }}</del>
+{% else %}
+<code>{{ status }}</code>
+{% endif %}
+{%- endmacro %}
+
+{% macro pagination_footer(base_url, offset, limit, has_more) -%}
+<footer>
+  {% if offset > 0 %}
+    <a href="{{ base_url }}?offset={{ [offset - limit, 0] | max }}&limit={{ limit }}">← prev</a>
+  {% endif %}
+  {% if has_more %}
+    <a href="{{ base_url }}?offset={{ offset + limit }}&limit={{ limit }}">next →</a>
+  {% endif %}
+  <small>offset={{ offset }} limit={{ limit }}</small>
+</footer>
+{%- endmacro %}

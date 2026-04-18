@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}stratégie{% endblock %}
+{% block content %}
+<h2>Stratégie</h2>
+<nav>
+  <ul>
+    <li><a href="/strategy">Toutes</a></li>
+    <li><a href="/strategy?decision=APPROVED">Approuvées</a></li>
+    <li><a href="/strategy?decision=REJECTED">Rejetées</a></li>
+  </ul>
+</nav>
+<section id="strategy-rows"
+         hx-get="/partials/strategy-rows?decision={{ decision | urlencode }}"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement décisions…</p>
+</section>
+{% endblock %}

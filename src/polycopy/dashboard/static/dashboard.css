@@ -1,0 +1,25 @@
+/* Overrides minimalistes pour le dashboard polycopy. */
+
+main.container {
+  max-width: 1200px;
+}
+
+table {
+  font-size: 0.9rem;
+}
+
+table thead {
+  position: sticky;
+  top: 0;
+  background: var(--pico-card-background-color, #111);
+  z-index: 1;
+}
+
+code {
+  font-size: 0.85em;
+}
+
+mark {
+  padding: 0.1em 0.3em;
+  border-radius: 0.2em;
+}

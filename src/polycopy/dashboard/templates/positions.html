@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}positions{% endblock %}
+{% block content %}
+<h2>Positions</h2>
+<nav>
+  <ul>
+    <li><a href="/positions">Toutes</a></li>
+    <li><a href="/positions?state=open">Ouvertes</a></li>
+    <li><a href="/positions?state=closed">Fermées</a></li>
+  </ul>
+</nav>
+<section id="positions-rows"
+         hx-get="/partials/positions-rows?state={{ state | urlencode }}"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+  <p aria-busy="true">chargement positions…</p>
+</section>
+{% endblock %}

@@ -220,3 +220,37 @@ python scripts/pnl_report.py --since 7 --output html
 ```
 
 Formats alternatifs : `--output stdout` (table plain text) ou `--output csv`.
+
+## 13. Activer le dashboard local (optionnel, M4.5)
+
+Dashboard web **read-only** pour superviser les détections, décisions, ordres, positions et PnL en quasi-temps-réel.
+
+Dans `.env` :
+
+```
+DASHBOARD_ENABLED=true
+```
+
+Relance le bot puis ouvre `http://127.0.0.1:8787/` dans ton navigateur.
+
+Pages : Home (KPIs) · Détection · Stratégie · Exécution · Positions · PnL (graph Chart.js).
+
+Le dashboard est **read-only** (aucun `POST`/`DELETE` exposé) et n'est joignable que depuis la machine hôte (bind localhost, aucune auth applicative nécessaire).
+
+Pour changer le port : `DASHBOARD_PORT=9000`.
+
+Pour l'exposer sur le LAN (⚠️ **à tes risques** — tu exposes les wallets observés et tes trades à tout le réseau local, aucune auth) :
+
+```
+DASHBOARD_HOST=0.0.0.0
+```
+
+### Troubleshooting
+
+| Symptôme | Cause probable | Fix |
+|---|---|---|
+| Pas de log `dashboard_starting` | `DASHBOARD_ENABLED` absent ou `false` | Édite `.env` → `DASHBOARD_ENABLED=true`, relance. |
+| Connexion refusée | Bot pas lancé, ou port déjà pris | `ss -tlnp \| grep 8787` pour vérifier. |
+| Page blanche | CDN (HTMX / Chart.js / Pico.css) bloqué | Premier chargement nécessite internet, ensuite cache navigateur. |
+| Le navigateur Windows ne voit rien | Sous WSL2, `http://localhost:8787/` est normalement forwardé auto. Sinon `http://$(hostname -I):8787/`. | — |
+

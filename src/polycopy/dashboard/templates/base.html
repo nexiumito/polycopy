@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>polycopy — {% block title %}dashboard{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b1220' stroke='%236ea8fe' stroke-width='2'/><text x='16' y='21' font-family='system-ui' font-size='16' fill='%236ea8fe' text-anchor='middle'>P</text></svg>">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7" defer></script>
+</head>
+<body>
+<main class="container">
+  <nav>
+    <ul>
+      <li><strong>polycopy</strong>{% if settings_dry_run %} <small><mark>DRY-RUN</mark></small>{% endif %}</li>
+    </ul>
+    <ul>
+      <li><a href="/home">Home</a></li>
+      <li><a href="/detections">Détection</a></li>
+      <li><a href="/strategy">Stratégie</a></li>
+      <li><a href="/orders">Exécution</a></li>
+      <li><a href="/positions">Positions</a></li>
+      <li><a href="/pnl">PnL</a></li>
+    </ul>
+  </nav>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

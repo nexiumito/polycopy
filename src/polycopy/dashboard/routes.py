@@ -1,0 +1,260 @@
+"""Routes FastAPI du dashboard : 6 pages + ~6 partials HTMX + JSON PnL + healthz.
+
+Toutes les routes sont ``GET`` (cf. spec §5.2, garanti par ``test_dashboard_security``).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
+
+import structlog
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from polycopy.config import Settings
+from polycopy.dashboard import queries
+from polycopy.dashboard.middleware import StructlogAccessMiddleware
+
+log = structlog.get_logger(__name__)
+
+_DASHBOARD_DIR = Path(__file__).resolve().parent
+_TEMPLATES_DIR = _DASHBOARD_DIR / "templates"
+_STATIC_DIR = _DASHBOARD_DIR / "static"
+
+
+def _templates() -> Jinja2Templates:
+    return Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
+    """Extrait le ``session_factory`` attaché à ``app.state`` (§5.1)."""
+    factory = request.app.state.session_factory
+    assert isinstance(factory, async_sessionmaker)  # noqa: S101 — invariant app state
+    return factory
+
+
+def get_settings(request: Request) -> Settings:
+    """Retourne les ``Settings`` attachés à ``app.state``."""
+    return request.app.state.settings  # type: ignore[no-any-return]
+
+
+SFDep = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
+STDep = Annotated[Settings, Depends(get_settings)]
+
+
+def _render(
+    request: Request,
+    template_name: str,
+    context: dict[str, Any],
+) -> HTMLResponse:
+    """Wrapper ``TemplateResponse`` typé, injecte ``settings``/``dry_run`` communs."""
+    templates = _templates()
+    base_context: dict[str, Any] = {
+        "settings_dry_run": request.app.state.settings.dry_run,
+    }
+    base_context.update(context)
+    return templates.TemplateResponse(request, template_name, base_context)
+
+
+def build_pages_router() -> APIRouter:
+    """Router des pages full-HTML (layout ``base.html``)."""
+    router = APIRouter()
+
+    @router.get("/", response_class=RedirectResponse)
+    async def root() -> RedirectResponse:
+        return RedirectResponse(url="/home", status_code=307)
+
+    @router.get("/home", response_class=HTMLResponse)
+    async def home(request: Request) -> HTMLResponse:
+        return _render(request, "home.html", {})
+
+    @router.get("/detections", response_class=HTMLResponse)
+    async def detections(request: Request, wallet: str | None = None) -> HTMLResponse:
+        return _render(request, "detections.html", {"wallet": wallet or ""})
+
+    @router.get("/strategy", response_class=HTMLResponse)
+    async def strategy(request: Request, decision: str | None = None) -> HTMLResponse:
+        return _render(request, "strategy.html", {"decision": decision or ""})
+
+    @router.get("/orders", response_class=HTMLResponse)
+    async def orders(request: Request, status: str | None = None) -> HTMLResponse:
+        return _render(request, "orders.html", {"status": status or ""})
+
+    @router.get("/positions", response_class=HTMLResponse)
+    async def positions(request: Request, state: str | None = None) -> HTMLResponse:
+        return _render(request, "positions.html", {"state": state or ""})
+
+    @router.get("/pnl", response_class=HTMLResponse)
+    async def pnl(request: Request, since: str = "24h") -> HTMLResponse:
+        return _render(request, "pnl.html", {"since": since})
+
+    return router
+
+
+def build_partials_router() -> APIRouter:
+    """Router des fragments HTMX (``/partials/*``) + endpoint JSON Chart.js."""
+    router = APIRouter(prefix="/partials")
+
+    @router.get("/kpis", response_class=HTMLResponse)
+    async def kpis(request: Request, sf: SFDep) -> HTMLResponse:
+        kpis_data = await queries.fetch_home_kpis(sf)
+        return _render(request, "partials/kpis.html", {"kpis": kpis_data})
+
+    @router.get("/detections-rows", response_class=HTMLResponse)
+    async def detections_rows(
+        request: Request,
+        sf: SFDep,
+        wallet: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        rows = await queries.list_detected_trades(
+            sf,
+            wallet=wallet,
+            limit=limit,
+            offset=offset,
+        )
+        return _render(
+            request,
+            "partials/detections_rows.html",
+            {"rows": rows, "limit": limit, "offset": offset, "wallet": wallet or ""},
+        )
+
+    @router.get("/strategy-rows", response_class=HTMLResponse)
+    async def strategy_rows(
+        request: Request,
+        sf: SFDep,
+        decision: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        decision_typed: Literal["APPROVED", "REJECTED"] | None = (
+            cast(Literal["APPROVED", "REJECTED"], decision)
+            if decision in {"APPROVED", "REJECTED"}
+            else None
+        )
+        rows = await queries.list_strategy_decisions(
+            sf,
+            decision=decision_typed,
+            limit=limit,
+            offset=offset,
+        )
+        return _render(
+            request,
+            "partials/strategy_rows.html",
+            {
+                "rows": rows,
+                "limit": limit,
+                "offset": offset,
+                "decision": decision or "",
+            },
+        )
+
+    @router.get("/orders-rows", response_class=HTMLResponse)
+    async def orders_rows(
+        request: Request,
+        sf: SFDep,
+        status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        rows = await queries.list_orders(
+            sf,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        return _render(
+            request,
+            "partials/orders_rows.html",
+            {"rows": rows, "limit": limit, "offset": offset, "status": status or ""},
+        )
+
+    @router.get("/positions-rows", response_class=HTMLResponse)
+    async def positions_rows(
+        request: Request,
+        sf: SFDep,
+        state: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        state_typed: Literal["open", "closed"] | None = (
+            cast(Literal["open", "closed"], state) if state in {"open", "closed"} else None
+        )
+        rows = await queries.list_positions(
+            sf,
+            state=state_typed,
+            limit=limit,
+            offset=offset,
+        )
+        return _render(
+            request,
+            "partials/positions_rows.html",
+            {
+                "rows": rows,
+                "limit": limit,
+                "offset": offset,
+                "state": state or "",
+            },
+        )
+
+    @router.get("/pnl-data.json", response_class=JSONResponse)
+    async def pnl_data(
+        sf: SFDep,
+        since: str = "24h",
+        include_dry_run: bool = False,
+    ) -> JSONResponse:
+        series = await queries.fetch_pnl_series(
+            sf,
+            since=queries.parse_since(since),
+            include_dry_run=include_dry_run,
+        )
+        payload: dict[str, Any] = {
+            "timestamps": [ts.isoformat() for ts in series.timestamps],
+            "total_usdc": series.total_usdc,
+            "drawdown_pct": series.drawdown_pct,
+        }
+        return JSONResponse(payload)
+
+    return router
+
+
+def build_app(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> FastAPI:
+    """Construit l'app FastAPI (pas de Swagger, middleware structlog, static mount)."""
+    app = FastAPI(
+        title="polycopy dashboard",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    app.state.session_factory = session_factory
+    app.state.settings = settings
+
+    app.add_middleware(StructlogAccessMiddleware)
+
+    app.include_router(build_pages_router())
+    app.include_router(build_partials_router())
+
+    @app.get("/healthz", response_class=JSONResponse)
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    if _STATIC_DIR.is_dir():
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(_STATIC_DIR)),
+            name="static",
+        )
+
+    log.info(
+        "dashboard_routes_registered",
+        routes_count=len(app.routes),
+    )
+    return app

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}pnl{% endblock %}
+{% block content %}
+<h2>PnL</h2>
+<nav>
+  <ul>
+    <li>Fenêtre :</li>
+    <li><a href="/pnl?since=1h">1h</a></li>
+    <li><a href="/pnl?since=24h">24h</a></li>
+    <li><a href="/pnl?since=7d">7d</a></li>
+    <li><a href="/pnl?since=30d">30d</a></li>
+  </ul>
+</nav>
+<article>
+  <canvas id="pnlChart" height="120"></canvas>
+  <footer><small id="pnlStatus">chargement…</small></footer>
+</article>
+<script>
+(function () {
+  const since = {{ since | tojson }};
+  const ctx = document.getElementById("pnlChart");
+  const status = document.getElementById("pnlStatus");
+  let chart = null;
+
+  function buildChart(data) {
+    chart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: data.timestamps,
+        datasets: [
+          {
+            label: "Total USDC",
+            data: data.total_usdc,
+            yAxisID: "y",
+            borderColor: "#6ea8fe",
+            tension: 0.2,
+          },
+          {
+            label: "Drawdown %",
+            data: data.drawdown_pct,
+            yAxisID: "y1",
+            borderColor: "#ff6b6b",
+            tension: 0.2,
+          },
+        ],
+      },
+      options: {
+        animation: false,
+        scales: {
+          y: { type: "linear", position: "left" },
+          y1: { type: "linear", position: "right", grid: { drawOnChartArea: false } },
+        },
+      },
+    });
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("/partials/pnl-data.json?since=" + encodeURIComponent(since));
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      status.textContent =
+        data.timestamps.length + " snapshots, fenêtre " + since;
+      if (chart === null) {
+        buildChart(data);
+      } else {
+        chart.data.labels = data.timestamps;
+        chart.data.datasets[0].data = data.total_usdc;
+        chart.data.datasets[1].data = data.drawdown_pct;
+        chart.update("none");
+      }
+    } catch (err) {
+      status.textContent = "erreur: " + err.message;
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", refresh);
+  } else {
+    refresh();
+  }
+  setInterval(refresh, 5000);
+})();
+</script>
+{% endblock %}
