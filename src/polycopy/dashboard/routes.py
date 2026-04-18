@@ -1,6 +1,7 @@
-"""Routes FastAPI du dashboard : 6 pages + ~6 partials HTMX + JSON PnL + healthz.
+"""Routes FastAPI du dashboard : pages + partials HTMX + JSON PnL + healthz.
 
-Toutes les routes sont ``GET`` (cf. spec §5.2, garanti par ``test_dashboard_security``).
+Toutes les routes sont ``GET`` (cf. spec M4.5 §5.2 et M6 §0.6, garanti par
+``test_dashboard_security`` + ``test_dashboard_security_m6``).
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -17,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.config import Settings
 from polycopy.dashboard import queries
+from polycopy.dashboard.health_check import ExternalHealthChecker
+from polycopy.dashboard.jinja_filters import all_filters
 from polycopy.dashboard.middleware import StructlogAccessMiddleware
 
 log = structlog.get_logger(__name__)
@@ -26,8 +30,11 @@ _TEMPLATES_DIR = _DASHBOARD_DIR / "templates"
 _STATIC_DIR = _DASHBOARD_DIR / "static"
 
 
-def _templates() -> Jinja2Templates:
-    return Jinja2Templates(directory=str(_TEMPLATES_DIR))
+def _make_templates() -> Jinja2Templates:
+    """Construit ``Jinja2Templates`` avec les filtres M6 enregistrés."""
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.filters.update(all_filters())
+    return templates
 
 
 def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
@@ -42,6 +49,11 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings  # type: ignore[no-any-return]
 
 
+def _get_health_checker(request: Request) -> ExternalHealthChecker:
+    """Retourne le singleton ``ExternalHealthChecker`` attaché à ``app.state``."""
+    return request.app.state.health_checker  # type: ignore[no-any-return]
+
+
 SFDep = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 STDep = Annotated[Settings, Depends(get_settings)]
 
@@ -51,10 +63,17 @@ def _render(
     template_name: str,
     context: dict[str, Any],
 ) -> HTMLResponse:
-    """Wrapper ``TemplateResponse`` typé, injecte ``settings``/``dry_run`` communs."""
-    templates = _templates()
+    """Wrapper ``TemplateResponse`` typé, injecte les variables UI communes M6.
+
+    - ``settings_dry_run`` : badge DRY-RUN dans la sidebar (M4.5).
+    - ``dashboard_theme`` / ``poll_interval`` : tokens cosmétiques (M6).
+    """
+    templates: Jinja2Templates = request.app.state.templates
+    settings: Settings = request.app.state.settings
     base_context: dict[str, Any] = {
-        "settings_dry_run": request.app.state.settings.dry_run,
+        "settings_dry_run": settings.dry_run,
+        "dashboard_theme": settings.dashboard_theme,
+        "poll_interval": settings.dashboard_poll_interval_seconds,
     }
     base_context.update(context)
     return templates.TemplateResponse(request, template_name, base_context)
@@ -69,8 +88,19 @@ def build_pages_router() -> APIRouter:
         return RedirectResponse(url="/home", status_code=307)
 
     @router.get("/home", response_class=HTMLResponse)
-    async def home(request: Request) -> HTMLResponse:
-        return _render(request, "home.html", {})
+    async def home(request: Request, sf: SFDep, settings: STDep) -> HTMLResponse:
+        cards = await queries.get_home_kpi_cards(sf)
+        discovery = await queries.get_discovery_status(sf, enabled=settings.discovery_enabled)
+        recent_trades = await queries.list_detected_trades(sf, limit=8)
+        return _render(
+            request,
+            "home.html",
+            {
+                "cards": cards,
+                "discovery": discovery,
+                "recent_trades": recent_trades,
+            },
+        )
 
     @router.get("/detections", response_class=HTMLResponse)
     async def detections(request: Request, wallet: str | None = None) -> HTMLResponse:
@@ -89,8 +119,13 @@ def build_pages_router() -> APIRouter:
         return _render(request, "positions.html", {"state": state or ""})
 
     @router.get("/pnl", response_class=HTMLResponse)
-    async def pnl(request: Request, since: str = "24h") -> HTMLResponse:
-        return _render(request, "pnl.html", {"since": since})
+    async def pnl(request: Request, sf: SFDep, since: str = "24h") -> HTMLResponse:
+        milestones = await queries.get_pnl_milestones(sf, since=queries.parse_since(since))
+        return _render(
+            request,
+            "pnl.html",
+            {"since": since, "milestones": milestones},
+        )
 
     @router.get("/traders", response_class=HTMLResponse)
     async def traders(request: Request, status: str | None = None) -> HTMLResponse:
@@ -104,6 +139,11 @@ def build_pages_router() -> APIRouter:
             {"report_exists": queries.backtest_report_exists()},
         )
 
+    @router.get("/logs", response_class=HTMLResponse)
+    async def logs_stub(request: Request) -> HTMLResponse:
+        """Stub M9 — renseigne l'utilisateur que la page arrive plus tard."""
+        return _render(request, "logs_stub.html", {})
+
     return router
 
 
@@ -113,8 +153,17 @@ def build_partials_router() -> APIRouter:
 
     @router.get("/kpis", response_class=HTMLResponse)
     async def kpis(request: Request, sf: SFDep) -> HTMLResponse:
-        kpis_data = await queries.fetch_home_kpis(sf)
-        return _render(request, "partials/kpis.html", {"kpis": kpis_data})
+        cards = await queries.get_home_kpi_cards(sf)
+        return _render(request, "partials/kpis.html", {"cards": cards})
+
+    @router.get("/discovery-summary", response_class=HTMLResponse)
+    async def discovery_summary(request: Request, sf: SFDep, settings: STDep) -> HTMLResponse:
+        discovery = await queries.get_discovery_status(sf, enabled=settings.discovery_enabled)
+        return _render(
+            request,
+            "partials/discovery_summary.html",
+            {"discovery": discovery},
+        )
 
     @router.get("/detections-rows", response_class=HTMLResponse)
     async def detections_rows(
@@ -262,6 +311,29 @@ def build_partials_router() -> APIRouter:
     return router
 
 
+def build_api_router() -> APIRouter:
+    """Router des endpoints API M6 (health-external, version)."""
+    router = APIRouter(prefix="/api")
+
+    @router.get("/health-external", response_class=HTMLResponse)
+    async def health_external(request: Request) -> HTMLResponse:
+        checker = _get_health_checker(request)
+        snapshot = await checker.check()
+        version = await queries.get_app_version()
+        return _render(
+            request,
+            "partials/external_health.html",
+            {"snapshot": snapshot, "version": version},
+        )
+
+    @router.get("/version", response_class=JSONResponse)
+    async def version_json() -> JSONResponse:
+        version = await queries.get_app_version()
+        return JSONResponse({"version": version})
+
+    return router
+
+
 def build_app(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
@@ -275,11 +347,18 @@ def build_app(
     )
     app.state.session_factory = session_factory
     app.state.settings = settings
+    app.state.templates = _make_templates()
+    # 1 ``httpx.AsyncClient`` partagé pour le health checker (M6 §4 / §14.4 #8).
+    # Pas de ``aclose()`` explicite : l'app vit pour la durée du process uvicorn.
+    http_client = httpx.AsyncClient()
+    app.state.http_client = http_client
+    app.state.health_checker = ExternalHealthChecker(http_client)
 
     app.add_middleware(StructlogAccessMiddleware)
 
     app.include_router(build_pages_router())
     app.include_router(build_partials_router())
+    app.include_router(build_api_router())
 
     @app.get("/healthz", response_class=JSONResponse)
     async def healthz() -> dict[str, str]:

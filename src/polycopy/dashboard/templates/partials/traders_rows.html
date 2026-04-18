@@ -1,45 +1,52 @@
-<section>
-  <p>
-    <small>
-      {% for s, n in counts.items() %}
-        <kbd>{{ s }}: {{ n }}</kbd>
-      {% endfor %}
-      {% if not counts %}<em>Aucun trader en DB.</em>{% endif %}
-    </small>
-  </p>
-</section>
+{% from "macros.html" import badge, score_gauge %}
+<div class="flex flex-wrap gap-2 mb-3 text-xs" style="color: var(--color-muted);">
+  {% for s, n in counts.items() %}
+    <span class="px-2 py-1 rounded border" style="border-color: var(--color-border);">{{ s }}: {{ n }}</span>
+  {% endfor %}
+  {% if not counts %}<em>Aucun trader en DB.</em>{% endif %}
+</div>
 {% if rows %}
-<table>
-  <thead>
-    <tr>
-      <th>Wallet</th>
-      <th>Label</th>
-      <th>Status</th>
-      <th>Score</th>
-      <th>Version</th>
-      <th>Last scored</th>
-      <th>Discovered</th>
-      <th>Low-cycles</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for r in rows %}
-    <tr>
-      <td><code>{{ r.wallet_address }}</code></td>
-      <td>{{ r.label or "—" }}</td>
-      <td>
-        <mark>{{ r.status }}</mark>
-        {% if r.pinned %}<small> (pinned)</small>{% endif %}
-      </td>
-      <td>{{ "%.3f"|format(r.score) if r.score is not none else "—" }}</td>
-      <td><small>{{ r.scoring_version or "—" }}</small></td>
-      <td><small>{{ r.last_scored_at.strftime("%Y-%m-%d %H:%MZ") if r.last_scored_at else "—" }}</small></td>
-      <td><small>{{ r.discovered_at.strftime("%Y-%m-%d") if r.discovered_at else "—" }}</small></td>
-      <td>{{ r.consecutive_low_score_cycles }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="space-y-2">
+  {% for r in rows %}
+  <details class="rounded-xl border"
+           style="border-color: var(--color-border); background: var(--color-surface);">
+    <summary class="flex items-center gap-4 p-4 cursor-pointer">
+      {{ score_gauge(r.score, r.wallet_address) }}
+      <div class="flex-1 min-w-0">
+        <p class="font-medium flex items-center gap-2">
+          {{ r | wallet_label }}
+          {% if r.pinned %}
+            <i data-lucide="pin" class="w-4 h-4 inline" style="color: var(--color-pinned);"></i>
+          {% endif %}
+        </p>
+        <p class="text-xs" style="color: var(--color-muted);">{{ r.wallet_address | short_hash }}</p>
+      </div>
+      {{ badge(r.status, r.status) }}
+      <i data-lucide="chevron-down" class="w-4 h-4" style="color: var(--color-muted);"></i>
+    </summary>
+    <div class="border-t p-4 text-sm" style="border-color: var(--color-border);">
+      <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div>
+          <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Version</dt>
+          <dd>{{ r.scoring_version or "—" }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Last scored</dt>
+          <dd>{{ r.last_scored_at | humanize_dt }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Discovered</dt>
+          <dd>{{ r.discovered_at | humanize_dt }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Low cycles</dt>
+          <dd>{{ r.consecutive_low_score_cycles }}</dd>
+        </div>
+      </dl>
+    </div>
+  </details>
+  {% endfor %}
+</div>
 {% else %}
-<p><small>Aucun trader correspondant à ce filtre.</small></p>
+<p class="p-4 text-sm" style="color: var(--color-muted);">Aucun trader pour ce filtre.</p>
 {% endif %}

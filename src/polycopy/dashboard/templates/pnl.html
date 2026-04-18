@@ -1,29 +1,63 @@
 {% extends "base.html" %}
+{% from "macros.html" import milestone_item %}
 {% block title %}pnl{% endblock %}
+{% block heading %}PnL{% endblock %}
 {% block content %}
-<h2>PnL</h2>
-<nav>
-  <ul>
-    <li>Fenêtre :</li>
-    <li><a href="/pnl?since=1h">1h</a></li>
-    <li><a href="/pnl?since=24h">24h</a></li>
-    <li><a href="/pnl?since=7d">7d</a></li>
-    <li><a href="/pnl?since=30d">30d</a></li>
-  </ul>
-</nav>
-<article>
-  <canvas id="pnlChart" height="120"></canvas>
-  <footer><small id="pnlStatus">chargement…</small></footer>
+
+<div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+  <nav class="flex flex-wrap gap-2 text-sm">
+    {% for opt in [("1 h", "1h"), ("24 h", "24h"), ("7 j", "7d"), ("30 j", "30d")] %}
+      {% set label, val = opt %}
+      <a href="/pnl?since={{ val }}" class="filter-chip {% if since == val %}filter-chip-active{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+  {# Stub toggle réel/dry-run préparé pour M8 (cf. spec §7.4). Disabled à M6. #}
+  <div class="flex items-center gap-2 text-xs" style="color: var(--color-muted);" title="Branchement M8">
+    <span>Mode :</span>
+    <span class="filter-chip filter-chip-active opacity-60 cursor-not-allowed">réel</span>
+    <span class="filter-chip opacity-40 cursor-not-allowed">dry-run (M8)</span>
+  </div>
+</div>
+
+<article class="rounded-xl border p-4"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <div class="relative" style="height: 280px;">
+    <canvas id="pnl-chart"></canvas>
+  </div>
+  <p id="pnl-status" class="mt-3 text-xs" style="color: var(--color-muted);">chargement…</p>
 </article>
+
+<section class="mt-6 rounded-xl border p-4"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <h2 class="text-sm font-semibold flex items-center gap-2">
+    <i data-lucide="milestone" class="w-4 h-4" style="color: var(--color-muted);"></i>
+    Milestones
+  </h2>
+  {% if milestones %}
+  <ul class="mt-2 divide-y" style="border-color: var(--color-border);">
+    {% for m in milestones %}
+      {{ milestone_item(m) }}
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="mt-2 text-sm" style="color: var(--color-muted);">Aucun milestone enregistré sur la fenêtre.</p>
+  {% endif %}
+</section>
+
 <script>
 (function () {
   const since = {{ since | tojson }};
-  const ctx = document.getElementById("pnlChart");
-  const status = document.getElementById("pnlStatus");
-  let chart = null;
+  const statusEl = document.getElementById("pnl-status");
 
-  function buildChart(data) {
-    chart = new Chart(ctx, {
+  function renderChart(data) {
+    const ctx = document.getElementById("pnl-chart");
+    if (!ctx) return;
+    if (window._pnlChart) {
+      window._pnlChart.destroy();
+    }
+    const profit = getComputedStyle(document.documentElement).getPropertyValue("--color-profit").trim() || "#30a46c";
+    const loss = getComputedStyle(document.documentElement).getPropertyValue("--color-loss").trim() || "#e5484d";
+    window._pnlChart = new Chart(ctx, {
       type: "line",
       data: {
         labels: data.timestamps,
@@ -32,23 +66,40 @@
             label: "Total USDC",
             data: data.total_usdc,
             yAxisID: "y",
-            borderColor: "#6ea8fe",
-            tension: 0.2,
+            borderColor: profit,
+            backgroundColor: function (c) {
+              const chart = c.chart;
+              if (!chart || !chart.ctx || !chart.chartArea) return profit;
+              const g = chart.ctx.createLinearGradient(0, chart.chartArea.top, 0, chart.chartArea.bottom);
+              g.addColorStop(0, profit + "59");
+              g.addColorStop(1, profit + "00");
+              return g;
+            },
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
           },
           {
             label: "Drawdown %",
             data: data.drawdown_pct,
             yAxisID: "y1",
-            borderColor: "#ff6b6b",
-            tension: 0.2,
+            borderColor: loss,
+            backgroundColor: loss + "1a",
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
           },
         ],
       },
       options: {
         animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: true, labels: { color: getComputedStyle(document.documentElement).getPropertyValue("--color-text").trim() } } },
         scales: {
-          y: { type: "linear", position: "left" },
-          y1: { type: "linear", position: "right", grid: { drawOnChartArea: false } },
+          x: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue("--color-muted").trim() }, grid: { display: false } },
+          y: { type: "linear", position: "left", ticks: { color: getComputedStyle(document.documentElement).getPropertyValue("--color-muted").trim() } },
+          y1: { type: "linear", position: "right", reverse: true, grid: { drawOnChartArea: false }, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue("--color-muted").trim() } },
         },
       },
     });
@@ -59,27 +110,26 @@
       const res = await fetch("/partials/pnl-data.json?since=" + encodeURIComponent(since));
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
-      status.textContent =
-        data.timestamps.length + " snapshots, fenêtre " + since;
-      if (chart === null) {
-        buildChart(data);
-      } else {
-        chart.data.labels = data.timestamps;
-        chart.data.datasets[0].data = data.total_usdc;
-        chart.data.datasets[1].data = data.drawdown_pct;
-        chart.update("none");
-      }
+      statusEl.textContent = data.timestamps.length + " snapshots · fenêtre " + since;
+      renderChart(data);
     } catch (err) {
-      status.textContent = "erreur: " + err.message;
+      statusEl.textContent = "erreur: " + err.message;
     }
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", refresh);
-  } else {
+  function start() {
     refresh();
+    setInterval(function () {
+      if (document.visibilityState === "visible") refresh();
+    }, 5000);
   }
-  setInterval(refresh, 5000);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
 })();
 </script>
+
 {% endblock %}

@@ -1,32 +1,29 @@
-{% from "macros.html" import pagination_footer %}
+{% from "macros.html" import infinite_scroll_sentinel %}
 {% if rows %}
-<table role="grid">
-  <thead>
-    <tr>
-      <th>Opened at (UTC)</th>
-      <th>Closed at (UTC)</th>
-      <th>Condition</th>
-      <th>Asset</th>
-      <th>Size</th>
-      <th>Avg price</th>
-      <th>Etat</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for p in rows %}
-    <tr>
-      <td><small>{{ p.opened_at.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
-      <td><small>{{ p.closed_at.strftime("%Y-%m-%d %H:%M:%SZ") if p.closed_at else "—" }}</small></td>
-      <td><code>{{ p.condition_id[:10] }}…</code></td>
-      <td><code>{{ p.asset_id[:10] }}…</code></td>
-      <td>{{ "%.4f" | format(p.size) }}</td>
-      <td>{{ "%.4f" | format(p.avg_price) }}</td>
-      <td>{% if p.closed_at %}<del>closed</del>{% else %}<mark>open</mark>{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{{ pagination_footer("/positions", offset, limit, rows | length >= limit) }}
+<ul class="divide-y" style="border-color: var(--color-border);">
+  {% for p in rows %}
+  <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
+    <i data-lucide="{% if p.closed_at %}check{% else %}circle-dot{% endif %}"
+       class="w-5 h-5"
+       style="color: {% if p.closed_at %}var(--color-muted){% else %}var(--color-profit){% endif %};"></i>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium">{{ p.condition_id | short_hash }} · asset {{ p.asset_id | short_hash }}</p>
+      <p class="text-xs" style="color: var(--color-muted);">
+        {{ p.size | format_size }} @ {{ p.avg_price | format_usd }} (avg)
+      </p>
+    </div>
+    <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">
+      ouvert {{ p.opened_at | humanize_dt }}
+      {% if p.closed_at %}<br>fermé {{ p.closed_at | humanize_dt }}{% endif %}
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% if rows | length >= limit %}
+  {{ infinite_scroll_sentinel(
+       "/partials/positions-rows?state=" ~ (state | urlencode),
+       offset + limit, limit, offset + (rows | length)) }}
+{% endif %}
 {% else %}
-<p><small>Aucune position pour ce filtre.</small></p>
+<p class="p-4 text-sm" style="color: var(--color-muted);">Aucune position pour ce filtre.</p>
 {% endif %}

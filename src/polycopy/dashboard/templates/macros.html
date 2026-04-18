@@ -1,32 +1,99 @@
-{#
-  Macros Jinja réutilisables. Minimalistes (règle rule-of-three).
-#}
+{# Macros Jinja réutilisables M6 — petites, concrètes, pas un mini-framework. #}
 
-{% macro kpi_card(label, value) -%}
-<article>
-  <header><small>{{ label }}</small></header>
-  <strong style="font-size: 1.6rem">{{ value }}</strong>
+{% macro kpi_card(card) -%}
+<article class="rounded-xl border p-4 flex flex-col gap-2"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <header class="flex items-center justify-between">
+    <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">{{ card.title }}</span>
+    <i data-lucide="{{ card.icon }}" class="w-4 h-4" style="color: var(--color-muted);"></i>
+  </header>
+  <p class="text-2xl font-semibold" style="color: var(--color-text);">{{ card.value }}</p>
+  {% if card.delta %}
+    <p class="text-xs"
+       style="color: {% if card.delta_sign == 'positive' %}var(--color-profit){% elif card.delta_sign == 'negative' %}var(--color-loss){% else %}var(--color-muted){% endif %};">
+      {{ card.delta }}
+    </p>
+  {% endif %}
+  <div class="mt-1" style="color: var(--color-neutral);">
+    {{ card.sparkline_points | sparkline_svg(width=240, height=32) | safe }}
+  </div>
 </article>
 {%- endmacro %}
 
-{% macro status_badge(status) -%}
-{% if status == "FILLED" or status == "SENT" %}
-<mark>{{ status }}</mark>
-{% elif status == "REJECTED" or status == "FAILED" %}
-<del>{{ status }}</del>
+{% macro badge(label, status) -%}
+<span class="{{ status | status_badge_class }}">{{ label or status }}</span>
+{%- endmacro %}
+
+{% macro side_pill(side) -%}
+<span class="inline-flex items-center gap-1 text-xs">
+  <i data-lucide="{{ side | side_icon }}" class="w-3.5 h-3.5"
+     style="color: {% if side == 'BUY' %}var(--color-profit){% else %}var(--color-loss){% endif %};"></i>
+  {{ side }}
+</span>
+{%- endmacro %}
+
+{% macro infinite_scroll_sentinel(url, last_offset, limit, current_count) -%}
+{% set joiner = "&" if "?" in url else "?" %}
+{% if current_count >= 500 %}
+  <div class="text-center py-3">
+    <button class="text-xs underline"
+            style="color: var(--color-muted);"
+            hx-get="{{ url }}{{ joiner }}offset={{ last_offset }}&limit={{ limit }}"
+            hx-target="closest div"
+            hx-swap="outerHTML">Charger plus (cap atteint)</button>
+  </div>
 {% else %}
-<code>{{ status }}</code>
+  <div hx-get="{{ url }}{{ joiner }}offset={{ last_offset }}&limit={{ limit }}"
+       hx-trigger="revealed[document.visibilityState==='visible']"
+       hx-swap="outerHTML"
+       class="text-center py-3 text-xs"
+       style="color: var(--color-muted);">…</div>
 {% endif %}
 {%- endmacro %}
 
-{% macro pagination_footer(base_url, offset, limit, has_more) -%}
-<footer>
-  {% if offset > 0 %}
-    <a href="{{ base_url }}?offset={{ [offset - limit, 0] | max }}&limit={{ limit }}">← prev</a>
+{% macro score_gauge(score, wallet_address) -%}
+{% set safe_id = wallet_address | replace('0x', '') | replace(':', '') %}
+<svg viewBox="0 0 120 120" class="w-14 h-14 shrink-0" role="img"
+     aria-label="Score {{ '%.2f' | format(score) if score is not none else '—' }}">
+  <defs>
+    <linearGradient id="gauge-{{ safe_id }}" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color: var(--color-loss); stop-opacity: 1;"/>
+      <stop offset="50%" style="stop-color: var(--color-warning); stop-opacity: 1;"/>
+      <stop offset="100%" style="stop-color: var(--color-profit); stop-opacity: 1;"/>
+    </linearGradient>
+  </defs>
+  <circle cx="60" cy="60" r="54" fill="none"
+          stroke="var(--color-border)" stroke-width="8"/>
+  <circle cx="60" cy="60" r="54" fill="none"
+          stroke="url(#gauge-{{ safe_id }})"
+          stroke-width="8"
+          stroke-dasharray="{{ score | score_to_dasharray }}"
+          stroke-linecap="round"
+          transform="rotate(-90 60 60)"/>
+  <text x="60" y="68" text-anchor="middle"
+        style="fill: var(--color-text); font-weight: 600; font-size: 18px;">
+    {{ '%.2f' | format(score) if score is not none else '—' }}
+  </text>
+</svg>
+{%- endmacro %}
+
+{% macro milestone_item(milestone) -%}
+<li class="flex items-start gap-3 py-1.5">
+  {% if milestone.event_type == "kill_switch" %}
+    <i data-lucide="shield-off" class="w-4 h-4 mt-0.5" style="color: var(--color-critical);"></i>
+  {% elif milestone.event_type == "trader_promoted" %}
+    <i data-lucide="user-check" class="w-4 h-4 mt-0.5" style="color: var(--color-profit);"></i>
+  {% elif milestone.event_type == "first_fill" %}
+    <i data-lucide="check-check" class="w-4 h-4 mt-0.5" style="color: var(--color-neutral);"></i>
+  {% else %}
+    <i data-lucide="circle-dot" class="w-4 h-4 mt-0.5" style="color: var(--color-muted);"></i>
   {% endif %}
-  {% if has_more %}
-    <a href="{{ base_url }}?offset={{ offset + limit }}&limit={{ limit }}">next →</a>
-  {% endif %}
-  <small>offset={{ offset }} limit={{ limit }}</small>
-</footer>
+  <div class="text-sm flex-1 min-w-0">
+    <span>{{ milestone.label }}</span>
+    {% if milestone.wallet_address %}
+      <span class="text-xs" style="color: var(--color-muted);">— {{ milestone.wallet_address | short_hash }}</span>
+    {% endif %}
+  </div>
+  <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">{{ milestone.at | humanize_dt }}</span>
+</li>
 {%- endmacro %}

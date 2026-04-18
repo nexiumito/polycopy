@@ -118,6 +118,24 @@ class Settings(BaseSettings):
         description="Port TCP local du dashboard.",
     )
 
+    # --- Dashboard M6 (UX cosmétique, opt-in) ----------------------------
+    dashboard_theme: Literal["dark", "light"] = Field(
+        "dark",
+        description=(
+            "Thème initial du dashboard. Toggle front-end persiste via localStorage "
+            "(clé 'polycopy.theme'). UI cosmétique — aucun impact sécurité."
+        ),
+    )
+    dashboard_poll_interval_seconds: int = Field(
+        5,
+        ge=2,
+        le=60,
+        description=(
+            "Cadence du polling HTMX des partials Home/listes (s). "
+            "UI cosmétique — gain log de fond vs M4.5 (3s → 5s)."
+        ),
+    )
+
     # --- Discovery (M5, optionnel, opt-in strict) ------------------------
     discovery_enabled: bool = Field(
         False,

@@ -1,33 +1,181 @@
 <!doctype html>
-<html lang="fr" data-theme="dark">
+<html lang="fr" data-theme="{{ dashboard_theme }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>polycopy — {% block title %}dashboard{% endblock %}</title>
-  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b1220' stroke='%236ea8fe' stroke-width='2'/><text x='16' y='21' font-family='system-ui' font-size='16' fill='%236ea8fe' text-anchor='middle'>P</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b1220' stroke='%2330a46c' stroke-width='2'/><text x='16' y='21' font-family='system-ui' font-size='16' fill='%2330a46c' text-anchor='middle' font-weight='700'>P</text></svg>">
+
+  {# --- Palette Radix Colors hardcodée (cf. spec §2.8) --- #}
+  <style>
+    :root, html[data-theme="dark"] {
+      --color-bg: #0b1220;
+      --color-surface: #111827;
+      --color-surface-elevated: #1a2230;
+      --color-text: #e6edf3;
+      --color-muted: #9ba7b8;
+      --color-border: #1f2933;
+      --color-profit: #30a46c;
+      --color-loss: #e5484d;
+      --color-neutral: #6ea8fe;
+      --color-warning: #f5a623;
+      --color-critical: #c92a2a;
+      --color-pinned: #b58300;
+      color-scheme: dark;
+    }
+    html[data-theme="light"] {
+      --color-bg: #f6f8fa;
+      --color-surface: #ffffff;
+      --color-surface-elevated: #f0f2f5;
+      --color-text: #1f2933;
+      --color-muted: #55606e;
+      --color-border: #d9dee3;
+      --color-profit: #208354;
+      --color-loss: #cd2b31;
+      --color-neutral: #3451b2;
+      --color-warning: #ad5700;
+      --color-critical: #a81d1d;
+      --color-pinned: #b58300;
+      color-scheme: light;
+    }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: var(--color-bg);
+      color: var(--color-text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+  </style>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  {# Pin Tailwind 3.4 — cf. §14.4 #12 (CDN version pinning). #}
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            polycopy: {
+              bg: 'var(--color-bg)',
+              surface: 'var(--color-surface)',
+              text: 'var(--color-text)',
+              muted: 'var(--color-muted)',
+              border: 'var(--color-border)',
+              profit: 'var(--color-profit)',
+              loss: 'var(--color-loss)',
+              neutral: 'var(--color-neutral)',
+              warning: 'var(--color-warning)',
+              critical: 'var(--color-critical)',
+            },
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
+
   <link rel="stylesheet" href="/static/dashboard.css">
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+
+  {# Garde Tailwind JIT : on liste explicitement les classes utility variables
+     conditionnelles (couleurs sémantiques) pour qu'elles soient générées
+     même si elles n'apparaissent pas littéralement à un premier render
+     (cf. §14.4 #1). Inutile à runtime — pré-déclaré au compilateur. #}
+  <div class="hidden text-polycopy-profit text-polycopy-loss text-polycopy-warning text-polycopy-neutral text-polycopy-critical bg-polycopy-surface bg-polycopy-bg border-polycopy-border"></div>
 </head>
-<body>
-<main class="container">
-  <nav>
-    <ul>
-      <li><strong>polycopy</strong>{% if settings_dry_run %} <small><mark>DRY-RUN</mark></small>{% endif %}</li>
-    </ul>
-    <ul>
-      <li><a href="/home">Home</a></li>
-      <li><a href="/detections">Détection</a></li>
-      <li><a href="/strategy">Stratégie</a></li>
-      <li><a href="/orders">Exécution</a></li>
-      <li><a href="/positions">Positions</a></li>
-      <li><a href="/pnl">PnL</a></li>
-      <li><a href="/traders">Traders</a></li>
-      <li><a href="/backtest">Backtest</a></li>
-    </ul>
-  </nav>
-  {% block content %}{% endblock %}
-</main>
+<body class="min-h-screen">
+  <div class="flex min-h-screen">
+    {# --- Sidebar : visible desktop, réduite tablet, hamburger mobile --- #}
+    <aside id="sidebar"
+           class="hidden md:flex md:flex-col md:w-16 lg:w-60 shrink-0 border-r"
+           style="border-color: var(--color-border); background: var(--color-surface);">
+      <div class="flex items-center gap-2 px-4 py-4 border-b" style="border-color: var(--color-border);">
+        <span class="inline-flex items-center justify-center w-8 h-8 rounded-md font-bold"
+              style="background: var(--color-profit); color: var(--color-bg);">P</span>
+        <strong class="hidden lg:inline text-base">polycopy</strong>
+      </div>
+      {% if settings_dry_run %}
+      <p class="hidden lg:block mx-4 mt-3 text-xs px-2 py-1 rounded-md badge badge-warning">DRY-RUN</p>
+      {% endif %}
+      <nav class="flex-1 py-3" aria-label="Navigation principale">
+        <ul class="space-y-1 text-sm">
+          <li><a href="/home" class="nav-link" data-nav="home">
+            <i data-lucide="home" class="w-4 h-4"></i><span class="hidden lg:inline">Home</span></a></li>
+          <li><a href="/detections" class="nav-link" data-nav="detections">
+            <i data-lucide="radio" class="w-4 h-4"></i><span class="hidden lg:inline">Détection</span></a></li>
+          <li><a href="/strategy" class="nav-link" data-nav="strategy">
+            <i data-lucide="filter" class="w-4 h-4"></i><span class="hidden lg:inline">Stratégie</span></a></li>
+          <li><a href="/orders" class="nav-link" data-nav="orders">
+            <i data-lucide="send" class="w-4 h-4"></i><span class="hidden lg:inline">Exécution</span></a></li>
+          <li><a href="/positions" class="nav-link" data-nav="positions">
+            <i data-lucide="layers" class="w-4 h-4"></i><span class="hidden lg:inline">Positions</span></a></li>
+          <li><a href="/pnl" class="nav-link" data-nav="pnl">
+            <i data-lucide="trending-up" class="w-4 h-4"></i><span class="hidden lg:inline">PnL</span></a></li>
+          <li><a href="/traders" class="nav-link" data-nav="traders">
+            <i data-lucide="users" class="w-4 h-4"></i><span class="hidden lg:inline">Traders</span></a></li>
+          <li><a href="/backtest" class="nav-link" data-nav="backtest">
+            <i data-lucide="flask-conical" class="w-4 h-4"></i><span class="hidden lg:inline">Backtest</span></a></li>
+          <li><a href="/logs" class="nav-link nav-link-muted" data-nav="logs">
+            <i data-lucide="file-text" class="w-4 h-4"></i><span class="hidden lg:inline">Logs</span></a></li>
+        </ul>
+      </nav>
+      <div class="hidden lg:block px-4 pb-3 text-xs" style="color: var(--color-muted);">
+        <span data-app-version>polycopy</span>
+      </div>
+    </aside>
+
+    {# --- Sidebar mobile via <details> natif (pas de JS custom) --- #}
+    <details class="md:hidden border-b" style="border-color: var(--color-border); background: var(--color-surface);">
+      <summary class="flex items-center justify-between px-4 py-3 cursor-pointer">
+        <strong>polycopy {% if settings_dry_run %}<span class="ml-2 text-xs badge badge-warning">DRY-RUN</span>{% endif %}</strong>
+        <i data-lucide="menu" class="w-5 h-5"></i>
+      </summary>
+      <nav class="px-4 pb-4" aria-label="Navigation mobile">
+        <ul class="space-y-1 text-sm">
+          <li><a href="/home" class="block py-1">Home</a></li>
+          <li><a href="/detections" class="block py-1">Détection</a></li>
+          <li><a href="/strategy" class="block py-1">Stratégie</a></li>
+          <li><a href="/orders" class="block py-1">Exécution</a></li>
+          <li><a href="/positions" class="block py-1">Positions</a></li>
+          <li><a href="/pnl" class="block py-1">PnL</a></li>
+          <li><a href="/traders" class="block py-1">Traders</a></li>
+          <li><a href="/backtest" class="block py-1">Backtest</a></li>
+          <li><a href="/logs" class="block py-1" style="color: var(--color-muted);">Logs</a></li>
+        </ul>
+      </nav>
+    </details>
+
+    <main class="flex-1 min-w-0 flex flex-col">
+      <div class="flex items-center justify-between px-4 lg:px-6 py-3 border-b"
+           style="border-color: var(--color-border);">
+        <div>
+          {% block breadcrumb %}<h1 class="text-lg font-semibold">{% block heading %}Dashboard{% endblock %}</h1>{% endblock %}
+        </div>
+        <button type="button"
+                data-theme-toggle
+                class="inline-flex items-center justify-center w-8 h-8 rounded-md border"
+                style="border-color: var(--color-border); background: var(--color-surface);"
+                aria-label="Basculer thème dark/light">
+          <i data-lucide="sun-moon" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto px-4 lg:px-6 py-4">
+        {% block content %}{% endblock %}
+      </div>
+
+      {% include "partials/external_health.html" %}
+    </main>
+  </div>
 </body>
 </html>

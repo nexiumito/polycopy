@@ -1,12 +1,55 @@
 {% extends "base.html" %}
+{% from "macros.html" import side_pill %}
 {% block title %}home{% endblock %}
+{% block heading %}Home{% endblock %}
 {% block content %}
-<h2>Home</h2>
-<p>Snapshot live des KPIs. Rafraîchi toutes les 3 s.</p>
+
 <section id="kpis"
          hx-get="/partials/kpis"
-         hx-trigger="load, every 3s"
+         hx-trigger="every {{ poll_interval }}s[document.visibilityState==='visible']"
          hx-swap="innerHTML">
-  <p aria-busy="true">chargement KPIs…</p>
+  {% include "partials/kpis.html" %}
 </section>
+
+<div class="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
+  <div class="xl:col-span-1"
+       hx-get="/partials/discovery-summary"
+       hx-trigger="every {{ poll_interval * 6 }}s[document.visibilityState==='visible']"
+       hx-swap="innerHTML">
+    {% include "partials/discovery_summary.html" %}
+  </div>
+
+  <div class="xl:col-span-2 rounded-xl border p-4"
+       style="border-color: var(--color-border); background: var(--color-surface);">
+    <header class="flex items-center justify-between">
+      <h2 class="text-sm font-semibold flex items-center gap-2">
+        <i data-lucide="radio" class="w-4 h-4" style="color: var(--color-muted);"></i>
+        Derniers trades détectés
+      </h2>
+      <a href="/detections" class="text-xs underline" style="color: var(--color-muted);">tout voir →</a>
+    </header>
+    {% if recent_trades %}
+    <ul class="mt-3 divide-y" style="border-color: var(--color-border);">
+      {% for trade in recent_trades %}
+      <li class="flex items-center gap-3 py-2 text-sm">
+        {{ side_pill(trade.side) }}
+        <span class="flex-1 min-w-0 truncate">
+          {{ trade.target_wallet | short_hash }}
+          {% if trade.slug %}· <span style="color: var(--color-muted);">{{ trade.slug }}</span>{% endif %}
+        </span>
+        <span class="text-xs" style="color: var(--color-muted);">
+          {{ trade.size | format_size }} @ {{ trade.price | format_usd }}
+        </span>
+        <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">
+          {{ trade.timestamp | humanize_dt }}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-3 text-sm" style="color: var(--color-muted);">Aucun trade détecté pour l'instant.</p>
+    {% endif %}
+  </div>
+</div>
+
 {% endblock %}

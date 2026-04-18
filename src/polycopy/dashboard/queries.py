@@ -8,6 +8,8 @@ dashboard ne peut littéralement pas muter la DB (vérifié via
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,6 +19,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.dashboard.dtos import DiscoveryStatus, KpiCard, PnlMilestone
 from polycopy.storage.models import (
     DetectedTrade,
     MyOrder,
@@ -412,3 +415,333 @@ def backtest_report_path() -> Path:
 def backtest_report_exists() -> bool:
     """True si le backtest a déjà été généré à la racine du repo."""
     return backtest_report_path().is_file()
+
+
+# --- M6 : KPI cards Home + Discovery status + PnL milestones + version ------
+
+
+def _delta_sign(delta: float | None) -> Literal["positive", "negative", "neutral"] | None:
+    """Détermine le sens d'un delta numérique (cosmétique pour la card)."""
+    if delta is None:
+        return None
+    if delta > 0:
+        return "positive"
+    if delta < 0:
+        return "negative"
+    return "neutral"
+
+
+def _format_card_usd(value: float | None) -> str:
+    """Formatage USD inline (cohérent avec ``jinja_filters.format_usd``)."""
+    if value is None:
+        return "—"
+    abs_value = abs(value)
+    sign = "-" if value < 0 else ""
+    if abs_value >= 1_000_000:
+        return f"{sign}${abs_value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"{sign}${abs_value / 1_000:.1f}k"
+    return f"{sign}${abs_value:.2f}"
+
+
+def _format_card_delta(delta_pct: float | None) -> str | None:
+    """Formate un delta % pour affichage card (None → invisible)."""
+    if delta_pct is None:
+        return None
+    sign = "+" if delta_pct > 0 else ""
+    return f"{sign}{delta_pct:.1f}%"
+
+
+async def get_home_kpi_cards(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[KpiCard]:
+    """Construit les 4 cards KPI Home avec sparkline 24h (cf. spec §7.2).
+
+    Cards : Total USDC, Drawdown, Positions ouvertes, Trades détectés 24h.
+    """
+    now = datetime.now(tz=UTC)
+    since_24h = now - timedelta(hours=24)
+    async with session_factory() as session:
+        snapshots = list(
+            (
+                await session.execute(
+                    select(PnlSnapshot)
+                    .where(
+                        PnlSnapshot.timestamp >= since_24h,
+                        PnlSnapshot.is_dry_run.is_(False),
+                    )
+                    .order_by(PnlSnapshot.timestamp.asc()),
+                )
+            )
+            .scalars()
+            .all(),
+        )
+        latest_snapshot = (
+            await session.execute(
+                select(PnlSnapshot).order_by(PnlSnapshot.timestamp.desc()).limit(1),
+            )
+        ).scalar_one_or_none()
+        open_positions_count = int(
+            (
+                await session.execute(
+                    select(func.count(MyPosition.id)).where(MyPosition.closed_at.is_(None)),
+                )
+            ).scalar_one()
+        )
+        detected_trades_24h = int(
+            (
+                await session.execute(
+                    select(func.count(DetectedTrade.id)).where(
+                        DetectedTrade.timestamp >= since_24h,
+                    ),
+                )
+            ).scalar_one()
+        )
+
+    total_points: list[tuple[datetime, float]] = [
+        (s.timestamp, float(s.total_usdc)) for s in snapshots
+    ]
+    drawdown_points: list[tuple[datetime, float]] = [
+        (s.timestamp, float(s.drawdown_pct)) for s in snapshots
+    ]
+    total_value = float(latest_snapshot.total_usdc) if latest_snapshot is not None else None
+    drawdown_value = float(latest_snapshot.drawdown_pct) if latest_snapshot is not None else None
+    total_delta_pct: float | None = None
+    if len(total_points) >= 2 and total_points[0][1] > 0:
+        first = total_points[0][1]
+        last = total_points[-1][1]
+        total_delta_pct = ((last - first) / first) * 100.0
+
+    return [
+        KpiCard(
+            title="Total USDC",
+            value=_format_card_usd(total_value),
+            delta=_format_card_delta(total_delta_pct),
+            delta_sign=_delta_sign(total_delta_pct),
+            sparkline_points=total_points,
+            icon="dollar-sign",
+        ),
+        KpiCard(
+            title="Drawdown",
+            value=(f"{drawdown_value:.1f}%" if drawdown_value is not None else "—"),
+            delta=None,
+            delta_sign=("negative" if drawdown_value and drawdown_value > 0 else "neutral"),
+            sparkline_points=drawdown_points,
+            icon="trending-down",
+        ),
+        KpiCard(
+            title="Positions ouvertes",
+            value=str(open_positions_count),
+            delta=None,
+            delta_sign=None,
+            sparkline_points=[],
+            icon="layers",
+        ),
+        KpiCard(
+            title="Trades détectés (24 h)",
+            value=str(detected_trades_24h),
+            delta=None,
+            delta_sign=None,
+            sparkline_points=[],
+            icon="activity",
+        ),
+    ]
+
+
+async def get_discovery_status(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    enabled: bool,
+) -> DiscoveryStatus:
+    """Agrégat ``target_traders`` + ``trader_events`` 24h pour le bloc Home M5."""
+    now = datetime.now(tz=UTC)
+    since_24h = now - timedelta(hours=24)
+    async with session_factory() as session:
+        status_rows = (
+            await session.execute(
+                select(TargetTrader.status, func.count(TargetTrader.id)).group_by(
+                    TargetTrader.status,
+                ),
+            )
+        ).all()
+        counts = {str(r[0]): int(r[1]) for r in status_rows}
+
+        events_rows = (
+            await session.execute(
+                select(TraderEvent.event_type, func.count(TraderEvent.id))
+                .where(TraderEvent.at >= since_24h)
+                .group_by(TraderEvent.event_type),
+            )
+        ).all()
+        events_24h = {str(r[0]): int(r[1]) for r in events_rows}
+
+        last_cycle = (
+            await session.execute(
+                select(func.max(TraderScore.cycle_at)),
+            )
+        ).scalar_one_or_none()
+
+    return DiscoveryStatus(
+        enabled=enabled,
+        active_count=int(counts.get("active", 0)),
+        shadow_count=int(counts.get("shadow", 0)),
+        paused_count=int(counts.get("paused", 0)),
+        pinned_count=int(counts.get("pinned", 0)),
+        last_cycle_at=last_cycle,
+        promotions_24h=int(events_24h.get("promoted_active", 0)),
+        demotions_24h=int(events_24h.get("demoted_paused", 0)),
+    )
+
+
+# Cap UX : 8 milestones max sous le graph PnL (cf. spec §14.5 #12).
+_PNL_MILESTONES_CAP: int = 8
+
+
+async def get_pnl_milestones(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    since: timedelta,
+) -> list[PnlMilestone]:
+    """Extrait les 8 derniers moments clés (fills, kill switches, promotions M5)."""
+    cutoff = datetime.now(tz=UTC) - since
+    async with session_factory() as session:
+        first_fill = (
+            await session.execute(
+                select(MyOrder)
+                .where(MyOrder.status == "FILLED", MyOrder.filled_at.is_not(None))
+                .order_by(MyOrder.filled_at.asc())
+                .limit(1),
+            )
+        ).scalar_one_or_none()
+
+        recent_fills = list(
+            (
+                await session.execute(
+                    select(MyOrder)
+                    .where(
+                        MyOrder.status == "FILLED",
+                        MyOrder.filled_at.is_not(None),
+                        MyOrder.filled_at >= cutoff,
+                    )
+                    .order_by(MyOrder.filled_at.desc())
+                    .limit(_PNL_MILESTONES_CAP),
+                )
+            )
+            .scalars()
+            .all(),
+        )
+
+        promotions = list(
+            (
+                await session.execute(
+                    select(TraderEvent)
+                    .where(
+                        TraderEvent.event_type == "promoted_active",
+                        TraderEvent.at >= cutoff,
+                    )
+                    .order_by(TraderEvent.at.desc())
+                    .limit(_PNL_MILESTONES_CAP),
+                )
+            )
+            .scalars()
+            .all(),
+        )
+
+        kill_switches = list(
+            (
+                await session.execute(
+                    select(TraderEvent)
+                    .where(
+                        TraderEvent.event_type == "kill_switch",
+                        TraderEvent.at >= cutoff,
+                    )
+                    .order_by(TraderEvent.at.desc())
+                    .limit(_PNL_MILESTONES_CAP),
+                )
+            )
+            .scalars()
+            .all(),
+        )
+
+    milestones: list[PnlMilestone] = []
+    if first_fill is not None and first_fill.filled_at is not None:
+        milestones.append(
+            PnlMilestone(
+                at=first_fill.filled_at,
+                event_type="first_fill",
+                label="Premier fill",
+                wallet_address=None,
+                market_slug=first_fill.condition_id,
+            ),
+        )
+    for order in recent_fills:
+        if order.filled_at is None:
+            continue
+        if first_fill is not None and order.id == first_fill.id:
+            continue
+        milestones.append(
+            PnlMilestone(
+                at=order.filled_at,
+                event_type="cycle_completed",
+                label=f"Fill {order.side} {order.size:.2f}",
+                wallet_address=None,
+                market_slug=order.condition_id,
+            ),
+        )
+    for event in promotions:
+        milestones.append(
+            PnlMilestone(
+                at=event.at,
+                event_type="trader_promoted",
+                label="Trader promu (active)",
+                wallet_address=event.wallet_address,
+                market_slug=None,
+            ),
+        )
+    for event in kill_switches:
+        milestones.append(
+            PnlMilestone(
+                at=event.at,
+                event_type="kill_switch",
+                label="Kill switch déclenché",
+                wallet_address=event.wallet_address,
+                market_slug=None,
+            ),
+        )
+
+    milestones.sort(key=lambda m: m.at, reverse=True)
+    return milestones[:_PNL_MILESTONES_CAP]
+
+
+# Cache module-scope du SHA git (1 résolution par process — git n'est pas dans la hot path).
+_APP_VERSION_CACHE: str | None = None
+_APP_VERSION_LOCK = asyncio.Lock()
+_APP_VERSION_FALLBACK: str = "0.6.0-unknown"
+
+
+async def get_app_version() -> str:
+    """Retourne le SHA git court (cached). Fallback ``0.6.0-unknown`` hors d'un repo."""
+    global _APP_VERSION_CACHE
+    if _APP_VERSION_CACHE is not None:
+        return _APP_VERSION_CACHE
+    async with _APP_VERSION_LOCK:
+        if _APP_VERSION_CACHE is not None:
+            return _APP_VERSION_CACHE
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            _APP_VERSION_CACHE = _APP_VERSION_FALLBACK
+            return _APP_VERSION_CACHE
+        if proc.returncode != 0:
+            _APP_VERSION_CACHE = _APP_VERSION_FALLBACK
+            return _APP_VERSION_CACHE
+        sha = proc.stdout.strip()
+        _APP_VERSION_CACHE = f"0.6.0-{sha}" if sha else _APP_VERSION_FALLBACK
+        return _APP_VERSION_CACHE

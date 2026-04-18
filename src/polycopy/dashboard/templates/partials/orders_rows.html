@@ -1,36 +1,36 @@
-{% from "macros.html" import status_badge, pagination_footer %}
+{% from "macros.html" import badge, side_pill, infinite_scroll_sentinel %}
 {% if rows %}
-<table role="grid">
-  <thead>
-    <tr>
-      <th>Sent at (UTC)</th>
-      <th>Source Tx</th>
-      <th>Side</th>
-      <th>Size</th>
-      <th>Prix</th>
-      <th>Tick</th>
-      <th>Neg-risk</th>
-      <th>Status</th>
-      <th>Error</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for o in rows %}
-    <tr>
-      <td><small>{{ o.sent_at.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
-      <td><code>{{ o.source_tx_hash[:10] }}…</code></td>
-      <td>{{ o.side }}</td>
-      <td>{{ "%.2f" | format(o.size) }}</td>
-      <td>{{ "%.4f" | format(o.price) }}</td>
-      <td>{{ o.tick_size }}</td>
-      <td>{{ "oui" if o.neg_risk else "non" }}</td>
-      <td>{{ status_badge(o.status) }}</td>
-      <td><small>{{ o.error_msg or "—" }}</small></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{{ pagination_footer("/orders", offset, limit, rows | length >= limit) }}
+<ul class="divide-y" style="border-color: var(--color-border);">
+  {% for o in rows %}
+  <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
+    {{ side_pill(o.side) }}
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium">
+        {{ o.size | format_size }} @ {{ o.price | format_usd }}
+        {% if o.simulated %}<span class="text-xs ml-1" style="color: var(--color-muted);">(sim)</span>{% endif %}
+      </p>
+      <p class="text-xs" style="color: var(--color-muted);">
+        source {{ o.source_tx_hash | short_hash }}
+        · cond {{ o.condition_id | short_hash }}
+        · tick {{ o.tick_size }}
+        {% if o.neg_risk %}· neg-risk{% endif %}
+      </p>
+      {% if o.error_msg %}
+      <p class="text-xs mt-1" style="color: var(--color-loss);">⚠ {{ o.error_msg }}</p>
+      {% endif %}
+    </div>
+    {{ badge(o.status, o.status) }}
+    <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">
+      {{ o.sent_at | humanize_dt }}
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% if rows | length >= limit %}
+  {{ infinite_scroll_sentinel(
+       "/partials/orders-rows?status=" ~ (status | urlencode),
+       offset + limit, limit, offset + (rows | length)) }}
+{% endif %}
 {% else %}
-<p><small>Aucun ordre pour ce filtre.</small></p>
+<p class="p-4 text-sm" style="color: var(--color-muted);">Aucun ordre pour ce filtre.</p>
 {% endif %}

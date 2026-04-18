@@ -1,0 +1,39 @@
+{# Footer health Gamma + Data API (M6 §7.7).
+   - Inclu dans base.html avec snapshot/version absents → première render = "Vérification…".
+   - HTMX swap avec ce même fragment (avec snapshot/version remplis) toutes les 30 s.
+#}
+<footer
+  class="border-t px-4 lg:px-6 py-2 text-xs flex flex-wrap items-center justify-between gap-2"
+  style="border-color: var(--color-border); color: var(--color-muted);"
+  hx-get="/api/health-external"
+  hx-trigger="load, every 30s[document.visibilityState==='visible']"
+  hx-swap="outerHTML">
+  <span>polycopy <span data-app-version>{% if version %}v{{ version }}{% else %}…{% endif %}</span></span>
+  <span class="flex items-center gap-3 flex-wrap">
+    {% if snapshot %}
+      <span class="inline-flex items-center gap-1">Gamma
+        {% if snapshot.gamma_status == "ok" %}
+          <i data-lucide="check-circle" class="w-3 h-3" style="color: var(--color-profit);"></i>
+        {% elif snapshot.gamma_status == "degraded" %}
+          <i data-lucide="alert-circle" class="w-3 h-3" style="color: var(--color-warning);"></i>
+        {% else %}
+          <i data-lucide="circle-help" class="w-3 h-3"></i>
+        {% endif %}
+        {% if snapshot.gamma_latency_ms is not none %}<span>({{ snapshot.gamma_latency_ms }} ms)</span>{% endif %}
+      </span>
+      <span class="inline-flex items-center gap-1">Data API
+        {% if snapshot.data_api_status == "ok" %}
+          <i data-lucide="check-circle" class="w-3 h-3" style="color: var(--color-profit);"></i>
+        {% elif snapshot.data_api_status == "degraded" %}
+          <i data-lucide="alert-circle" class="w-3 h-3" style="color: var(--color-warning);"></i>
+        {% else %}
+          <i data-lucide="circle-help" class="w-3 h-3"></i>
+        {% endif %}
+        {% if snapshot.data_api_latency_ms is not none %}<span>({{ snapshot.data_api_latency_ms }} ms)</span>{% endif %}
+      </span>
+      <span>Vérifié {{ snapshot.checked_at | humanize_dt }}</span>
+    {% else %}
+      <span>Vérification API…</span>
+    {% endif %}
+  </span>
+</footer>

@@ -1,21 +1,26 @@
 {% extends "base.html" %}
 {% block title %}exécution{% endblock %}
+{% block heading %}Exécution{% endblock %}
 {% block content %}
-<h2>Exécution</h2>
-<nav>
-  <ul>
-    <li><a href="/orders">Tous</a></li>
-    <li><a href="/orders?status=FILLED">FILLED</a></li>
-    <li><a href="/orders?status=SENT">SENT</a></li>
-    <li><a href="/orders?status=SIMULATED">SIMULATED</a></li>
-    <li><a href="/orders?status=REJECTED">REJECTED</a></li>
-    <li><a href="/orders?status=FAILED">FAILED</a></li>
-  </ul>
+
+<nav class="flex flex-wrap gap-2 mb-4 text-sm">
+  {% for opt in [("Tous", ""), ("FILLED", "FILLED"), ("SENT", "SENT"), ("SIMULATED", "SIMULATED"), ("REJECTED", "REJECTED"), ("FAILED", "FAILED")] %}
+    {% set label, val = opt %}
+    {% if val %}
+      <a href="/orders?status={{ val }}" class="filter-chip {% if status == val %}filter-chip-active{% endif %}">{{ label }}</a>
+    {% else %}
+      <a href="/orders" class="filter-chip {% if not status %}filter-chip-active{% endif %}">{{ label }}</a>
+    {% endif %}
+  {% endfor %}
 </nav>
+
 <section id="orders-rows"
          hx-get="/partials/orders-rows?status={{ status | urlencode }}"
-         hx-trigger="load, every 3s"
-         hx-swap="innerHTML">
-  <p aria-busy="true">chargement ordres…</p>
+         hx-trigger="load, every {{ poll_interval }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="rounded-xl border"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>
+
 {% endblock %}

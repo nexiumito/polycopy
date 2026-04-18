@@ -104,6 +104,8 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
 | `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
 | `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
+| `DASHBOARD_THEME` | Thème initial dashboard `dark` / `light` (toggle persiste en localStorage) | `dark` | non |
+| `DASHBOARD_POLL_INTERVAL_SECONDS` | Fréquence rafraîchissement HTMX des partials (2–60 s) | `5` | non |
 | `DISCOVERY_ENABLED` | Active la découverte auto de traders (M5, opt-in) | `false` | non |
 | `DISCOVERY_INTERVAL_SECONDS` | Cadence d'un cycle scoring (1h–7j) | `21600` | non |
 | `DISCOVERY_CANDIDATE_POOL_SIZE` | Pool de candidats scannés par cycle | `100` | non |
@@ -216,9 +218,9 @@ Logs structurés émis par cycle : `discovery_starting`, `discovery_cycle_starte
 
 Alertes Telegram (si config M4 active) : `trader_promoted` (INFO), `trader_demoted` (WARNING), `discovery_cap_reached` (WARNING), `discovery_cycle_failed` (ERROR).
 
-## Dashboard local (optionnel, M4.5)
+## Dashboard local (optionnel, M4.5 + M6)
 
-Dashboard web **read-only** pour superviser live les détections, décisions, ordres, positions et PnL (graph Chart.js).
+Dashboard web **read-only** pour superviser live détections, décisions, ordres, positions, PnL et traders. M6 (2026) : refonte UX moderne — sidebar persistante, cards KPI avec sparkline SVG, jauge score SVG sur la page Traders, area chart + overlay drawdown + timeline milestones sur PnL, footer health Gamma/Data API. Dark-first avec toggle light persistant.
 
 Opt-in via `.env` :
 
@@ -226,13 +228,15 @@ Opt-in via `.env` :
 DASHBOARD_ENABLED=true
 DASHBOARD_HOST=127.0.0.1   # ⚠️ localhost-only par défaut — ne change que si tu sais
 DASHBOARD_PORT=8787
+DASHBOARD_THEME=dark            # ou "light"
+DASHBOARD_POLL_INTERVAL_SECONDS=5
 ```
 
 Lance le bot puis ouvre `http://127.0.0.1:8787/` dans ton navigateur.
 
-Pages : Home (KPIs) · Détection · Stratégie · Exécution · Positions · PnL.
+Pages : Home (KPIs + sparklines + Discovery + derniers trades) · Détection · Stratégie · Exécution · Positions · PnL (area chart + milestones) · Traders (jauge score SVG) · Backtest · Logs (stub M9).
 
-Aucune action d'écriture n'est exposée — uniquement des `SELECT`. Pas d'auth : le bind localhost suffit pour un bot mono-utilisateur local. **Changer `DASHBOARD_HOST` à `0.0.0.0` expose le dashboard sur tout le LAN : à tes risques.**
+Aucune action d'écriture n'est exposée — uniquement des `SELECT`. Pas d'auth : le bind localhost suffit pour un bot mono-utilisateur local. **Changer `DASHBOARD_HOST` à `0.0.0.0` expose le dashboard sur tout le LAN : à tes risques.** Aucun secret (clé privée, token Telegram, creds CLOB) n'apparaît dans le HTML/JSON rendu — vérifié par grep automatisé.
 
 ## Rapport PnL
 
@@ -285,10 +289,10 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M4** : Monitoring (Telegram, snapshots PnL, kill switch, Alembic, rapport HTML)
 - [x] **M4.5** : Dashboard local (FastAPI + HTMX + Chart.js, read-only, opt-in)
 - [x] **M5** : Scoring de traders + sélection automatique (opt-in, read-only)
+- [x] **M6** : Dashboard 2026 (refonte UX, sidebar, cards KPI, jauge score, timeline PnL)
 
-### Après M5 (roadmap UX/expérience, pas de nouveau module fonctionnel)
+### Après M6 (roadmap UX/expérience, pas de nouveau module fonctionnel)
 
-- Dashboard 2026-style (design moderne, KPIs visuels clairs, onboarding "je comprends tout en 10 s")
 - Bot Telegram plus bavard (start/stop, heartbeat périodique, résumé quotidien)
 - Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
   comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans

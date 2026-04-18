@@ -1,30 +1,29 @@
 {% extends "base.html" %}
 {% block title %}traders{% endblock %}
+{% block heading %}Traders (M5){% endblock %}
 {% block content %}
-<h2>Traders (M5)</h2>
-<p>
+
+<p class="text-sm mb-4" style="color: var(--color-muted);">
   Cibles observées par le bot, avec leur score M5 le plus récent.
-  <small>
-    Statuts :
-    <strong>pinned</strong> = fixé via <code>TARGET_WALLETS</code> (jamais retiré) ·
-    <strong>active</strong> = copié par le watcher ·
-    <strong>shadow</strong> = observation avant promotion ·
-    <strong>paused</strong> = retiré (score sous seuil pendant K cycles).
-  </small>
+  Statuts : <strong>pinned</strong> = fixé via <code>TARGET_WALLETS</code> (jamais retiré) ·
+  <strong>active</strong> = copié · <strong>shadow</strong> = observation ·
+  <strong>paused</strong> = retiré (sous seuil K cycles).
 </p>
-<nav>
-  <ul>
-    <li><a href="/traders">Tous</a></li>
-    <li><a href="/traders?status=pinned">Pinned</a></li>
-    <li><a href="/traders?status=active">Active</a></li>
-    <li><a href="/traders?status=shadow">Shadow</a></li>
-    <li><a href="/traders?status=paused">Paused</a></li>
-  </ul>
+
+<nav class="flex flex-wrap gap-2 mb-4 text-sm">
+  <a href="/traders" class="filter-chip {% if not status_filter %}filter-chip-active{% endif %}">Tous</a>
+  <a href="/traders?status=pinned" class="filter-chip {% if status_filter == 'pinned' %}filter-chip-active{% endif %}">Pinned</a>
+  <a href="/traders?status=active" class="filter-chip {% if status_filter == 'active' %}filter-chip-active{% endif %}">Active</a>
+  <a href="/traders?status=shadow" class="filter-chip {% if status_filter == 'shadow' %}filter-chip-active{% endif %}">Shadow</a>
+  <a href="/traders?status=paused" class="filter-chip {% if status_filter == 'paused' %}filter-chip-active{% endif %}">Paused</a>
 </nav>
+
 <section id="traders"
          hx-get="/partials/traders-rows{% if status_filter %}?status={{ status_filter }}{% endif %}"
-         hx-trigger="load, every 10s"
-         hx-swap="innerHTML">
-  <p aria-busy="true">chargement…</p>
+         hx-trigger="load, every {{ poll_interval * 2 }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="space-y-2">
+  <p class="text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>
+
 {% endblock %}

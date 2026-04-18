@@ -1,0 +1,39 @@
+{# Fragment 'Discovery status' Home (M5/M6). #}
+<section class="rounded-xl border p-4"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <header class="flex items-center justify-between">
+    <h2 class="text-sm font-semibold flex items-center gap-2">
+      <i data-lucide="search" class="w-4 h-4" style="color: var(--color-muted);"></i>
+      Discovery
+      {% if discovery.enabled %}
+        <span class="badge badge-ok ml-2 text-xs">enabled</span>
+      {% else %}
+        <span class="badge badge-neutral ml-2 text-xs">disabled</span>
+      {% endif %}
+    </h2>
+    <a href="/traders" class="text-xs underline" style="color: var(--color-muted);">tous les traders →</a>
+  </header>
+  <div class="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+    <div>
+      <p class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Active</p>
+      <p class="text-lg font-semibold" style="color: var(--color-profit);">{{ discovery.active_count }}</p>
+    </div>
+    <div>
+      <p class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Shadow</p>
+      <p class="text-lg font-semibold" style="color: var(--color-neutral);">{{ discovery.shadow_count }}</p>
+    </div>
+    <div>
+      <p class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Paused</p>
+      <p class="text-lg font-semibold" style="color: var(--color-warning);">{{ discovery.paused_count }}</p>
+    </div>
+    <div>
+      <p class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Pinned</p>
+      <p class="text-lg font-semibold" style="color: var(--color-pinned);">{{ discovery.pinned_count }}</p>
+    </div>
+  </div>
+  <p class="mt-3 text-xs" style="color: var(--color-muted);">
+    Dernier cycle : {{ discovery.last_cycle_at | humanize_dt }}
+    · Promotions 24 h : {{ discovery.promotions_24h }}
+    · Demotions 24 h : {{ discovery.demotions_24h }}
+  </p>
+</section>

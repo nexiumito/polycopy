@@ -1,18 +1,21 @@
 {% extends "base.html" %}
 {% block title %}stratégie{% endblock %}
+{% block heading %}Stratégie{% endblock %}
 {% block content %}
-<h2>Stratégie</h2>
-<nav>
-  <ul>
-    <li><a href="/strategy">Toutes</a></li>
-    <li><a href="/strategy?decision=APPROVED">Approuvées</a></li>
-    <li><a href="/strategy?decision=REJECTED">Rejetées</a></li>
-  </ul>
+
+<nav class="flex flex-wrap gap-2 mb-4 text-sm">
+  <a href="/strategy" class="filter-chip {% if not decision %}filter-chip-active{% endif %}">Toutes</a>
+  <a href="/strategy?decision=APPROVED" class="filter-chip {% if decision == 'APPROVED' %}filter-chip-active{% endif %}">Approuvées</a>
+  <a href="/strategy?decision=REJECTED" class="filter-chip {% if decision == 'REJECTED' %}filter-chip-active{% endif %}">Rejetées</a>
 </nav>
+
 <section id="strategy-rows"
          hx-get="/partials/strategy-rows?decision={{ decision | urlencode }}"
-         hx-trigger="load, every 5s"
-         hx-swap="innerHTML">
-  <p aria-busy="true">chargement décisions…</p>
+         hx-trigger="load, every {{ poll_interval }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="rounded-xl border"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>
+
 {% endblock %}

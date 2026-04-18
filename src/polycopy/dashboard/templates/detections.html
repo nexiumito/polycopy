@@ -1,18 +1,23 @@
 {% extends "base.html" %}
 {% block title %}détection{% endblock %}
+{% block heading %}Détection{% endblock %}
 {% block content %}
-<h2>Détection</h2>
-<form>
-  <label>
-    Wallet cible (filtre)
-    <input type="text" name="wallet" value="{{ wallet }}" placeholder="0x...">
-  </label>
-  <button type="submit">Filtrer</button>
+
+<form action="/detections" method="get" class="flex items-center gap-2 mb-4">
+  <input type="text" name="wallet" value="{{ wallet }}" placeholder="Filtre wallet (0x…)"
+         class="rounded-md border px-3 py-1.5 text-sm flex-1 max-w-md"
+         style="border-color: var(--color-border); background: var(--color-surface); color: var(--color-text);">
+  <button type="submit" class="rounded-md border px-3 py-1.5 text-sm"
+          style="border-color: var(--color-border); background: var(--color-surface);">Filtrer</button>
 </form>
+
 <section id="detections-rows"
          hx-get="/partials/detections-rows?wallet={{ wallet | urlencode }}"
-         hx-trigger="load, every 5s"
-         hx-swap="innerHTML">
-  <p aria-busy="true">chargement trades…</p>
+         hx-trigger="load, every {{ poll_interval }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="rounded-xl border"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>
+
 {% endblock %}

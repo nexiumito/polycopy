@@ -100,6 +100,8 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 - **Sécurité** : bind explicite `127.0.0.1`, aucun secret loggé ni rendu (Telegram token, private key, funder, CLOB L2 creds), `SELECT`-only via `session_factory`. Swagger / OpenAPI désactivés.
 - **Lifecycle** : uvicorn in-process, shutdown via watchdog `server.should_exit = True` déclenché par le `stop_event` partagé avec `__main__`.
 
+> **Status M6** ✅ — refonte UX. Même back-end, templates réécrits en Tailwind CDN JIT + palette Radix Colors + typo Inter + icônes Lucide. Sidebar gauche, 4 KPI cards Home avec sparkline SVG, jauge score SVG sur Traders, area chart + overlay drawdown + timeline milestones sur PnL, footer avec health Gamma/Data API (cache 30 s). Dark-first, toggle light en localStorage. Responsive mobile via `<details>` sidebar. Stub `/logs` (M9) et toggle dry-run/réel sur PnL préparé (M8). 3 nouvelles routes GET-only : `/logs`, `/api/health-external`, `/api/version`. Aucun secret ne fuite — vérifié par grep automatisé sur les templates source. Voir `specs/M6-dashboard-2026.md`.
+
 ## Module : Discovery (optionnel, M5)
 
 > **Status M5** ✅ — implémenté. Module de découverte et scoring automatique de wallets candidats. Opt-in strict via `DISCOVERY_ENABLED=true`. Read-only sur Data API publique + Gamma + Goldsky (backend opt-in). Aucune signature CLOB, aucune dépendance aux credentials L2. Voir `specs/M5-trader-scoring.md` et `src/polycopy/discovery/`.

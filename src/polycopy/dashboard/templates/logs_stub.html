@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}logs{% endblock %}
+{% block heading %}Logs{% endblock %}
+{% block content %}
+
+<article class="rounded-xl border p-6"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <div class="flex items-start gap-4">
+    <i data-lucide="file-text" class="w-8 h-8" style="color: var(--color-muted);"></i>
+    <div>
+      <h2 class="text-base font-semibold">Cette page arrive en M9.</h2>
+      <p class="text-sm mt-2" style="color: var(--color-muted);">
+        En attendant, les logs structurés JSON sont émis sur <code>stdout</code>.
+        Les rediriger en local :
+      </p>
+      <pre class="text-xs mt-3 p-3 rounded overflow-x-auto"
+           style="background: var(--color-bg); color: var(--color-text);"><code>python -m polycopy --dry-run 2>&amp;1 | tee polycopy.log
+# ou plus tard :
+tail -f ~/.polycopy/logs/polycopy.log</code></pre>
+      <p class="text-xs mt-3" style="color: var(--color-muted);">
+        M9 servira un viewer paginé inline avec filtres event_type / level / wallet.
+      </p>
+    </div>
+  </div>
+</article>
+
+{% endblock %}

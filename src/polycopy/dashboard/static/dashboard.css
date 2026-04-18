@@ -1,25 +1,89 @@
-/* Overrides minimalistes pour le dashboard polycopy. */
+/* polycopy dashboard — overrides minimalistes M6.
+   Tailwind JIT CDN gère la majorité ; on ajoute ici :
+   - Badges sémantiques.
+   - Filter chips (toggles UX).
+   - Nav links sidebar.
+   - Scrollbar custom (subtile, low-contrast).
+   - Sparkline.
+   - Reset <details> Safari iOS. */
 
-main.container {
-  max-width: 1200px;
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.badge-ok      { color: var(--color-profit);   border-color: var(--color-profit); }
+.badge-error   { color: var(--color-loss);     border-color: var(--color-loss); }
+.badge-warning { color: var(--color-warning);  border-color: var(--color-warning); }
+.badge-info    { color: var(--color-neutral);  border-color: var(--color-neutral); }
+.badge-pinned  { color: var(--color-pinned);   border-color: var(--color-pinned); }
+.badge-neutral { color: var(--color-muted);    border-color: var(--color-border); }
+
+.filter-chip {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  text-decoration: none;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.filter-chip:hover { background: var(--color-surface-elevated); color: var(--color-text); }
+.filter-chip-active {
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-color: var(--color-text);
 }
 
-table {
-  font-size: 0.9rem;
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 1rem;
+  color: var(--color-text);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
 }
+.nav-link:hover {
+  background: var(--color-surface-elevated);
+  border-left-color: var(--color-neutral);
+}
+.nav-link-muted { color: var(--color-muted); }
 
-table thead {
-  position: sticky;
-  top: 0;
-  background: var(--pico-card-background-color, #111);
-  z-index: 1;
-}
+.sparkline { display: block; }
+.sparkline-empty { opacity: 0.25; }
 
-code {
-  font-size: 0.85em;
+/* Scrollbar custom (Firefox + WebKit). */
+* { scrollbar-width: thin; scrollbar-color: var(--color-border) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
 }
+::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
 
-mark {
-  padding: 0.1em 0.3em;
-  border-radius: 0.2em;
-}
+/* <details> chevron natif on/off — discret. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] > summary i[data-lucide="chevron-down"] { transform: rotate(180deg); }
+
+/* iOS safe-area pour la zone scroll principale. */
+main { padding-bottom: env(safe-area-inset-bottom); }
+
+/* HTMX indicator. */
+.htmx-indicator { opacity: 0; transition: opacity 0.15s; }
+.htmx-request .htmx-indicator { opacity: 1; }

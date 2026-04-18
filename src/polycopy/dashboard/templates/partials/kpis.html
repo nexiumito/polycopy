@@ -1,57 +1,6 @@
 {% from "macros.html" import kpi_card %}
-<div class="grid">
-  {{ kpi_card(
-    "Total USDC",
-    ("%.2f" | format(kpis.latest_total_usdc)) if kpis.latest_total_usdc is not none else "—"
-  ) }}
-  {{ kpi_card(
-    "Drawdown %",
-    ("%.2f%%" | format(kpis.latest_drawdown_pct)) if kpis.latest_drawdown_pct is not none else "—"
-  ) }}
-  {{ kpi_card("Positions ouvertes", kpis.open_positions_count) }}
-  {{ kpi_card("Trades détectés (24 h)", kpis.detected_trades_24h) }}
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  {% for card in cards %}
+    {{ kpi_card(card) }}
+  {% endfor %}
 </div>
-<h3>Ordres 24 h</h3>
-{% if kpis.orders_24h_by_status %}
-<table>
-  <thead><tr><th>Status</th><th>Count</th></tr></thead>
-  <tbody>
-    {% for status, count in kpis.orders_24h_by_status.items() %}
-    <tr><td>{{ status }}</td><td>{{ count }}</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p><small>Aucun ordre sur les 24 dernières heures.</small></p>
-{% endif %}
-<h3>Dernière alerte</h3>
-<p>
-  <small>
-    {% if kpis.last_alert_event %}
-      {{ kpis.last_alert_event }} —
-      {{ kpis.last_alert_at.strftime("%Y-%m-%d %H:%M:%SZ") if kpis.last_alert_at else "" }}
-    {% else %}
-      — (les alertes Telegram M4 ne sont pas encore persistées en DB)
-    {% endif %}
-  </small>
-</p>
-<h3>Discovery (M5)</h3>
-<div class="grid">
-  {{ kpi_card("Active/Pinned", kpis.discovery_active_count) }}
-  {{ kpi_card("Shadow", kpis.discovery_shadow_count) }}
-  {{ kpi_card("Paused", kpis.discovery_paused_count) }}
-  {{ kpi_card("Cycles (24 h)", kpis.discovery_cycles_24h) }}
-</div>
-<p>
-  <small>
-    Dernier cycle :
-    {% if kpis.discovery_last_cycle_at %}
-      {{ kpis.discovery_last_cycle_at.strftime("%Y-%m-%d %H:%M:%SZ") }}
-    {% else %}
-      — (M5 désactivé ou pas encore tourné)
-    {% endif %}
-    · Promotions 24 h : {{ kpis.discovery_promotions_24h }}
-    · Demotions 24 h : {{ kpis.discovery_demotions_24h }}
-    · <a href="/traders">voir tous les traders →</a>
-  </small>
-</p>

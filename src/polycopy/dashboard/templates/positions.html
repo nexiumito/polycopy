@@ -1,18 +1,21 @@
 {% extends "base.html" %}
 {% block title %}positions{% endblock %}
+{% block heading %}Positions{% endblock %}
 {% block content %}
-<h2>Positions</h2>
-<nav>
-  <ul>
-    <li><a href="/positions">Toutes</a></li>
-    <li><a href="/positions?state=open">Ouvertes</a></li>
-    <li><a href="/positions?state=closed">Fermées</a></li>
-  </ul>
+
+<nav class="flex flex-wrap gap-2 mb-4 text-sm">
+  <a href="/positions" class="filter-chip {% if not state %}filter-chip-active{% endif %}">Toutes</a>
+  <a href="/positions?state=open" class="filter-chip {% if state == 'open' %}filter-chip-active{% endif %}">Ouvertes</a>
+  <a href="/positions?state=closed" class="filter-chip {% if state == 'closed' %}filter-chip-active{% endif %}">Fermées</a>
 </nav>
+
 <section id="positions-rows"
          hx-get="/partials/positions-rows?state={{ state | urlencode }}"
-         hx-trigger="load, every 5s"
-         hx-swap="innerHTML">
-  <p aria-busy="true">chargement positions…</p>
+         hx-trigger="load, every {{ poll_interval }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="rounded-xl border"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>
+
 {% endblock %}

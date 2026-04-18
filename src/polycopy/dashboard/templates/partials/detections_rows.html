@@ -1,34 +1,28 @@
-{% from "macros.html" import pagination_footer %}
+{% from "macros.html" import side_pill, infinite_scroll_sentinel %}
 {% if rows %}
-<table role="grid">
-  <thead>
-    <tr>
-      <th>Timestamp (UTC)</th>
-      <th>Wallet</th>
-      <th>Side</th>
-      <th>Size</th>
-      <th>USDC</th>
-      <th>Prix</th>
-      <th>Slug</th>
-      <th>Tx</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for trade in rows %}
-    <tr>
-      <td><small>{{ trade.timestamp.strftime("%Y-%m-%d %H:%M:%SZ") }}</small></td>
-      <td><code>{{ trade.target_wallet[:8] }}…{{ trade.target_wallet[-4:] }}</code></td>
-      <td>{{ trade.side }}</td>
-      <td>{{ "%.2f" | format(trade.size) }}</td>
-      <td>{{ "%.2f" | format(trade.usdc_size) }}</td>
-      <td>{{ "%.4f" | format(trade.price) }}</td>
-      <td><small>{{ trade.slug or "—" }}</small></td>
-      <td><code>{{ trade.tx_hash[:10] }}…</code></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{{ pagination_footer("/detections", offset, limit, rows | length >= limit) }}
+<ul class="divide-y" style="border-color: var(--color-border);">
+  {% for trade in rows %}
+  <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
+    {{ side_pill(trade.side) }}
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-medium truncate">{{ trade.slug or trade.condition_id | short_hash }}</p>
+      <p class="text-xs" style="color: var(--color-muted);">
+        {{ trade.target_wallet | short_hash }} ·
+        {{ trade.size | format_size }} shares @ {{ trade.price | format_usd }}
+      </p>
+    </div>
+    <div class="text-right">
+      <p class="text-sm">{{ trade.usdc_size | format_usd }}</p>
+      <p class="text-xs" style="color: var(--color-muted);">{{ trade.timestamp | humanize_dt }}</p>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% if rows | length >= limit %}
+  {{ infinite_scroll_sentinel(
+       "/partials/detections-rows?wallet=" ~ (wallet | urlencode),
+       offset + limit, limit, offset + (rows | length)) }}
+{% endif %}
 {% else %}
-<p><small>Aucun trade détecté pour ce filtre.</small></p>
+<p class="p-4 text-sm" style="color: var(--color-muted);">Aucun trade pour ce filtre.</p>
 {% endif %}

@@ -335,3 +335,25 @@ UPDATE target_traders
 | `goldsky_cycle_failed` | URL subgraph obsolète | Mettre à jour `GOLDSKY_POSITIONS_SUBGRAPH_URL` (voir https://thegraph.com/hosted-service/subgraphs/polymarket). |
 | Toutes les promotions refusées | `DISCOVERY_SHADOW_BYPASS=false` + `TRADER_SHADOW_DAYS>0` | Normal, attendre N jours ou baisser `TRADER_SHADOW_DAYS`. |
 
+## 15. Dashboard M6 (nouveau look 2026)
+
+Le dashboard M4.5 a été relooké en M6 sans changement d'API. Si tu mets à jour `main` :
+
+- **Thème initial** : `DASHBOARD_THEME=dark` (défaut) ou `DASHBOARD_THEME=light`. Toggle bouton soleil/lune en haut à droite, persiste dans `localStorage` (clé `polycopy.theme`).
+- **Polling HTMX** : `DASHBOARD_POLL_INTERVAL_SECONDS=5` (défaut, borné `[2, 60]`). Augmente à 10–15 pour réduire la charge logs sur les runs longs.
+- **Stack visuelle** : Tailwind CDN JIT + palette Radix Colors (variables CSS) + Inter (Google Fonts) + Lucide + HTMX + Chart.js. Zéro build step, zéro `node_modules/`. Bundle CSS+JS < 300 KB premier load.
+- **Bind localhost** inchangé (`127.0.0.1` par défaut). Aucun nouvel endpoint write, toutes les routes restent `GET`. Le footer ping Gamma + Data API (HEAD, timeout 3 s, cache 30 s) n'expose aucune donnée sensible.
+- **Lighthouse** : ouvrir `http://127.0.0.1:8787/` en Chrome incognito → DevTools → Lighthouse → "Analyze page load". Score attendu : ≥ 90 sur Performance / Accessibility / Best Practices.
+
+### Troubleshooting M6
+
+| Symptôme | Cause probable | Fix |
+|---|---|---|
+| Page blanche / icônes manquantes au premier hit | Pas de connexion internet — les CDN (Tailwind, HTMX, Chart.js, Lucide, Inter) ne sont pas en cache | Reconnecter, recharger. Cache navigateur ensuite. |
+| Le thème ne s'applique pas | `localStorage` corrompu | Console : `localStorage.removeItem('polycopy.theme')` puis recharger. |
+| Footer Gamma/Data API affiche `degraded` | Timeout 3 s dépassé ou Polymarket API down | `curl -sS https://gamma-api.polymarket.com/markets?limit=1`. Si rouge persistant → network locale ou panne Polymarket. |
+| Sparkline KPI vide | < 2 snapshots PnL en DB | Attendre que `PnlSnapshotWriter` accumule des points (intervalle `PNL_SNAPSHOT_INTERVAL_SECONDS`). |
+| Jauge score `/traders` vide | M5 jamais tourné OU wallet en cold start (`score = 0`) | Lancer un cycle M5 (`DISCOVERY_ENABLED=true`) ou attendre `SCORING_MIN_CLOSED_MARKETS` positions résolues. |
+| Footer version `unknown` | Bot lancé hors d'un repo git (tarball) | Cosmétique seulement — fallback `0.6.0-unknown`. |
+
+
