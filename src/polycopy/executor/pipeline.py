@@ -1,7 +1,8 @@
 """Pipeline d'exécution d'un `OrderApproved` : metadata → POST → persist."""
 
+import asyncio
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Literal
 
 import structlog
@@ -21,6 +22,7 @@ from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +82,7 @@ async def execute_order(
     wallet_state_reader: WalletStateReader,
     order_repo: MyOrderRepository,
     position_repo: MyPositionRepository,
+    alerts_queue: "asyncio.Queue[Alert] | None" = None,
 ) -> None:
     """Exécute (ou simule) un `OrderApproved` reçu de la queue M2."""
     bound = log.bind(tx_hash=approved.tx_hash, condition_id=approved.condition_id)
@@ -192,6 +195,7 @@ async def execute_order(
     except Exception as exc:  # noqa: BLE001
         await order_repo.update_status(inserted.id, "FAILED", error_msg=str(exc)[:240])
         bound.exception("executor_error", error=str(exc))
+        _push_executor_error_alert(alerts_queue, approved, str(exc))
         return
 
     await _persist_result(
@@ -201,6 +205,8 @@ async def execute_order(
         order_repo=order_repo,
         position_repo=position_repo,
         bound_log=bound,
+        alerts_queue=alerts_queue,
+        settings=settings,
     )
 
 
@@ -212,6 +218,8 @@ async def _persist_result(
     order_repo: MyOrderRepository,
     position_repo: MyPositionRepository,
     bound_log: structlog.stdlib.BoundLogger,
+    alerts_queue: "asyncio.Queue[Alert] | None" = None,
+    settings: "Settings | None" = None,
 ) -> None:
     if not result.success:
         await order_repo.update_status(
@@ -224,6 +232,7 @@ async def _persist_result(
             bound_log.error("executor_auth_error", error=result.error_msg)
             raise ExecutorAuthError(result.error_msg)
         bound_log.info("order_rejected", error=result.error_msg)
+        _push_executor_error_alert(alerts_queue, approved, result.error_msg)
         return
 
     if result.status == "matched":
@@ -255,6 +264,12 @@ async def _persist_result(
             shares_filled=shares_filled,
             fill_price=fill_price,
         )
+        _maybe_push_large_fill_alert(
+            alerts_queue,
+            settings,
+            approved,
+            result.taking_amount,
+        )
         return
 
     # status "live" ou "delayed" — peu probable pour FOK mais on couvre.
@@ -267,4 +282,76 @@ async def _persist_result(
         "order_sent_unexpected_status",
         clob_order_id=result.clob_order_id,
         status=result.status,
+    )
+
+
+def _push_alert_nowait(
+    alerts_queue: "asyncio.Queue[Alert] | None",
+    alert: "Alert",
+) -> None:
+    """Non-bloquant : log+drop si la queue est pleine, no-op si queue absente."""
+    if alerts_queue is None:
+        return
+    try:
+        alerts_queue.put_nowait(alert)
+    except asyncio.QueueFull:
+        log.warning("alerts_queue_full", event=alert.event)
+
+
+def _push_executor_error_alert(
+    alerts_queue: "asyncio.Queue[Alert] | None",
+    approved: OrderApproved,
+    error_msg: str,
+) -> None:
+    if alerts_queue is None:
+        return
+    from polycopy.monitoring.dtos import Alert
+
+    _push_alert_nowait(
+        alerts_queue,
+        Alert(
+            level="ERROR",
+            event="executor_error",
+            body=(
+                f"Executor error on tx {approved.tx_hash[:12]} — "
+                f"condition {approved.condition_id[:12]} : {error_msg[:120]}"
+            ),
+            cooldown_key="executor_error",
+        ),
+    )
+
+
+def _maybe_push_large_fill_alert(
+    alerts_queue: "asyncio.Queue[Alert] | None",
+    settings: "Settings | None",
+    approved: OrderApproved,
+    taking_amount: str | None,
+) -> None:
+    """Émet ``order_filled_large`` si taker (USD ou shares selon side) ≥ seuil.
+
+    ``taking_amount`` est exprimé en fixed-math 6 décimales. Côté BUY il
+    représente des *shares*, côté SELL des USDC — mais dans les deux cas une
+    valeur élevée signale un fill atypique qui mérite une alerte.
+    """
+    if alerts_queue is None or settings is None or taking_amount is None:
+        return
+    try:
+        taking_usd = Decimal(taking_amount) / _FIXED_MATH_DIVISOR
+    except (InvalidOperation, TypeError):
+        return
+    if float(taking_usd) < settings.alert_large_order_usd_threshold:
+        return
+    from polycopy.monitoring.dtos import Alert
+
+    _push_alert_nowait(
+        alerts_queue,
+        Alert(
+            level="INFO",
+            event="order_filled_large",
+            body=(
+                f"Large fill — tx {approved.tx_hash[:12]}, "
+                f"side {approved.side}, taking_amount={float(taking_usd):.2f}."
+            ),
+            cooldown_key="order_filled_large",
+        ),
     )

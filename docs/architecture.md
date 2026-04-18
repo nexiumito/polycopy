@@ -81,10 +81,14 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 
 ## Module : Monitoring
 
-- **Logs** : `structlog` JSON, tous les events importants (trade détecté, filtré, exécuté, erreur)
-- **Métriques** : compteurs simples en mémoire exposés via un endpoint HTTP `/metrics` au format Prometheus (optionnel)
-- **Alertes Telegram** : envoi async sur events critiques (kill switch, ordre échoué, gros gain/perte)
-- **Dashboard PnL** : script `scripts/pnl_report.py` qui lit `pnl_snapshots` et génère un rapport HTML
+> **Status M4** ✅ — implémenté. Alertes Telegram (httpx direct) avec cooldown 60 s par event_type. PnL snapshots persistés toutes les 5 min via `WalletStateReader` (M3 réutilisé). Kill switch déclenché par le writer si drawdown ≥ `KILL_SWITCH_DRAWDOWN_PCT` — **jamais en dry-run**. Alembic gère les migrations. Voir `specs/M4-monitoring.md` et `src/polycopy/monitoring/`.
+
+- **Logs** : `structlog` JSON, tous les events importants (trade détecté, filtré, exécuté, erreur, kill switch).
+- **Alertes Telegram** (optionnelles) : envoi async sur events critiques. Si `TELEGRAM_BOT_TOKEN` absent, bypass silencieux total.
+- **Snapshots PnL** : `PnlSnapshotWriter` lit `WalletStateReader` toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS`, persiste en `pnl_snapshots`, calcule le drawdown contre le max historique (filtré `only_real` pour ne pas mélanger stubs dry-run et valeurs réelles).
+- **Kill switch** : seul le writer le déclenche (single source of truth). `stop_event.set()` + alerte CRITICAL Telegram + `executor_stopped` en cascade. Jamais en dry-run.
+- **Rapport PnL manuel** : `scripts/pnl_report.py --since 7 --output html` génère un HTML statique avec stats + sparkline SVG natif (zéro dep).
+- **Migrations DB** : `alembic upgrade head` au boot dans `init_db` ; auto-stamp baseline si DB M3 préexistante sans `alembic_version`.
 
 ## Latence & timing
 

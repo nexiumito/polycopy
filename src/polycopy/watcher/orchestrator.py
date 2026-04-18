@@ -21,6 +21,7 @@ from polycopy.watcher.wallet_poller import WalletPoller
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
 
 log = structlog.get_logger(__name__)
 
@@ -33,10 +34,13 @@ class WatcherOrchestrator:
         session_factory: async_sessionmaker[AsyncSession],
         settings: "Settings",
         detected_trades_queue: asyncio.Queue[DetectedTradeDTO] | None = None,
+        alerts_queue: "asyncio.Queue[Alert] | None" = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._out_queue = detected_trades_queue
+        # Watcher n'émet pas d'alertes à M4 mais accepte la queue par cohérence.
+        self._alerts = alerts_queue
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale jusqu'à ce que `stop_event` soit set."""

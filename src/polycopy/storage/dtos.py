@@ -40,6 +40,20 @@ class StrategyDecisionDTO(BaseModel):
     pipeline_state: dict[str, Any]
 
 
+class PnlSnapshotDTO(BaseModel):
+    """Snapshot PnL prêt pour insertion en base. Écrit par le ``PnlSnapshotWriter`` (M4)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_usdc: float
+    realized_pnl: float
+    unrealized_pnl: float
+    drawdown_pct: float
+    open_positions_count: int
+    cash_pnl_total: float | None
+    is_dry_run: bool
+
+
 class MyOrderDTO(BaseModel):
     """Ordre prêt pour insertion en base (status initial `SIMULATED` ou `SENT`).
 

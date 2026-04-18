@@ -18,6 +18,7 @@ from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
 
 log = structlog.get_logger(__name__)
 
@@ -36,6 +37,7 @@ class ExecutorOrchestrator:
         session_factory: async_sessionmaker[AsyncSession],
         settings: "Settings",
         approved_orders_queue: asyncio.Queue[OrderApproved],
+        alerts_queue: "asyncio.Queue[Alert] | None" = None,
     ) -> None:
         if settings.dry_run is False and (
             settings.polymarket_private_key is None or settings.polymarket_funder is None
@@ -47,6 +49,7 @@ class ExecutorOrchestrator:
         self._session_factory = session_factory
         self._settings = settings
         self._queue = approved_orders_queue
+        self._alerts = alerts_queue
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale jusqu'à `stop_event.set()`."""
@@ -81,9 +84,11 @@ class ExecutorOrchestrator:
                         wallet_state_reader=wallet_state_reader,
                         order_repo=order_repo,
                         position_repo=position_repo,
+                        alerts_queue=self._alerts,
                     )
                 except ExecutorAuthError:
                     log.error("executor_auth_fatal")
+                    self._push_auth_alert()
                     stop_event.set()
                     raise
                 except asyncio.CancelledError:
@@ -91,3 +96,25 @@ class ExecutorOrchestrator:
                 except Exception:
                     log.exception("executor_loop_error", tx_hash=approved.tx_hash)
         log.info("executor_stopped")
+
+    def _push_auth_alert(self) -> None:
+        """Push un ``Alert`` CRITICAL avant ``stop_event.set()``. No-op sans queue."""
+        if self._alerts is None:
+            return
+        # Import local pour éviter import circulaire monitoring↔executor au load.
+        from polycopy.monitoring.dtos import Alert
+
+        alert = Alert(
+            level="CRITICAL",
+            event="executor_auth_fatal",
+            body=(
+                "Executor auth fatal — CLOB API key rejetée. "
+                "Vérifier POLYMARKET_PRIVATE_KEY / signature_type / funder. "
+                "Bot arrêté."
+            ),
+            cooldown_key="auth",
+        )
+        try:
+            self._alerts.put_nowait(alert)
+        except asyncio.QueueFull:
+            log.warning("alerts_queue_full", event=alert.event)

@@ -30,6 +30,7 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
     "types-aiofiles",
+    "alembic>=1.13.0",
 ]
 
 [project.scripts]

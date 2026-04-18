@@ -16,6 +16,8 @@ import structlog
 
 from polycopy.config import settings
 from polycopy.executor.orchestrator import ExecutorOrchestrator
+from polycopy.monitoring.dtos import Alert
+from polycopy.monitoring.orchestrator import MonitoringOrchestrator
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
@@ -24,6 +26,7 @@ from polycopy.strategy.orchestrator import StrategyOrchestrator
 from polycopy.watcher.orchestrator import WatcherOrchestrator
 
 _QUEUE_MAXSIZE = 1000
+_ALERTS_QUEUE_MAXSIZE = 100
 
 
 def _configure_logging(level: str) -> None:
@@ -96,6 +99,7 @@ async def _run() -> None:
         approved_orders_queue: asyncio.Queue[OrderApproved] = asyncio.Queue(
             maxsize=_QUEUE_MAXSIZE,
         )
+        alerts_queue: asyncio.Queue[Alert] = asyncio.Queue(maxsize=_ALERTS_QUEUE_MAXSIZE)
         stop_event = asyncio.Event()
         _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
@@ -103,12 +107,14 @@ async def _run() -> None:
             session_factory,
             settings,
             detected_trades_queue=detected_trades_queue,
+            alerts_queue=alerts_queue,
         )
         strategy = StrategyOrchestrator(
             session_factory,
             settings,
             detected_trades_queue=detected_trades_queue,
             approved_orders_queue=approved_orders_queue,
+            alerts_queue=alerts_queue,
         )
         # ExecutorOrchestrator lève RuntimeError si DRY_RUN=false sans clés.
         # Volontairement instancié AVANT le TaskGroup pour que l'erreur propage clair.
@@ -116,13 +122,16 @@ async def _run() -> None:
             session_factory,
             settings,
             approved_orders_queue=approved_orders_queue,
+            alerts_queue=alerts_queue,
         )
+        monitoring = MonitoringOrchestrator(session_factory, settings, alerts_queue)
 
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(watcher.run_forever(stop_event))
                 tg.create_task(strategy.run_forever(stop_event))
                 tg.create_task(executor.run_forever(stop_event))
+                tg.create_task(monitoring.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:

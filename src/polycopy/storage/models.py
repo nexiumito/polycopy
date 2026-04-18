@@ -84,8 +84,6 @@ class StrategyDecision(Base):
 
 
 # --- Populated from M3 onwards ----------------------------------------------
-# TODO M4: introduire Alembic ; à M3 toute modif de schéma ici impose un
-# `rm polycopy.db` côté dev (cf. docs/setup.md "Migration de schéma DB").
 
 
 class MyOrder(Base):
@@ -142,13 +140,21 @@ class MyPosition(Base):
 
 
 class PnlSnapshot(Base):
-    """Snapshot PnL périodique. Populated from M3 onwards."""
+    """Snapshot PnL périodique écrit par le ``PnlSnapshotWriter`` (M4)."""
 
     __tablename__ = "pnl_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    total_usdc: Mapped[float | None] = mapped_column(Float, nullable=True)
-    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    unrealized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_now_utc,
+        index=True,
+        nullable=False,
+    )
+    total_usdc: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    drawdown_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    open_positions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cash_pnl_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

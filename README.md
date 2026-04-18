@@ -32,7 +32,7 @@ Polymarket est entièrement on-chain (Polygon). L'activité de chaque wallet est
 2. **Storage** — SQLAlchemy 2.0 async (SQLite par défaut, Postgres possible).
 3. **Strategy** — pipeline `MarketFilter → PositionSizer → SlippageChecker → RiskManager`.
 4. **Executor** — dérive les API creds CLOB (L1/L2), signe et POST les ordres FOK via `py-clob-client`. **Dry-run par défaut.**
-5. **Monitoring** — logs structlog JSON ; Telegram + dashboard à venir (M4).
+5. **Monitoring** — logs structlog JSON, alertes Telegram, snapshots PnL en DB, kill switch drawdown (M4).
 
 Détail technique : [docs/architecture.md](docs/architecture.md).
 
@@ -97,7 +97,10 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `POLYMARKET_SIGNATURE_TYPE` | `0` EOA, `1` Magic, `2` Gnosis Safe | `1` | non |
 | `DATABASE_URL` | URL DB | `sqlite+aiosqlite:///polycopy.db` | non |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `INFO` | non |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes (M4 — pas encore actif) | — | non |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Alertes Telegram (bypass silencieux si vide) | — | non (pour alertes) |
+| `PNL_SNAPSHOT_INTERVAL_SECONDS` | Période entre 2 snapshots PnL | `300` | non |
+| `ALERT_LARGE_ORDER_USD_THRESHOLD` | Seuil USD au-dessus duquel un fill déclenche `order_filled_large` | `50.0` | non |
+| `ALERT_COOLDOWN_SECONDS` | Anti-spam Telegram par event_type (in-memory) | `60` | non |
 
 ## Going live (passage du dry-run au mode réel)
 
@@ -124,6 +127,41 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 
 Si le bot démarre sans `--dry-run` ET sans clés, il **refuse de démarrer** avec un message clair (`RuntimeError`) — par sécurité.
 
+## Alertes Telegram (optionnel)
+
+Les alertes sont **entièrement optionnelles**. Sans token, le bot log les événements localement et ne POST rien — aucun crash, aucun blocage.
+
+Pour les activer (5 min) :
+
+1. Sur Telegram, cherche `@BotFather` (compte officiel vérifié) → envoie `/newbot`.
+2. Choisis un nom (ex: `polycopy local bot`) puis un username finissant par `bot`.
+3. BotFather répond avec un token `123456789:ABC...` → copie-le dans `.env` : `TELEGRAM_BOT_TOKEN=...`.
+4. Ouvre la conversation de ton bot, envoie-lui `/start`.
+5. Ouvre dans un navigateur `https://api.telegram.org/bot<TON_TOKEN>/getUpdates`.
+6. Repère `"chat": {"id": 12345678, ...}` → copie dans `.env` : `TELEGRAM_CHAT_ID=12345678`.
+7. Redémarre le bot — tu verras `telegram_enabled` dans les logs.
+
+Événements qui déclenchent une alerte :
+- `kill_switch_triggered` (CRITICAL) — drawdown ≥ seuil en mode réel.
+- `executor_auth_fatal` (CRITICAL) — CLOB auth rejetée.
+- `executor_error` (ERROR) — exception SDK / POST ordre.
+- `pnl_snapshot_drawdown` (WARNING) — drawdown ≥ 75 % du seuil kill switch.
+- `order_filled_large` (INFO) — fill taker ≥ `ALERT_LARGE_ORDER_USD_THRESHOLD`.
+
+Anti-spam : cooldown in-memory de `ALERT_COOLDOWN_SECONDS` par `cooldown_key` (reset au boot).
+
+## Rapport PnL
+
+Le writer écrit un snapshot en DB toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS` (5 min par défaut). Pour générer un rapport HTML lisible avec sparkline SVG :
+
+```bash
+source .venv/bin/activate
+python scripts/pnl_report.py --since 7 --output html
+# → génère pnl_report.html, ouvrir dans un navigateur
+```
+
+Autres formats : `--output stdout` (table plain text) ou `--output csv`. Par défaut les snapshots `is_dry_run=true` sont filtrés (utilise `--include-dry-run` pour les inclure).
+
 ## Structure du repo
 
 ```
@@ -133,12 +171,13 @@ polycopy/
 │   ├── strategy/         # Filtres, sizing, risk pipeline
 │   ├── executor/         # CLOB orders signés (avec dry-run safeguards)
 │   ├── storage/          # SQLAlchemy models + repositories
-│   ├── monitoring/       # (M4 — alertes Telegram, dashboard)
+│   ├── monitoring/       # Telegram, snapshots PnL, kill switch (M4)
 │   ├── config.py         # Pydantic Settings
 │   └── __main__.py       # Entrypoint asyncio
+├── alembic/              # Migrations DB (M4+)
 ├── tests/                # Tests unit (mocks) + integration (opt-in réseau réel)
 ├── specs/                # Specs autoritaires par milestone
-├── scripts/              # bash scripts/setup.sh (bootstrap idempotent)
+├── scripts/              # bash scripts/setup.sh, pnl_report.py
 ├── docs/                 # architecture.md, setup.md
 └── assets/               # Logos, screenshots
 ```
@@ -158,7 +197,7 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M1** : Watcher + Storage (détection + persistance)
 - [x] **M2** : Strategy Engine (filtres + sizing pipeline)
 - [x] **M3** : Executor (signature CLOB + POST, dry-run par défaut)
-- [ ] **M4** : Monitoring (Telegram, dashboard PnL, snapshots PnL périodiques)
+- [x] **M4** : Monitoring (Telegram, snapshots PnL, kill switch, Alembic, rapport HTML)
 - [ ] **M5** : Scoring de traders + sélection automatique
 
 ## Avertissement

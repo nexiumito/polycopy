@@ -96,9 +96,9 @@ code .env        # VS Code (avec l'extension Remote-WSL)
 nano .env        # si tu préfères le terminal
 ```
 
-**Pour M1** (le milestone courant), **tu n'as besoin de renseigner qu'une seule variable** :
+**Pour démarrer en dry-run** (milestone courant : M4), **tu n'as besoin de renseigner qu'une seule variable** :
 
-| Variable | À faire à M1 |
+| Variable | À faire en dry-run |
 |---|---|
 | `TARGET_WALLETS` | **Obligatoire**. Mets 1 adresse Polygon connue active sur Polymarket (CSV pour plusieurs). |
 | `POLL_INTERVAL_SECONDS` | Laisse `5`, ou monte à `15` en dev pour économiser le rate limit. |
@@ -161,16 +161,62 @@ bash scripts/setup.sh
 
 Les deps seront réinstallées, sans toucher à `.venv/` ni `.env`.
 
-## 10. Migration de schéma DB (M3+)
+## 10. Migration de schéma DB (M4+)
 
-Tant que le projet n'a pas Alembic (prévu à M4), toute modification de
-`src/polycopy/storage/models.py` après un `git pull` impose de recréer la DB
-locale :
+Depuis M4, Alembic gère les migrations. `init_db` exécute automatiquement
+`alembic upgrade head` au boot — rien à faire pour la plupart des users.
+
+### Première installation (DB neuve)
+Rien à faire — `init_db` applique la baseline + tous les deltas automatiquement.
+
+### Après git pull qui modifie `src/polycopy/storage/models.py`
+Si le PR contient une nouvelle migration Alembic, `init_db` l'applique au boot.
+**Tes données sont préservées.**
+
+### DB préexistante de M3 (sans Alembic)
+`init_db` détecte l'état "tables M3 présentes mais pas de `alembic_version`"
+et appelle automatiquement `alembic stamp 0001_baseline_m3` puis
+`alembic upgrade head` — transparent pour l'utilisateur.
+
+Si tu veux forcer cet état manuellement (ex: DB corrompue ou script externe) :
 
 ```bash
-rm polycopy.db
-python -m polycopy --dry-run   # init_db.create_all recrée tout
+source .venv/bin/activate
+alembic stamp head      # marque la DB comme "à jour avec head", sans rejouer
 ```
 
-Les données dev (detected_trades, strategy_decisions, my_orders) sont perdues —
-acceptable jusqu'à l'introduction d'Alembic.
+Option nucléaire : `rm polycopy.db && python -m polycopy --dry-run` repart de
+zéro (perte des données dev, acceptable pour un env de dev).
+
+### Créer une nouvelle migration (dev)
+
+```bash
+# Après modif src/polycopy/storage/models.py :
+alembic revision --autogenerate -m "ma_migration"
+# Audite le fichier généré dans alembic/versions/, puis :
+alembic upgrade head
+```
+
+⚠️ SQLite a des limites d'`ALTER TABLE` (pas de DROP COLUMN avant 3.35,
+pas de RENAME COLUMN avant 3.25). Pour drop/rename une colonne, Alembic
+auto-génère une stratégie "create new table + copy data + drop old". Auditer
+manuellement les migrations générées.
+
+## 11. Activer les alertes Telegram (optionnel, M4)
+
+Voir la section "Alertes Telegram (optionnel)" du [README](../README.md).
+Telegram est entièrement optionnel : sans token, le bot log les événements
+localement et ne POST rien (bypass silencieux).
+
+## 12. Générer un rapport PnL
+
+Le writer persiste un snapshot toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS`
+(5 min default). Pour un rapport HTML :
+
+```bash
+source .venv/bin/activate
+python scripts/pnl_report.py --since 7 --output html
+# → écrit pnl_report.html, ouvre dans un navigateur
+```
+
+Formats alternatifs : `--output stdout` (table plain text) ou `--output csv`.

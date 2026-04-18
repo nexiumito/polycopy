@@ -77,6 +77,9 @@ Source de vérité pour tous les schémas : skill Claude Code `/polymarket:polym
   4. `WalletStateReader` re-fetch wallet state avant POST, reject si exposition + cost > capital.
 - **Creds CLOB L2** (`api_key`, `api_secret`, `api_passphrase`) ne doivent JAMAIS être loggées même partiellement, même en debug. Le seul log lié = `executor_creds_ready` sans aucun champ creds.
 - `signature_type` mismatch = transactions rejetées silencieusement par CLOB. `0` EOA standalone, `1` Magic/Polymarket.com (proxy), `2` Gnosis Safe (MetaMask connecté à polymarket.com — cas le plus fréquent).
+- `TELEGRAM_BOT_TOKEN` ne doit JAMAIS être commit ni loggé, même partiellement. Le token est visible dans l'URL des appels `sendMessage` — HTTPS exclusif (httpx default), pas de log d'URL en clair, rotation immédiate si token compromis. Bypass silencieux si absent (aucun crash).
+- **Monitoring M4** : kill switch déclenché EXCLUSIVEMENT par `PnlSnapshotWriter`, **jamais en dry-run** (sécurité critique). `RiskManager` (M2) reste inchangé — pas de refactor.
+- **Migrations Alembic** : `alembic upgrade head` tourne au boot (`init_db`). Si DB M3 préexistante sans `alembic_version` → auto-stamp baseline puis upgrade. Manuel : `alembic stamp head` documenté dans `docs/setup.md`.
 
 ## Tests
 

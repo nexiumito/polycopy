@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "result": {
+    "message_id": 42,
+    "from": {
+      "id": 987654321,
+      "is_bot": true,
+      "first_name": "polycopy_local_bot",
+      "username": "polycopy_local_bot"
+    },
+    "chat": {
+      "id": 12345678,
+      "first_name": "test",
+      "type": "private"
+    },
+    "date": 1761826800,
+    "text": "🟢 *[test_event]*\ntest body"
+  }
+}

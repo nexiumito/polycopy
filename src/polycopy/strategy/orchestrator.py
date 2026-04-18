@@ -16,6 +16,7 @@ from polycopy.strategy.pipeline import run_pipeline
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
 
 log = structlog.get_logger(__name__)
 
@@ -31,11 +32,14 @@ class StrategyOrchestrator:
         settings: "Settings",
         detected_trades_queue: asyncio.Queue[DetectedTradeDTO],
         approved_orders_queue: asyncio.Queue[OrderApproved],
+        alerts_queue: "asyncio.Queue[Alert] | None" = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._in_queue = detected_trades_queue
         self._out_queue = approved_orders_queue
+        # Strategy n'émet pas d'alertes à M4 mais accepte la queue par cohérence.
+        self._alerts = alerts_queue
         self._decision_repo = StrategyDecisionRepository(session_factory)
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:

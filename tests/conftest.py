@@ -15,6 +15,7 @@ from polycopy.storage.repositories import (
     DetectedTradeRepository,
     MyOrderRepository,
     MyPositionRepository,
+    PnlSnapshotRepository,
     StrategyDecisionRepository,
     TargetTraderRepository,
 )
@@ -121,5 +122,21 @@ def sample_positions() -> list[dict[str, Any]]:
     """Réponse Data API /positions capturée."""
     payload: list[dict[str, Any]] = json.loads(
         (_FIXTURES_DIR / "data_api_positions_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest_asyncio.fixture
+async def pnl_snapshot_repo(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> PnlSnapshotRepository:
+    return PnlSnapshotRepository(session_factory)
+
+
+@pytest.fixture
+def sample_telegram_response() -> dict[str, Any]:
+    """Réponse ``sendMessage`` Telegram composée manuellement (schéma officiel §3.3)."""
+    payload: dict[str, Any] = json.loads(
+        (_FIXTURES_DIR / "telegram_send_message_response.json").read_text(),
     )
     return payload

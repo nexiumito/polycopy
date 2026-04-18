@@ -8,11 +8,17 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from polycopy.storage.dtos import DetectedTradeDTO, MyOrderDTO, StrategyDecisionDTO
+from polycopy.storage.dtos import (
+    DetectedTradeDTO,
+    MyOrderDTO,
+    PnlSnapshotDTO,
+    StrategyDecisionDTO,
+)
 from polycopy.storage.models import (
     DetectedTrade,
     MyOrder,
     MyPosition,
+    PnlSnapshot,
     StrategyDecision,
     TargetTrader,
 )
@@ -293,3 +299,61 @@ class MyPositionRepository:
                 MyPosition.closed_at.is_(None),
             )
             return (await session.execute(stmt)).scalar_one_or_none()
+
+
+class PnlSnapshotRepository:
+    """Repository des snapshots PnL. Append-only."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def insert(self, dto: PnlSnapshotDTO) -> PnlSnapshot:
+        """Persiste un snapshot et retourne l'instance avec son ``id``."""
+        record = PnlSnapshot(
+            total_usdc=dto.total_usdc,
+            realized_pnl=dto.realized_pnl,
+            unrealized_pnl=dto.unrealized_pnl,
+            drawdown_pct=dto.drawdown_pct,
+            open_positions_count=dto.open_positions_count,
+            cash_pnl_total=dto.cash_pnl_total,
+            is_dry_run=dto.is_dry_run,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def get_max_total_usdc(self, *, only_real: bool = True) -> float | None:
+        """Retourne le max historique de ``total_usdc`` (pour drawdown all-time-high)."""
+        async with self._session_factory() as session:
+            stmt = select(func.max(PnlSnapshot.total_usdc))
+            if only_real:
+                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            result = await session.execute(stmt)
+            value = result.scalar_one_or_none()
+            return float(value) if value is not None else None
+
+    async def get_latest(self, *, only_real: bool = True) -> PnlSnapshot | None:
+        """Retourne le snapshot le plus récent, ou ``None`` si vide."""
+        async with self._session_factory() as session:
+            stmt = select(PnlSnapshot).order_by(PnlSnapshot.timestamp.desc()).limit(1)
+            if only_real:
+                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def list_since(
+        self,
+        since: datetime,
+        *,
+        only_real: bool = True,
+    ) -> list[PnlSnapshot]:
+        """Retourne les snapshots depuis ``since`` (timestamp ascendant)."""
+        async with self._session_factory() as session:
+            stmt = select(PnlSnapshot).where(PnlSnapshot.timestamp >= since)
+            if only_real:
+                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            stmt = stmt.order_by(PnlSnapshot.timestamp.asc())
+            result = await session.execute(stmt)
+            return list(result.scalars().all())

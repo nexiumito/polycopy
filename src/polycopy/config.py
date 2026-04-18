@@ -77,6 +77,21 @@ class Settings(BaseSettings):
     # --- Monitoring ---
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    pnl_snapshot_interval_seconds: int = Field(
+        300,
+        ge=1,
+        description="Période entre 2 snapshots PnL (default 5 min).",
+    )
+    alert_large_order_usd_threshold: float = Field(
+        50.0,
+        ge=0,
+        description="Seuil USD au-dessus duquel un fill déclenche `order_filled_large`.",
+    )
+    alert_cooldown_seconds: int = Field(
+        60,
+        ge=0,
+        description="Anti-spam par event_type (in-memory, reset au boot).",
+    )
 
     # --- Logs ---
     log_level: str = "INFO"
