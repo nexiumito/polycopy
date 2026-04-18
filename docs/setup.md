@@ -410,3 +410,43 @@ Via BotFather : `/token` → sélectionner ton bot → nouveau token généré. 
 | Heartbeat manquant après un kill switch | *Attendu* — heartbeat sauté si alerte CRITICAL récente dans la fenêtre (évite dissonance "🚨 kill switch puis 💚 polycopy actif"). Log `telegram_heartbeat_skipped reason=recent_critical`. |
 | Rate limit 429 | > 30 msg/s Telegram Bot API (rare à l'usage polycopy) | Ignoré silencieusement, loggé `telegram_error status_code=429`. Pas de retry queue à M7. |
 
+## 17. Activer le dry-run réaliste (M8, optionnel)
+
+Objectif : laisser le bot tourner 2-3 jours sans capital engagé tout en observant le PnL **virtuel** que tu aurais eu. Aucune signature CLOB, aucune creds touchées (uniquement `/book`, `/midpoint`, Gamma `/markets` read-only).
+
+```env
+DRY_RUN=true
+DRY_RUN_REALISTIC_FILL=true
+DRY_RUN_VIRTUAL_CAPITAL_USD=1000
+DRY_RUN_RESOLUTION_POLL_MINUTES=30
+```
+
+Relance le bot. Tu verras dans les logs :
+
+- `dry_run_realistic_fill_enabled` au boot (warning level, rappel du mode).
+- `dry_run_resolution_started` au boot avec `interval_s`.
+- `order_realistic_fill_simulated` à chaque copy-trade approuvé (avec `avg_fill_price`, `depth_consumed_levels`, `partial`).
+- `order_realistic_fill_rejected reason=insufficient_liquidity` si le book est trop fin pour la taille demandée (FOK strict, cohérent avec le live).
+- `dry_run_position_resolved` toutes les 30 min quand un marché virtuel binaire YES/NO se résout.
+- `pnl_snapshot_written is_dry_run=True total_usdc=…` toutes les `PNL_SNAPSHOT_INTERVAL_SECONDS` (5 min default).
+
+Dashboard `/pnl?mode=dry_run` (M6) filtre les courbes virtuelles. Rapport HTML dédié :
+
+```bash
+python scripts/pnl_report.py --dry-run-mode --since 7 --output html
+# → dry_run_pnl_report.html
+```
+
+Contient : équity curve virtuelle, drawdown max, Δ total_usdc, snapshots détaillés, position virtuelles ouvertes.
+
+### Troubleshooting M8
+
+| Symptôme | Cause probable | Action |
+|---|---|---|
+| `insufficient_liquidity` récurrent | Marché peu liquide vs taille demandée (FOK strict) | Baisse `MAX_POSITION_USD`, ou active `DRY_RUN_ALLOW_PARTIAL_BOOK=true` (s'écarte du comportement live). |
+| Positions virtuelles qui ne se résolvent pas | Marché `neg_risk` (skipped v1), ou `closed=false` côté Gamma | Log `dry_run_resolution_neg_risk_unsupported` ou `dry_run_resolution_winning_outcome_unknown`. v1 = limitation documentée. |
+| `dry_run_sell_without_position` warning | Trader source vend une position que le dry-run virtuel n'a pas ouverte (filtres précédents l'ont bloquée) | Comportement attendu en v1 ; SELL virtuel est skipped + log warning, pas de crash. |
+| PnL virtuel qui ne bouge pas | Snapshots écrits toutes les 5 min ; midpoint cache 30 s côté `WalletStateReader` M3 | Patience — vérifier `pnl_snapshot_written is_dry_run=True` dans les logs. |
+| Alerte `dry_run_virtual_drawdown` | Drawdown ≥ 50 % du seuil `KILL_SWITCH_DRAWDOWN_PCT` | INFO only — **aucun** kill switch en dry-run (invariant M4). Sert à signaler la tendance, pas à arrêter le bot. |
+| Passage au live | Mettre `DRY_RUN=false` + clés + `MAX_POSITION_USD=1` | Le flag `DRY_RUN_REALISTIC_FILL` est **ignoré** en live (cohérent, jamais de fill virtuel en prod). 4ᵉ garde-fou M8 raise `AssertionError` si quelqu'un appelle la branche M8 avec `dry_run=False`. |
+

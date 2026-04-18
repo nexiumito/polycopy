@@ -8,7 +8,9 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.executor.clob_metadata_client import ClobMetadataClient
+from polycopy.executor.clob_orderbook_reader import ClobOrderbookReader
 from polycopy.executor.clob_write_client import ClobWriteClient
+from polycopy.executor.dry_run_resolution_watcher import DryRunResolutionWatcher
 from polycopy.executor.dtos import ExecutorAuthError
 from polycopy.executor.pipeline import execute_order
 from polycopy.executor.wallet_state_reader import WalletStateReader
@@ -52,7 +54,14 @@ class ExecutorOrchestrator:
         self._alerts = alerts_queue
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
-        """Boucle principale jusqu'à `stop_event.set()`."""
+        """Boucle principale jusqu'à `stop_event.set()`.
+
+        M8 : si ``dry_run`` ET ``dry_run_realistic_fill``, instancie un
+        ``ClobOrderbookReader`` partagé + lance ``DryRunResolutionWatcher``
+        dans un TaskGroup parallèle à la boucle de consommation. Aucune
+        creds touchée — le path live (``ClobWriteClient``) reste lazy comme
+        en M3.
+        """
         order_repo = MyOrderRepository(self._session_factory)
         position_repo = MyPositionRepository(self._session_factory)
         async with httpx.AsyncClient() as http_client:
@@ -62,40 +71,96 @@ class ExecutorOrchestrator:
             write_client: ClobWriteClient | None = None
             if self._settings.dry_run is False:
                 write_client = ClobWriteClient(self._settings)
+            orderbook_reader: ClobOrderbookReader | None = None
+            resolution_watcher: DryRunResolutionWatcher | None = None
+            m8_enabled = self._settings.dry_run and self._settings.dry_run_realistic_fill
+            if m8_enabled:
+                orderbook_reader = ClobOrderbookReader(
+                    http_client,
+                    ttl_seconds=self._settings.dry_run_book_cache_ttl_seconds,
+                )
+                resolution_watcher = DryRunResolutionWatcher(
+                    self._session_factory,
+                    gamma_client,
+                    self._settings,
+                )
+                log.warning(
+                    "dry_run_realistic_fill_enabled",
+                    virtual_capital=self._settings.dry_run_virtual_capital_usd,
+                    cache_ttl_s=self._settings.dry_run_book_cache_ttl_seconds,
+                    poll_minutes=self._settings.dry_run_resolution_poll_minutes,
+                    allow_partial=self._settings.dry_run_allow_partial_book,
+                )
             mode = "real" if self._settings.dry_run is False else "dry_run"
-            log.info("executor_started", mode=mode)
-            while not stop_event.is_set():
-                try:
-                    approved = await asyncio.wait_for(
-                        self._queue.get(),
-                        timeout=_QUEUE_GET_TIMEOUT_SECONDS,
+            log.info("executor_started", mode=mode, m8=m8_enabled)
+            try:
+                async with asyncio.TaskGroup() as tg:
+                    tg.create_task(
+                        self._consume_loop(
+                            stop_event,
+                            metadata_client=metadata_client,
+                            gamma_client=gamma_client,
+                            wallet_state_reader=wallet_state_reader,
+                            write_client=write_client,
+                            order_repo=order_repo,
+                            position_repo=position_repo,
+                            orderbook_reader=orderbook_reader,
+                        ),
                     )
-                except TimeoutError:
-                    continue
-                except asyncio.CancelledError:
-                    raise
-                try:
-                    await execute_order(
-                        approved,
-                        settings=self._settings,
-                        metadata_client=metadata_client,
-                        gamma_client=gamma_client,
-                        write_client=write_client,
-                        wallet_state_reader=wallet_state_reader,
-                        order_repo=order_repo,
-                        position_repo=position_repo,
-                        alerts_queue=self._alerts,
-                    )
-                except ExecutorAuthError:
-                    log.error("executor_auth_fatal")
-                    self._push_auth_alert()
-                    stop_event.set()
-                    raise
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("executor_loop_error", tx_hash=approved.tx_hash)
+                    if resolution_watcher is not None:
+                        tg.create_task(resolution_watcher.run_forever(stop_event))
+            except* asyncio.CancelledError:
+                pass
+            except* ExecutorAuthError as eg:
+                # Preserve M3 contract : raise bare ExecutorAuthError (cf. test
+                # `test_orchestrator_pushes_auth_alert_on_fatal`).
+                raise next(iter(eg.exceptions)) from None
         log.info("executor_stopped")
+
+    async def _consume_loop(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        metadata_client: ClobMetadataClient,
+        gamma_client: GammaApiClient,
+        wallet_state_reader: WalletStateReader,
+        write_client: ClobWriteClient | None,
+        order_repo: MyOrderRepository,
+        position_repo: MyPositionRepository,
+        orderbook_reader: ClobOrderbookReader | None,
+    ) -> None:
+        while not stop_event.is_set():
+            try:
+                approved = await asyncio.wait_for(
+                    self._queue.get(),
+                    timeout=_QUEUE_GET_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            try:
+                await execute_order(
+                    approved,
+                    settings=self._settings,
+                    metadata_client=metadata_client,
+                    gamma_client=gamma_client,
+                    write_client=write_client,
+                    wallet_state_reader=wallet_state_reader,
+                    order_repo=order_repo,
+                    position_repo=position_repo,
+                    alerts_queue=self._alerts,
+                    orderbook_reader=orderbook_reader,
+                )
+            except ExecutorAuthError:
+                log.error("executor_auth_fatal")
+                self._push_auth_alert()
+                stop_event.set()
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("executor_loop_error", tx_hash=approved.tx_hash)
 
     def _push_auth_alert(self) -> None:
         """Push un ``Alert`` CRITICAL avant ``stop_event.set()``. No-op sans queue."""

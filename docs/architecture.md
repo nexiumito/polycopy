@@ -70,6 +70,8 @@ Si tous les checks passent, émet un événement `OrderApproved` consommé par l
 
 > **Status M3** ✅ — implémenté. Dry-run par défaut (aucun POST CLOB). Mode réel via `py-clob-client` avec L1→L2 auth dérivation au boot. Pipeline : metadata fetch → tick-size round → garde-fou capital → POST → persist + position upsert. Voir `specs/M3-executor.md` et `src/polycopy/executor/`.
 
+> **Status M8** ✅ — dry-run réaliste. Si `DRY_RUN=true` ET `DRY_RUN_REALISTIC_FILL=true`, l'executor simule chaque FOK via `GET /book` (read-only public, aucune signature), calcule le prix moyen pondéré level-by-level (`Decimal` interne, `float` à la persistance), persiste l'ordre + la position virtuelle (`MyOrder.realistic_fill=True`, `MyPosition.simulated=True`, contrainte unique triple `(condition_id, asset_id, simulated)`). Un `DryRunResolutionWatcher` co-lancé dans le TaskGroup executor poll Gamma toutes les `DRY_RUN_RESOLUTION_POLL_MINUTES` (30 min default) pour matérialiser le `realized_pnl` à la résolution des marchés binaires (neg_risk skipped v1). Le `VirtualWalletStateReader` agrège `Σ size × midpoint` + `realized` pour alimenter `PnlSnapshotWriter` M4 avec `is_dry_run=True`. **Triple garde-fou M3 préservé intact + 4ᵉ garde-fou** (`assert dry_run is True` avant chaque `_persist_realistic_simulated`). **Kill switch jamais déclenché en dry-run** (invariant M4) — alerte INFO `dry_run_virtual_drawdown` à 50 % du seuil hypothétique. Voir `specs/M8-dry-run-realistic.md`.
+
 - Initialise `ClobClient` au démarrage avec les credentials L2 dérivés
 - Pour chaque `OrderApproved` :
   - Construit un `MarketOrderArgs` (FOK) ou `OrderArgs` (GTC limit)

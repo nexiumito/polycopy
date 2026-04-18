@@ -51,6 +51,39 @@ class GammaApiClient:
         self._cache[condition_id] = (self._now(), market)
         return market
 
+    async def get_markets_by_condition_ids(
+        self,
+        condition_ids: list[str],
+    ) -> list[MarketMetadata]:
+        """Batch fetch ``GET /markets?condition_ids=<csv>`` (M8 resolution).
+
+        Pas de cache (les états ``closed`` changent au fil de l'eau et le
+        cycle de polling M8 est de 30 min). Skip silencieusement les marchés
+        dont le payload Gamma ne parse pas.
+        """
+        if not condition_ids:
+            return []
+        response = await self._http.get(
+            f"{self.BASE_URL}/markets",
+            params={"condition_ids": ",".join(condition_ids)},
+            timeout=self.DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise httpx.HTTPStatusError(
+                f"unexpected payload type: {type(data).__name__}",
+                request=response.request,
+                response=response,
+            )
+        markets: list[MarketMetadata] = []
+        for item in data:
+            try:
+                markets.append(MarketMetadata.model_validate(item))
+            except Exception:  # noqa: BLE001 — skip on schema drift
+                log.warning("gamma_resolution_market_parse_skipped")
+        return markets
+
     async def list_top_markets(
         self,
         *,

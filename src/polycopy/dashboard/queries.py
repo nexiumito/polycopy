@@ -309,21 +309,38 @@ async def list_positions(
         return list(result.scalars().all())
 
 
+_VALID_PNL_MODES = frozenset({"real", "dry_run", "both"})
+
+
 async def fetch_pnl_series(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     since: timedelta,
     include_dry_run: bool = False,
+    mode: str | None = None,
 ) -> PnlSeries:
-    """Charge la série PnL pour Chart.js (``timestamp`` asc)."""
+    """Charge la série PnL pour Chart.js (``timestamp`` asc).
+
+    ``mode`` (M8) prend la priorité sur ``include_dry_run`` :
+    - ``"real"``    → uniquement ``is_dry_run=False`` (default historique).
+    - ``"dry_run"`` → uniquement ``is_dry_run=True``.
+    - ``"both"``    → les deux (legacy ``include_dry_run=True``).
+    """
     cutoff = datetime.now(tz=UTC) - since
+    effective_mode = mode if mode in _VALID_PNL_MODES else None
     async with session_factory() as session:
         stmt = (
             select(PnlSnapshot)
             .where(PnlSnapshot.timestamp >= cutoff)
             .order_by(PnlSnapshot.timestamp.asc())
         )
-        if not include_dry_run:
+        if effective_mode == "dry_run":
+            stmt = stmt.where(PnlSnapshot.is_dry_run.is_(True))
+        elif effective_mode == "real":
+            stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+        elif effective_mode == "both":
+            pass  # no filter
+        elif not include_dry_run:
             stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
         result = await session.execute(stmt)
         snapshots = list(result.scalars().all())

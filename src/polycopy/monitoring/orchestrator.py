@@ -22,6 +22,7 @@ import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.executor.virtual_wallet_reader import VirtualWalletStateReader
 from polycopy.executor.wallet_state_reader import WalletStateReader
 from polycopy.monitoring.alert_digest import AlertDigestWindow
 from polycopy.monitoring.alert_dispatcher import AlertDispatcher
@@ -59,7 +60,20 @@ class MonitoringOrchestrator:
         """Boucle principale : tous les schedulers jusqu'à ``stop_event.set()``."""
         boot_at = datetime.now(tz=UTC)
         async with httpx.AsyncClient() as http_client:
-            wallet_reader = WalletStateReader(http_client, self._settings)
+            wallet_reader: WalletStateReader | VirtualWalletStateReader
+            if self._settings.dry_run and self._settings.dry_run_realistic_fill:
+                # Lazy import : évite l'import circulaire monitoring↔strategy
+                # au load module.
+                from polycopy.strategy.clob_read_client import ClobReadClient
+
+                wallet_reader = VirtualWalletStateReader(
+                    self._session_factory,
+                    ClobReadClient(http_client),
+                    self._settings,
+                )
+                log.info("monitoring_virtual_wallet_reader_enabled")
+            else:
+                wallet_reader = WalletStateReader(http_client, self._settings)
             telegram = TelegramClient(http_client, self._settings)
             if telegram.enabled:
                 log.info("telegram_enabled")

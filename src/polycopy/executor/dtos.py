@@ -4,6 +4,8 @@
 `storage/dtos.py` pour cohérence avec les autres DTOs de repos.
 """
 
+from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,3 +61,52 @@ class ExecutorAuthError(Exception):
 
 class ExecutorValidationError(Exception):
     """Erreur de validation CLOB — ordre rejeté définitivement, ne pas retry."""
+
+
+# --- M8 : orderbook + realistic fill simulation ----------------------------
+
+
+class OrderbookLevel(BaseModel):
+    """Un niveau de l'orderbook CLOB. ``price`` et ``size`` en ``Decimal`` —
+    les payloads ``/book`` retournent des strings (precision arbitraire)."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    price: Decimal
+    size: Decimal
+
+
+class Orderbook(BaseModel):
+    """Snapshot orderbook ``GET /book?token_id=<id>`` (read-only public, M8).
+
+    ``bids`` triés du meilleur au pire (prix décroissant). ``asks`` triés du
+    meilleur au pire (prix croissant). Le tri est garanti par le client lecteur.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    asset_id: str
+    bids: list[OrderbookLevel]
+    asks: list[OrderbookLevel]
+    snapshot_at: datetime
+    raw_hash: str | None = None
+
+
+class RealisticFillResult(BaseModel):
+    """Résultat de ``simulate_fill`` — soit fill virtuel, soit reject FOK.
+
+    Les champs ``filled_size`` / ``avg_fill_price`` / ``shortfall`` sont en
+    ``float`` pour la persistance DB et les logs structlog. Les calculs
+    intermédiaires utilisent ``Decimal`` (cf. ``simulate_fill``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["SIMULATED", "REJECTED"]
+    reason: str | None = None
+    requested_size: float
+    filled_size: float = 0.0
+    avg_fill_price: float | None = None
+    depth_consumed_shares: float = 0.0
+    depth_consumed_levels: int = 0
+    shortfall: float = 0.0

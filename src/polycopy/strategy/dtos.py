@@ -33,9 +33,10 @@ class MarketMetadata(BaseModel):
     end_date_iso: str | None = Field(default=None, alias="endDateIso")
     clob_token_ids: list[str] = Field(default_factory=list, alias="clobTokenIds")
     outcomes: list[str] = Field(default_factory=list)
+    outcome_prices: list[str] = Field(default_factory=list, alias="outcomePrices")
     neg_risk: bool = Field(default=False, alias="negRisk")
 
-    @field_validator("clob_token_ids", "outcomes", mode="before")
+    @field_validator("clob_token_ids", "outcomes", "outcome_prices", mode="before")
     @classmethod
     def _parse_json_string(cls, v: object) -> object:
         """Gamma renvoie ces champs en strings JSON-stringifiées (`'["a","b"]'`)."""

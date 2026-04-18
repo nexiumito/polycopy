@@ -76,6 +76,32 @@ class MyOrderDTO(BaseModel):
     status: Literal["SIMULATED", "SENT"]
     simulated: bool
     clob_order_id: str | None = None
+    realistic_fill: bool = False
+
+
+class RealisticSimulatedOrderDTO(BaseModel):
+    """Ordre simulé M8 (dry-run + realistic_fill) prêt pour persistance.
+
+    Diffère de ``MyOrderDTO`` par :
+    - ``status`` peut valoir ``REJECTED`` (FOK strict, book insuffisant).
+    - ``realistic_fill=True`` toujours.
+    - ``simulated=True`` toujours.
+    - ``error_msg`` optionnel (REJECTED → ``insufficient_liquidity``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_tx_hash: str
+    condition_id: str
+    asset_id: str
+    side: Literal["BUY", "SELL"]
+    size: float
+    price: float
+    tick_size: float
+    neg_risk: bool
+    order_type: Literal["FOK", "FAK", "GTC"] = "FOK"
+    status: Literal["SIMULATED", "REJECTED"]
+    error_msg: str | None = None
 
 
 # --- M5 discovery DTOs --------------------------------------------------------

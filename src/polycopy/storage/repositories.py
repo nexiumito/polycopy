@@ -12,6 +12,7 @@ from polycopy.storage.dtos import (
     DetectedTradeDTO,
     MyOrderDTO,
     PnlSnapshotDTO,
+    RealisticSimulatedOrderDTO,
     StrategyDecisionDTO,
     TraderEventDTO,
     TraderScoreDTO,
@@ -349,6 +350,38 @@ class MyOrderRepository:
             order_type=dto.order_type,
             status=dto.status,
             simulated=dto.simulated,
+            realistic_fill=dto.realistic_fill,
+        )
+        async with self._session_factory() as session:
+            session.add(record)
+            await session.commit()
+            await session.refresh(record)
+            return record
+
+    async def insert_realistic_simulated(
+        self,
+        dto: RealisticSimulatedOrderDTO,
+    ) -> MyOrder:
+        """Persiste un ordre M8 (dry-run + realistic_fill) avec ``status``
+        ``SIMULATED`` (fill virtuel) ou ``REJECTED`` (FOK strict, book trop fin).
+
+        Garde-fou : ``simulated=True`` et ``realistic_fill=True`` forcés.
+        """
+        record = MyOrder(
+            source_tx_hash=dto.source_tx_hash,
+            clob_order_id=None,
+            condition_id=dto.condition_id,
+            asset_id=dto.asset_id,
+            side=dto.side,
+            size=dto.size,
+            price=dto.price,
+            tick_size=dto.tick_size,
+            neg_risk=dto.neg_risk,
+            order_type=dto.order_type,
+            status=dto.status,
+            simulated=True,
+            realistic_fill=True,
+            error_msg=dto.error_msg,
         )
         async with self._session_factory() as session:
             session.add(record)
@@ -410,16 +443,20 @@ class MyPositionRepository:
         size_filled: float,
         fill_price: float,
     ) -> MyPosition:
-        """Met à jour la position après un fill.
+        """Met à jour la position **réelle** après un fill CLOB.
 
         BUY : cumul de size + recalcul de `avg_price` (moyenne pondérée).
         SELL : décrément de size ; si `size <= 0`, marque la position fermée.
+
+        M8 : filtre ``simulated=False`` pour ne jamais toucher une position
+        virtuelle depuis le path live.
         """
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
                 MyPosition.condition_id == condition_id,
                 MyPosition.asset_id == asset_id,
                 MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(False),
             )
             existing = (await session.execute(stmt)).scalar_one_or_none()
             if existing is None:
@@ -433,6 +470,7 @@ class MyPositionRepository:
                     asset_id=asset_id,
                     size=size_filled,
                     avg_price=fill_price,
+                    simulated=False,
                 )
                 session.add(position)
                 await session.commit()
@@ -453,20 +491,130 @@ class MyPositionRepository:
             return existing
 
     async def list_open(self) -> list[MyPosition]:
-        """Retourne toutes les positions ouvertes (`closed_at IS NULL`)."""
+        """Retourne les positions **réelles** ouvertes (``simulated=False``)."""
         async with self._session_factory() as session:
-            stmt = select(MyPosition).where(MyPosition.closed_at.is_(None))
+            stmt = select(MyPosition).where(
+                MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(False),
+            )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def get_open(self, condition_id: str) -> MyPosition | None:
-        """Retourne la position ouverte sur le `condition_id`, ou None."""
+        """Retourne la position **réelle** ouverte sur le `condition_id`, ou None.
+
+        Filtre ``simulated=False`` pour ségrégation M8 (ne mélange pas réel et
+        virtuel — un appelant qui veut le virtuel doit utiliser
+        ``list_open_virtual`` ou ``get_open_virtual``).
+        """
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
                 MyPosition.condition_id == condition_id,
                 MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(False),
             )
             return (await session.execute(stmt)).scalar_one_or_none()
+
+    # --- M8 : positions virtuelles (dry-run realistic fill) -----------------
+
+    async def upsert_virtual(
+        self,
+        *,
+        condition_id: str,
+        asset_id: str,
+        side: Literal["BUY", "SELL"],
+        size_filled: float,
+        fill_price: float,
+    ) -> MyPosition | None:
+        """Upsert d'une position **virtuelle** sur (condition_id, asset_id).
+
+        BUY : crée ou cumule la position (moyenne pondérée du prix).
+        SELL : décrémente une position virtuelle existante (close si ≤ 0). Si
+        aucune position virtuelle ouverte n'existe → retourne ``None`` et
+        l'appelant log un warning (v1 M8 : skip + warning, pas de crash).
+        """
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(
+                MyPosition.condition_id == condition_id,
+                MyPosition.asset_id == asset_id,
+                MyPosition.simulated.is_(True),
+                MyPosition.closed_at.is_(None),
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                if side == "SELL":
+                    return None
+                position = MyPosition(
+                    condition_id=condition_id,
+                    asset_id=asset_id,
+                    size=size_filled,
+                    avg_price=fill_price,
+                    simulated=True,
+                )
+                session.add(position)
+                await session.commit()
+                await session.refresh(position)
+                return position
+            if side == "BUY":
+                new_size = existing.size + size_filled
+                if new_size > 0:
+                    existing.avg_price = (
+                        existing.size * existing.avg_price + size_filled * fill_price
+                    ) / new_size
+                existing.size = new_size
+            else:  # SELL
+                existing.size -= size_filled
+                if existing.size <= 0:
+                    existing.closed_at = datetime.now(tz=UTC)
+            await session.commit()
+            await session.refresh(existing)
+            return existing
+
+    async def list_open_virtual(self) -> list[MyPosition]:
+        """Positions virtuelles encore ouvertes (``simulated=True, closed_at=NULL``)."""
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(
+                MyPosition.simulated.is_(True),
+                MyPosition.closed_at.is_(None),
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def close_virtual(
+        self,
+        position_id: int,
+        *,
+        closed_at: datetime,
+        realized_pnl: float,
+    ) -> None:
+        """Close une position virtuelle et persiste le PnL réalisé.
+
+        Garde-fou : refuse si la position n'est pas ``simulated=True`` (defense
+        in depth — on ne touche jamais à une vraie position via cette méthode).
+        """
+        async with self._session_factory() as session:
+            position = await session.get(MyPosition, position_id)
+            if position is None:
+                raise ValueError(f"MyPosition id={position_id} not found")
+            if not position.simulated:
+                raise ValueError(
+                    f"MyPosition id={position_id} is not virtual — "
+                    "close_virtual must only be called on simulated positions",
+                )
+            position.closed_at = closed_at
+            position.realized_pnl = realized_pnl
+            await session.commit()
+
+    async def sum_realized_pnl_virtual(self) -> float:
+        """Somme des ``realized_pnl`` des positions virtuelles fermées."""
+        async with self._session_factory() as session:
+            stmt = select(func.coalesce(func.sum(MyPosition.realized_pnl), 0.0)).where(
+                MyPosition.simulated.is_(True),
+                MyPosition.closed_at.is_not(None),
+            )
+            result = await session.execute(stmt)
+            value = result.scalar_one()
+            return float(value) if value is not None else 0.0
 
 
 class PnlSnapshotRepository:

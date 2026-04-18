@@ -109,6 +109,11 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 | `TG_DAILY_SUMMARY_TIMEZONE` | TZ IANA du résumé quotidien | `Europe/Paris` | non |
 | `TELEGRAM_DIGEST_THRESHOLD` | Alertes/heure pour batch digest (M7) | `5` | non |
 | `TELEGRAM_DIGEST_WINDOW_MINUTES` | Fenêtre de comptage digest | `60` | non |
+| `DRY_RUN_REALISTIC_FILL` | Simule les fills sur la profondeur orderbook (M8, opt-in, `DRY_RUN=true` only) | `false` | non |
+| `DRY_RUN_VIRTUAL_CAPITAL_USD` | Capital initial virtuel pour le PnL dry-run (M8) | `1000.0` | non |
+| `DRY_RUN_BOOK_CACHE_TTL_SECONDS` | TTL cache `/book` par asset_id (M8) | `5` | non |
+| `DRY_RUN_RESOLUTION_POLL_MINUTES` | Cadence check résolution marchés virtuels (M8) | `30` | non |
+| `DRY_RUN_ALLOW_PARTIAL_BOOK` | M8 : FOK strict si false, fill partiel si true | `false` | non |
 | `DASHBOARD_ENABLED` | Active le dashboard local (M4.5, opt-in) | `false` | non |
 | `DASHBOARD_HOST` | Bind (localhost par défaut, ⚠️ `0.0.0.0` = expose au LAN) | `127.0.0.1` | non |
 | `DASHBOARD_PORT` | Port TCP local du dashboard | `8787` | non |
@@ -156,6 +161,31 @@ Guide pas-à-pas (install WSL, édition `.env`, troubleshooting) : [docs/setup.m
 5. **Augmente progressivement** `MAX_POSITION_USD` quand tu es satisfait.
 
 Si le bot démarre sans `--dry-run` ET sans clés, il **refuse de démarrer** avec un message clair (`RuntimeError`) — par sécurité.
+
+## Dry-run "semi-réel" (M8, optionnel)
+
+Par défaut, `DRY_RUN=true` log l'ordre approuvé puis s'arrête (`MyOrder.status='SIMULATED'`). Avec M8, tu peux observer le PnL que tu aurais eu en simulant chaque FOK sur la **profondeur orderbook réelle**, sans engager de capital ni signer quoi que ce soit :
+
+```env
+DRY_RUN=true
+DRY_RUN_REALISTIC_FILL=true
+DRY_RUN_VIRTUAL_CAPITAL_USD=1000
+```
+
+Le bot fetch alors `GET /book?token_id=...` (read-only public, pas d'auth) à chaque ordre approuvé, calcule le prix moyen pondéré sur la profondeur, persiste la **position virtuelle** (`MyPosition.simulated=True`), valorise live via mid-price, et **résout** le PnL automatiquement à la clôture du marché (poll Gamma toutes les 30 min). Le snapshot PnL `is_dry_run=True` reflète le total virtuel en temps réel (capital initial + realized + unrealized).
+
+Dashboard `/pnl?mode=dry_run|real|both` filtre les courbes. Rapport HTML dédié :
+
+```bash
+python scripts/pnl_report.py --dry-run-mode --since 7 --output html
+# → dry_run_pnl_report.html
+```
+
+**Garde-fous** :
+- `DRY_RUN=false` reste l'**unique** trigger d'un POST CLOB réel ; le 4ᵉ garde-fou M8 (`assert dry_run is True`) bloque toute simulation accidentelle en live.
+- Aucune creds touchée par le path M8 (uniquement `/book`, `/midpoint`, Gamma `/markets`).
+- **Kill switch jamais en dry-run** (invariant M4) — alerte INFO `dry_run_virtual_drawdown` au-delà de 50 % du seuil, sans arrêt du bot.
+- v1 : SELL sur position virtuelle inexistante → log `dry_run_sell_without_position` + skip. Marchés `neg_risk` → résolution skipped + warning (position reste open virtuellement).
 
 ## Alertes Telegram (optionnel)
 
@@ -326,11 +356,12 @@ python -m polycopy --dry-run                    # bot en mode safe
 - [x] **M5** : Scoring de traders + sélection automatique (opt-in, read-only)
 - [x] **M6** : Dashboard 2026 (refonte UX, sidebar, cards KPI, jauge score, timeline PnL)
 - [x] **M7** : Bot Telegram enrichi (startup, heartbeat, résumé quotidien, templates, digest)
+- [x] **M8** : Dry-run réaliste (fill orderbook, PnL virtuel live, résolution marchés)
 
-### Après M7 (roadmap UX/expérience, pas de nouveau module fonctionnel)
+### Après M8 (roadmap UX/expérience, pas de nouveau module fonctionnel)
 
-- Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
-  comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans
+- ~~Mode `--dry-run` "semi-réel" : simule les fills sur la profondeur orderbook
+  comme s'il postait pour de vrai, de sorte à observer la perf sur 2-3 jours sans~~
   capital engagé
 - README plus accueillant (tutorial interactif, captures, comparaison avec
   d'autres bots Polymarket)

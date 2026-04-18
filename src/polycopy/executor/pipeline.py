@@ -8,14 +8,16 @@ from typing import TYPE_CHECKING, Literal
 import structlog
 
 from polycopy.executor.clob_metadata_client import ClobMetadataClient
+from polycopy.executor.clob_orderbook_reader import ClobOrderbookReader
 from polycopy.executor.clob_write_client import ClobWriteClient
 from polycopy.executor.dtos import (
     BuiltOrder,
     ExecutorAuthError,
     OrderResult,
 )
+from polycopy.executor.realistic_fill import simulate_fill
 from polycopy.executor.wallet_state_reader import WalletStateReader
-from polycopy.storage.dtos import MyOrderDTO
+from polycopy.storage.dtos import MyOrderDTO, RealisticSimulatedOrderDTO
 from polycopy.storage.repositories import MyOrderRepository, MyPositionRepository
 from polycopy.strategy.dtos import OrderApproved
 from polycopy.strategy.gamma_client import GammaApiClient
@@ -83,6 +85,7 @@ async def execute_order(
     order_repo: MyOrderRepository,
     position_repo: MyPositionRepository,
     alerts_queue: "asyncio.Queue[Alert] | None" = None,
+    orderbook_reader: ClobOrderbookReader | None = None,
 ) -> None:
     """Exécute (ou simule) un `OrderApproved` reçu de la queue M2."""
     bound = log.bind(tx_hash=approved.tx_hash, condition_id=approved.condition_id)
@@ -105,6 +108,18 @@ async def execute_order(
 
     # 2) Branche dry-run.
     if settings.dry_run:
+        if settings.dry_run_realistic_fill and orderbook_reader is not None:
+            await _persist_realistic_simulated(
+                approved,
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+                settings=settings,
+                orderbook_reader=orderbook_reader,
+                order_repo=order_repo,
+                position_repo=position_repo,
+                bound_log=bound,
+            )
+            return
         await order_repo.insert(
             MyOrderDTO(
                 source_tx_hash=approved.tx_hash,
@@ -319,6 +334,99 @@ def _push_executor_error_alert(
             cooldown_key="executor_error",
         ),
     )
+
+
+async def _persist_realistic_simulated(
+    approved: OrderApproved,
+    *,
+    tick_size: float,
+    neg_risk: bool,
+    settings: "Settings",
+    orderbook_reader: ClobOrderbookReader,
+    order_repo: MyOrderRepository,
+    position_repo: MyPositionRepository,
+    bound_log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Branche M8 : fetch /book → simulate_fill → persist + position virtuelle.
+
+    4ᵉ garde-fou M8 (defense in depth) : ``assert dry_run is True`` — un bug
+    de refactor qui appellerait cette fonction en mode live raise immédiatement.
+    """
+    assert settings.dry_run is True, (  # noqa: S101 — defense in depth invariant
+        "_persist_realistic_simulated must NEVER run in live mode (M8 4th guardrail breached)."
+    )
+    book = await orderbook_reader.get_orderbook(approved.asset_id)
+    fill = simulate_fill(
+        approved,
+        book,
+        allow_partial=settings.dry_run_allow_partial_book,
+    )
+    if fill.status == "REJECTED":
+        bound_log.info(
+            "order_realistic_fill_rejected",
+            asset_id=approved.asset_id,
+            reason=fill.reason,
+            requested_size=fill.requested_size,
+            depth_consumed_levels=fill.depth_consumed_levels,
+            shortfall=fill.shortfall,
+        )
+        await order_repo.insert_realistic_simulated(
+            RealisticSimulatedOrderDTO(
+                source_tx_hash=approved.tx_hash,
+                condition_id=approved.condition_id,
+                asset_id=approved.asset_id,
+                side=approved.side,
+                size=fill.requested_size,
+                # Pas de prix de fill — on stocke le requested au tick près
+                # pour audit (cohérent avec `_round_to_tick`).
+                price=_round_to_tick(approved.my_price, tick_size),
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+                status="REJECTED",
+                error_msg=fill.reason,
+            ),
+        )
+        return
+
+    assert fill.avg_fill_price is not None  # noqa: S101 — guaranteed by simulate_fill
+    bound_log.info(
+        "order_realistic_fill_simulated",
+        asset_id=approved.asset_id,
+        side=approved.side,
+        requested_size=fill.requested_size,
+        filled_size=fill.filled_size,
+        avg_fill_price=fill.avg_fill_price,
+        depth_consumed_shares=fill.depth_consumed_shares,
+        depth_consumed_levels=fill.depth_consumed_levels,
+        partial=fill.shortfall > 0,
+    )
+    await order_repo.insert_realistic_simulated(
+        RealisticSimulatedOrderDTO(
+            source_tx_hash=approved.tx_hash,
+            condition_id=approved.condition_id,
+            asset_id=approved.asset_id,
+            side=approved.side,
+            size=fill.filled_size,
+            price=fill.avg_fill_price,
+            tick_size=tick_size,
+            neg_risk=neg_risk,
+            status="SIMULATED",
+        ),
+    )
+    position = await position_repo.upsert_virtual(
+        condition_id=approved.condition_id,
+        asset_id=approved.asset_id,
+        side=approved.side,
+        size_filled=fill.filled_size,
+        fill_price=fill.avg_fill_price,
+    )
+    if position is None:
+        # SELL sur position virtuelle inexistante (v1 scope : skip + warning).
+        bound_log.warning(
+            "dry_run_sell_without_position",
+            asset_id=approved.asset_id,
+            requested_size=fill.requested_size,
+        )
 
 
 def _maybe_push_large_fill_alert(

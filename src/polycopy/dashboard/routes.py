@@ -268,11 +268,13 @@ def build_partials_router() -> APIRouter:
         sf: SFDep,
         since: str = "24h",
         include_dry_run: bool = False,
+        mode: str | None = None,
     ) -> JSONResponse:
         series = await queries.fetch_pnl_series(
             sf,
             since=queries.parse_since(since),
             include_dry_run=include_dry_run,
+            mode=mode,
         )
         payload: dict[str, Any] = {
             "timestamps": [ts.isoformat() for ts in series.timestamps],

@@ -84,6 +84,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Inclure les snapshots marqués is_dry_run=True.",
     )
+    parser.add_argument(
+        "--dry-run-mode",
+        action="store_true",
+        help=(
+            "M8 : isole exclusivement les snapshots is_dry_run=True (rapport "
+            "PnL virtuel — équity curve, drawdown, win rate). Output file "
+            "défaut : dry_run_pnl_report.html."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -92,11 +101,14 @@ def _collect_stats(
     since_days: int,
     *,
     include_dry_run: bool,
+    dry_run_only: bool = False,
 ) -> ReportStats:
     since = datetime.now(tz=UTC) - timedelta(days=since_days)
 
     snapshots_stmt = select(PnlSnapshot).where(PnlSnapshot.timestamp >= since)
-    if not include_dry_run:
+    if dry_run_only:
+        snapshots_stmt = snapshots_stmt.where(PnlSnapshot.is_dry_run.is_(True))
+    elif not include_dry_run:
         snapshots_stmt = snapshots_stmt.where(PnlSnapshot.is_dry_run.is_(False))
     snapshots = list(
         session.execute(snapshots_stmt.order_by(PnlSnapshot.timestamp.asc())).scalars().all(),
@@ -106,14 +118,18 @@ def _collect_stats(
     max_drawdown = max((s.drawdown_pct for s in snapshots), default=0.0)
     total_delta = snapshots[-1].total_usdc - snapshots[0].total_usdc if len(snapshots) >= 2 else 0.0
 
-    status_rows = session.execute(
-        select(MyOrder.status, func.count(MyOrder.id)).group_by(MyOrder.status),
-    ).all()
+    status_stmt = select(MyOrder.status, func.count(MyOrder.id))
+    if dry_run_only:
+        status_stmt = status_stmt.where(MyOrder.realistic_fill.is_(True))
+    status_rows = session.execute(status_stmt.group_by(MyOrder.status)).all()
     orders_by_status = {row[0]: int(row[1]) for row in status_rows}
 
-    open_positions = list(
-        session.execute(select(MyPosition).where(MyPosition.closed_at.is_(None))).scalars().all(),
-    )
+    positions_stmt = select(MyPosition).where(MyPosition.closed_at.is_(None))
+    if dry_run_only:
+        positions_stmt = positions_stmt.where(MyPosition.simulated.is_(True))
+    else:
+        positions_stmt = positions_stmt.where(MyPosition.simulated.is_(False))
+    open_positions = list(session.execute(positions_stmt).scalars().all())
     open_notional = sum(p.size * p.avg_price for p in open_positions)
 
     return ReportStats(
@@ -285,6 +301,7 @@ def run(args: argparse.Namespace) -> int:
                 session,
                 since_days=args.since,
                 include_dry_run=args.include_dry_run,
+                dry_run_only=args.dry_run_mode,
             )
     finally:
         engine.dispose()
@@ -297,6 +314,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
     # html
     output_path = Path(args.output_file)
+    if args.dry_run_mode and args.output_file == "pnl_report.html":
+        output_path = Path("dry_run_pnl_report.html")
     output_path.write_text(_render_html(stats), encoding="utf-8")
     sys.stdout.write(f"wrote {output_path}\n")
     return 0

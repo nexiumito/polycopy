@@ -152,6 +152,13 @@ class MyOrder(Base):
     transaction_hashes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     error_msg: Mapped[str | None] = mapped_column(String(256), nullable=True)
     simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # M8 : True ⟺ fill simulé via orderbook /book (vs stub instantané M3).
+    realistic_fill: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=_now_utc,
@@ -161,7 +168,11 @@ class MyOrder(Base):
 
 
 class MyPosition(Base):
-    """Position courante : 1 ligne par `(condition_id, asset_id)` ouvert."""
+    """Position courante : 1 ligne par `(condition_id, asset_id, simulated)` ouvert.
+
+    M8 : la 3ᵉ clé ``simulated`` permet la coexistence d'une position réelle et
+    d'une position virtuelle (dry-run) sur le même marché sans collision.
+    """
 
     __tablename__ = "my_positions"
 
@@ -176,9 +187,27 @@ class MyPosition(Base):
         nullable=False,
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # M8 : True ⟺ position virtuelle (dry-run realistic fill), ne correspond
+    # à aucune position CLOB réelle.
+    simulated: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
+    # M8 : rempli à la résolution du marché pour les positions virtuelles
+    # (`size * (winning ? 1 - avg_price : -avg_price)`). NULL si position
+    # ouverte ou si position réelle (calculé hors snapshot).
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("condition_id", "asset_id", name="uq_my_positions_condition_asset"),
+        UniqueConstraint(
+            "condition_id",
+            "asset_id",
+            "simulated",
+            name="uq_my_positions_condition_asset_simulated",
+        ),
+        Index("ix_my_positions_simulated_open", "simulated", "closed_at"),
     )
 
 

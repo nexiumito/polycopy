@@ -75,6 +75,51 @@ class Settings(BaseSettings):
     # --- Mode ---
     dry_run: bool = True
 
+    # --- Mode dry-run réaliste (M8, opt-in strict) -----------------------
+    dry_run_realistic_fill: bool = Field(
+        False,
+        description=(
+            "Opt-in M8. Si true ET DRY_RUN=true, simule chaque FOK sur la "
+            "profondeur orderbook réelle (read-only `/book`) au lieu du fill "
+            "stub instantané M3. Ignoré en live (`DRY_RUN=false`)."
+        ),
+    )
+    dry_run_virtual_capital_usd: float = Field(
+        1000.0,
+        ge=10.0,
+        le=1_000_000.0,
+        description=(
+            "Capital initial virtuel pour le PnL dry-run M8. Remplace "
+            "RISK_AVAILABLE_CAPITAL_USD_STUB uniquement dans les snapshots "
+            "is_dry_run=true. Ne pilote PAS le RiskManager M2."
+        ),
+    )
+    dry_run_book_cache_ttl_seconds: int = Field(
+        5,
+        ge=1,
+        le=60,
+        description=(
+            "TTL du cache in-memory ClobOrderbookReader (M8). 5 s par défaut "
+            "= compromis fraîcheur / efficacité (cf. spec §2.6)."
+        ),
+    )
+    dry_run_resolution_poll_minutes: int = Field(
+        30,
+        ge=5,
+        le=1440,
+        description=(
+            "Cadence du DryRunResolutionWatcher M8 — vérifie les marchés "
+            "virtuels résolus et matérialise le realized_pnl."
+        ),
+    )
+    dry_run_allow_partial_book: bool = Field(
+        False,
+        description=(
+            "M8 : si false (default), FOK strict — book insuffisant → REJECT. "
+            "Si true, accepte un fill partiel (s'écarte du comportement live)."
+        ),
+    )
+
     # --- Monitoring ---
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None

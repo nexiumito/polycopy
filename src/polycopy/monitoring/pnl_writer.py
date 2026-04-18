@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.executor.virtual_wallet_reader import VirtualWalletStateReader
 from polycopy.executor.wallet_state_reader import WalletStateReader
 from polycopy.monitoring.dtos import Alert
 from polycopy.storage.dtos import PnlSnapshotDTO
@@ -22,6 +23,8 @@ from polycopy.storage.repositories import PnlSnapshotRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+
+_DRY_RUN_VIRTUAL_DRAWDOWN_RATIO: float = 0.5
 
 log = structlog.get_logger(__name__)
 
@@ -36,7 +39,7 @@ class PnlSnapshotWriter:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
-        wallet_state_reader: WalletStateReader,
+        wallet_state_reader: WalletStateReader | VirtualWalletStateReader,
         alerts_queue: asyncio.Queue[Alert],
     ) -> None:
         self._repo = PnlSnapshotRepository(session_factory)
@@ -96,8 +99,14 @@ class PnlSnapshotWriter:
         drawdown_pct: float,
         stop_event: asyncio.Event,
     ) -> None:
-        """Kill switch + drawdown warning. **Jamais en dry-run** (spec §2.3)."""
+        """Kill switch + drawdown warning. **Jamais en dry-run** (spec §2.3).
+
+        M8 : si dry-run, on émet l'alerte INFO ``dry_run_virtual_drawdown`` à
+        50 % du seuil kill switch — sans jamais déclencher ``stop_event`` ni
+        l'alerte CRITICAL (cohérent invariant M4 + spec §2.8).
+        """
         if self._settings.dry_run:
+            self._maybe_push_dry_run_drawdown(total, drawdown_pct)
             return
         threshold = self._settings.kill_switch_drawdown_pct
         if drawdown_pct >= threshold:
@@ -140,6 +149,26 @@ class PnlSnapshotWriter:
             self._alerts.put_nowait(alert)
         except asyncio.QueueFull:
             log.warning("alerts_queue_full", event=alert.event)
+
+    def _maybe_push_dry_run_drawdown(self, total: float, drawdown_pct: float) -> None:
+        """Émet ``dry_run_virtual_drawdown`` INFO si dry-run + drawdown élevé.
+
+        Aucun ``stop_event`` jamais touché — invariant M4 préservé.
+        """
+        threshold = self._settings.kill_switch_drawdown_pct
+        if drawdown_pct < _DRY_RUN_VIRTUAL_DRAWDOWN_RATIO * threshold:
+            return
+        self._push_alert(
+            Alert(
+                level="INFO",
+                event="dry_run_virtual_drawdown",
+                body=(
+                    f"Drawdown virtuel {drawdown_pct:.1f}% — capital virtuel "
+                    f"${total:.0f} (seuil kill switch hypothétique {threshold:.0f}%)."
+                ),
+                cooldown_key="dry_run_virtual_drawdown",
+            ),
+        )
 
     @staticmethod
     def _compute_drawdown_pct(max_ever: float | None, total: float) -> float:
