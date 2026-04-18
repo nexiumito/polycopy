@@ -250,13 +250,16 @@ def build_pages_router() -> APIRouter:
             q=q,
             exclude_events=exclude,
         )
+        # UI affiche le plus récent en haut (convention logs standard).
+        # Le reader reste chronologique — l'inversion vit à l'affichage.
+        filtered_reversed = list(reversed(filtered))
         return _render(
             request,
             "logs.html",
             {
                 "logs_enabled": True,
                 "disabled_reason": "",
-                "entries": filtered,
+                "entries": filtered_reversed,
                 "filter_levels": validated_levels,
                 "filter_events": validated_events,
                 "filter_q": q or "",
@@ -477,10 +480,12 @@ def build_partials_router() -> APIRouter:
             q=q,
             exclude_events=exclude,
         )
+        # Ordre d'affichage UI : récent → ancien (cohérent avec /logs).
+        filtered_reversed = list(reversed(filtered))
         return _render(
             request,
             "partials/logs_tail.html",
-            {"entries": filtered},
+            {"entries": filtered_reversed},
         )
 
     @router.get("/traders-rows", response_class=HTMLResponse)

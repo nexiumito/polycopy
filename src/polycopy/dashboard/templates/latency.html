@@ -87,8 +87,12 @@
       scales: {
         x: { ticks: { color: cssVar("--color-muted", "#9ba7b8") }, grid: { display: false } },
         y: {
+          // Échelle log pour éviter qu'un stage avec valeur extrême (ex: watcher
+          // qui rattrape des trades historiques après un long off) écrase les
+          // autres stages à 0 en rendu linéaire.
+          type: "logarithmic",
           ticks: { color: cssVar("--color-muted", "#9ba7b8") },
-          title: { display: true, text: "ms", color: cssVar("--color-muted", "#9ba7b8") },
+          title: { display: true, text: "ms (log scale)", color: cssVar("--color-muted", "#9ba7b8") },
         },
       },
       plugins: {
