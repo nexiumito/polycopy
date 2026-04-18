@@ -8,14 +8,15 @@
   <nav class="flex flex-wrap gap-2 text-sm">
     {% for opt in [("1 h", "1h"), ("24 h", "24h"), ("7 j", "7d"), ("30 j", "30d")] %}
       {% set label, val = opt %}
-      <a href="/pnl?since={{ val }}" class="filter-chip {% if since == val %}filter-chip-active{% endif %}">{{ label }}</a>
+      <a href="/pnl?since={{ val }}&mode={{ mode }}" class="filter-chip {% if since == val %}filter-chip-active{% endif %}">{{ label }}</a>
     {% endfor %}
   </nav>
-  {# Stub toggle réel/dry-run préparé pour M8 (cf. spec §7.4). Disabled à M6. #}
-  <div class="flex items-center gap-2 text-xs" style="color: var(--color-muted);" title="Branchement M8">
+  {# M8 : toggle réel / dry-run virtuel / both. Filtre côté serveur via mode=. #}
+  <div class="flex items-center gap-2 text-xs" style="color: var(--color-muted);">
     <span>Mode :</span>
-    <span class="filter-chip filter-chip-active opacity-60 cursor-not-allowed">réel</span>
-    <span class="filter-chip opacity-40 cursor-not-allowed">dry-run (M8)</span>
+    <a href="/pnl?since={{ since }}&mode=real" class="filter-chip {% if mode == 'real' %}filter-chip-active{% endif %}">réel</a>
+    <a href="/pnl?since={{ since }}&mode=dry_run" class="filter-chip {% if mode == 'dry_run' %}filter-chip-active{% endif %}">dry-run (M8)</a>
+    <a href="/pnl?since={{ since }}&mode=both" class="filter-chip {% if mode == 'both' %}filter-chip-active{% endif %}">les deux</a>
   </div>
 </div>
 
@@ -47,6 +48,7 @@
 <script>
 (function () {
   const since = {{ since | tojson }};
+  const mode = {{ mode | tojson }};
   const statusEl = document.getElementById("pnl-status");
 
   function renderChart(data) {
@@ -107,10 +109,13 @@
 
   async function refresh() {
     try {
-      const res = await fetch("/partials/pnl-data.json?since=" + encodeURIComponent(since));
+      const url = "/partials/pnl-data.json?since=" + encodeURIComponent(since)
+        + "&mode=" + encodeURIComponent(mode);
+      const res = await fetch(url);
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
-      statusEl.textContent = data.timestamps.length + " snapshots · fenêtre " + since;
+      statusEl.textContent = data.timestamps.length + " snapshots · fenêtre " + since
+        + " · mode " + mode;
       renderChart(data);
     } catch (err) {
       statusEl.textContent = "erreur: " + err.message;

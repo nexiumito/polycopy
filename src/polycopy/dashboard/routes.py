@@ -119,12 +119,23 @@ def build_pages_router() -> APIRouter:
         return _render(request, "positions.html", {"state": state or ""})
 
     @router.get("/pnl", response_class=HTMLResponse)
-    async def pnl(request: Request, sf: SFDep, since: str = "24h") -> HTMLResponse:
+    async def pnl(
+        request: Request,
+        sf: SFDep,
+        since: str = "24h",
+        mode: str = "real",
+    ) -> HTMLResponse:
         milestones = await queries.get_pnl_milestones(sf, since=queries.parse_since(since))
+        # M8 : ``mode`` ∈ {real, dry_run, both}. Validation côté queries.
+        effective_mode = mode if mode in {"real", "dry_run", "both"} else "real"
         return _render(
             request,
             "pnl.html",
-            {"since": since, "milestones": milestones},
+            {
+                "since": since,
+                "milestones": milestones,
+                "mode": effective_mode,
+            },
         )
 
     @router.get("/traders", response_class=HTMLResponse)
