@@ -19,7 +19,7 @@ info "repo root: ${REPO_ROOT}"
 # --- 1. Python 3.11+ --------------------------------------------------------
 info "looking for Python 3.11+..."
 PYTHON_BIN=""
-for candidate in python3.11 python3.12 python3.13 python3 python; do
+for candidate in python3.12 python3.13 python3.11 python3 python; do
     if command -v "${candidate}" >/dev/null 2>&1; then
         ver=$("${candidate}" -c 'import sys; print(sys.version_info.major*100+sys.version_info.minor)' 2>/dev/null || echo 0)
         if [ "${ver:-0}" -ge 311 ]; then
