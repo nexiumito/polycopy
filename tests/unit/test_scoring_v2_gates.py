@@ -108,6 +108,14 @@ def test_gate_days_active_fails_below_threshold() -> None:
     assert check_days_active(_metrics(days_active=15)).passed is False
 
 
+def test_gate_days_active_cold_start_relaxed_to_7() -> None:
+    # days_active=10 : fail en strict (< 30), pass en cold_start (>= 7).
+    assert check_days_active(_metrics(days_active=10), cold_start_mode=False).passed is False
+    assert check_days_active(_metrics(days_active=10), cold_start_mode=True).passed is True
+    # days_active=6 : fail dans les deux modes.
+    assert check_days_active(_metrics(days_active=6), cold_start_mode=True).passed is False
+
+
 # --- zombie_ratio_max ----------------------------------------------------
 
 

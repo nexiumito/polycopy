@@ -10,7 +10,7 @@ d'un fail :
 
 1. ``not_blacklisted`` — env lookup, O(1).
 2. ``not_wash_cluster`` — env lookup, O(1).
-3. ``days_active_min`` — DTO lookup, O(1).
+3. ``days_active_min`` — DTO lookup, O(1). Cold start mode relâche à 7.
 4. ``trade_count_min`` — DTO lookup, O(1). Cold start mode relâche à 20.
 5. ``cash_pnl_positive`` — DTO lookup, O(1).
 6. ``zombie_ratio_max`` — DTO lookup, O(1).
@@ -44,6 +44,7 @@ _CASH_PNL_MIN: float = 0.0
 _TRADE_COUNT_MIN: int = 50
 _TRADE_COUNT_MIN_COLD_START: int = 20
 _DAYS_ACTIVE_MIN: int = 30
+_DAYS_ACTIVE_MIN_COLD_START: int = 7
 _ZOMBIE_RATIO_MAX: float = 0.40
 
 
@@ -91,19 +92,26 @@ def check_trade_count(metrics: TraderMetricsV2, *, cold_start_mode: bool) -> Gat
     )
 
 
-def check_days_active(metrics: TraderMetricsV2) -> GateResult:
-    """Gate 3 : ``days_active ≥ 30``. Anti-Sybil basique."""
+def check_days_active(metrics: TraderMetricsV2, *, cold_start_mode: bool = False) -> GateResult:
+    """Gate 3 : ``days_active ≥ 30`` (ou 7 si cold_start_mode). Anti-Sybil basique.
+
+    ``cold_start_mode=True`` relâche le gate pour ne pas exclure les wallets
+    récemment actifs dans un pool jeune (dev/test). Documenté warning au boot
+    si activé. Cohérent avec le relâchement de ``trade_count_min``.
+    """
+    threshold = _DAYS_ACTIVE_MIN_COLD_START if cold_start_mode else _DAYS_ACTIVE_MIN
     observed = int(metrics.days_active)
-    passed = observed >= _DAYS_ACTIVE_MIN
+    passed = observed >= threshold
+    suffix = " (cold_start_mode)" if cold_start_mode else ""
     return GateResult(
         gate_name="days_active_min",
         passed=passed,
         observed_value=observed,
-        threshold=_DAYS_ACTIVE_MIN,
+        threshold=threshold,
         reason=(
-            f"days_active:{observed} >= {_DAYS_ACTIVE_MIN}"
+            f"days_active:{observed} >= {threshold}{suffix}"
             if passed
-            else f"days_active:{observed} < {_DAYS_ACTIVE_MIN}"
+            else f"days_active:{observed} < {threshold}{suffix}"
         ),
     )
 
@@ -183,7 +191,7 @@ def check_all_gates(
     checks: list[Callable[[], GateResult]] = [
         lambda: check_not_blacklisted(wallet, settings),
         lambda: check_not_wash_cluster(wallet, settings),
-        lambda: check_days_active(metrics),
+        lambda: check_days_active(metrics, cold_start_mode=cold_start_mode),
         lambda: check_trade_count(metrics, cold_start_mode=cold_start_mode),
         lambda: check_cash_pnl(metrics),
         lambda: check_zombie_ratio(metrics),

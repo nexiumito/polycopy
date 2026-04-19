@@ -583,8 +583,9 @@ class Settings(BaseSettings):
     scoring_v2_cold_start_mode: bool = Field(
         False,
         description=(
-            "Si true, relâche la gate `trade_count_90d` à ≥ 20 au lieu de 50. "
-            "WARNING loggé au boot. Reportable v1.1 si pool trop restreint."
+            "Si true, relâche les gates `trade_count_90d` (≥ 20 au lieu de 50) "
+            "et `days_active` (≥ 7 au lieu de 30). WARNING loggé au boot. "
+            "Reportable v1.1 si pool trop restreint."
         ),
     )
     scoring_v2_backtest_label_file: str = Field(
