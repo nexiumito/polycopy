@@ -22,10 +22,6 @@
 >
 > Depuis **M10**, le dry-run est un **miroir fidèle** du live : kill switch actif, alertes Telegram identiques (seul un badge visuel distingue 🟢 `DRY-RUN` de 🔴 `LIVE`), snapshots PnL persistés. Seule la signature CLOB (POST ordre réel) est désactivée. Lis l'[Avertissement](#avertissement) avant tout usage.
 
-<p align="center">
-  <img src="assets/screenshots/dashboard-home.png" alt="Dashboard polycopy" width="720">
-</p>
-
 ---
 
 ## Sommaire
@@ -515,7 +511,9 @@ Concurrents retenus à partir des sources citées dans [docs/development/](docs/
 | Dernière maj consultée | 2026-04 | 2026-03 | 2026 | 2026-04 |
 
 <sup>1</sup> **KreoPoly** — [kreopoly.app](https://kreopoly.app). Sources Medium : [Gaining the Edge: How Kreo is Revolutionizing Prediction Market Trading](https://medium.com/@fxmbrand/gaining-the-edge-how-kreo-is-revolutionizing-prediction-market-trading-96aa3731edb4), [Kreo Polymarket Telegram Bot: Copy Trading Polymarket and Kalshi](https://medium.com/@gemQueenx/kreo-polymarket-telegram-bot-copy-trading-polymarket-and-kalshi-cdde3563307a). Mention MEXC [Smart Money Copy Trading Guide](https://www.mexc.com/news/988541). Synthèse interne [`M10_synthesis_reference.md`](docs/development/M10_synthesis_reference.md) §1.1 + §6.3 : ranking metrics convergents avec v1, pas d'API publique, "ne pas essayer de scraper — fragilité".
+
 <sup>2</sup> **PolyHub (Hubble)** — présenté dans [Polymarket Advanced: How to Build Your Smart Money Address](https://www.mexc.com/news/765626). Analyse Perplexity DeepResearch §1.1 : filtre les wallets par PnL / ROI / fréquence de trading sur fenêtre 30 j avec timing score optionnel.
+
 <sup>3</sup> **NautilusTrader** — [nautilustrader.io](https://nautilustrader.io/docs/latest/integrations/polymarket/), intégration Polymarket officielle. Référencé dans la Gemini DeepResearch §4 comme benchmark latence HFT-grade (cf. [gemini_deep_search_v2_and_more.md](docs/development/gemini_deep_search_v2_and_more.md)). Framework institutionnel — positionnement très différent : tu codes ta stratégie par-dessus, il ne vient pas avec un copy-trading clé-en-main.
 
 **Liste non exhaustive** et datée (2026-04-18). Des outils comme l'[Apify Polymarket Leaderboard Scraper](https://apify.com/saswave/polymarket-leaderboard-scraper) (référencé Gemini §1.1) sont des *data sources*, pas des bots, donc hors comparaison. PR welcome pour corriger / ajouter un concurrent **avec source vérifiable dans `docs/development/`**.
