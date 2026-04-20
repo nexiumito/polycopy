@@ -271,3 +271,52 @@ def test_renderer_truncates_oversize_message(tmp_path: Path) -> None:
     out = renderer.render_alert(Alert(level="INFO", event="order_filled_large", body="x"))
     assert len(out) == 4096
     assert out.endswith("…")
+
+
+# --- M12_bis : injection machine_id / machine_emoji -------------------------
+
+
+def test_renderer_stores_machine_bindings() -> None:
+    renderer = AlertRenderer(mode="live", machine_id="PC-FIXE", machine_emoji="🖥️")
+    assert renderer._machine_id == "PC-FIXE"
+    assert renderer._machine_emoji == "🖥️"
+
+
+def test_renderer_defaults_machine_bindings() -> None:
+    """Sans kwargs explicites : fallback ``"UNKNOWN"`` + ``"🖥️"``."""
+    renderer = AlertRenderer()
+    assert renderer._machine_id == "UNKNOWN"
+    assert renderer._machine_emoji == "🖥️"
+
+
+def test_inject_mode_adds_machine_context_and_preserves_mode_badge() -> None:
+    """Non-régression M10 : ``mode_badge`` toujours présent + M12_bis machine."""
+    renderer = AlertRenderer(mode="dry_run", machine_id="MACBOOK", machine_emoji="💻")
+    ctx = renderer._inject_mode({"event_type": "test"})
+    assert ctx["machine_id"] == "MACBOOK"
+    assert ctx["machine_emoji"] == "💻"
+    assert ctx["mode_badge"] == "🟢 DRY-RUN"
+    assert ctx["mode"] == "dry_run"
+
+
+def test_inject_mode_does_not_override_caller_machine() -> None:
+    """``setdefault`` : si le caller a déjà ``machine_id``, on ne l'écrase pas."""
+    renderer = AlertRenderer(machine_id="PC-FIXE", machine_emoji="🖥️")
+    ctx = renderer._inject_mode({"machine_id": "OVERRIDE"})
+    assert ctx["machine_id"] == "OVERRIDE"
+    assert ctx["machine_emoji"] == "🖥️"
+
+
+def test_startup_vars_adds_machine_context() -> None:
+    ctx_obj = StartupContext(
+        version="1.0.0",
+        mode="live",
+        boot_at=datetime(2026, 4, 20, tzinfo=UTC),
+        pinned_wallets=[],
+        modules=[],
+    )
+    renderer = AlertRenderer(mode="live", machine_id="UNI-DEBIAN", machine_emoji="🏫")
+    data = renderer._startup_vars(ctx_obj)
+    assert data["machine_id"] == "UNI-DEBIAN"
+    assert data["machine_emoji"] == "🏫"
+    assert data["mode_badge"] == "🔴 LIVE"

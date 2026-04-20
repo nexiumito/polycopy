@@ -5,6 +5,8 @@ Aucune valeur sensible en dur dans le code.
 """
 
 import json
+import re
+import socket
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -17,6 +19,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # Le warning de deprecation est émis au boot par `cli/runner.py` après la
 # configuration de la chaîne structlog (cf. spec M10 §3.2.2 + §6.13).
 _LEGACY_DRY_RUN_DETECTED: bool = False
+
+# Flag module-level positionné par `_resolve_machine_id` indiquant si
+# `MACHINE_ID` a été lu depuis l'env var (`"env"`) ou dérivé du hostname
+# (`"hostname"`). Lu par `cli/runner.py` pour émettre un log unique au boot
+# après `configure_logging` (cf. spec M12_bis §3.1).
+_MACHINE_ID_SOURCE: str = "env"
 
 
 class Settings(BaseSettings):
@@ -75,6 +83,27 @@ class Settings(BaseSettings):
 
     # --- Polling ---
     poll_interval_seconds: int = Field(5, ge=1)
+
+    # --- Multi-machine identity (M12_bis) --------------------------------
+    machine_id: str | None = Field(
+        None,
+        description=(
+            "Badge texte identifiant la machine dans les messages Telegram "
+            "(ex. 'PC-FIXE', 'MACBOOK'). Fallback socket.gethostname() si "
+            "absent/vide. Normalisé upper + regex ^[A-Z0-9_-]+$ (chars hors "
+            "jeu → '-'), cap 32 chars, 'UNKNOWN' si tout invalide. Public, "
+            "non-sensible, loggé en clair."
+        ),
+    )
+    machine_emoji: str = Field(
+        "🖥️",
+        max_length=8,
+        description=(
+            "Emoji affiché devant MACHINE_ID dans les messages Telegram "
+            "(ex. 💻 MacBook, 🏫 université). Cosmétique, max 8 chars pour "
+            "accommoder les séquences ZWJ/variation selectors."
+        ),
+    )
 
     # --- Storage ---
     database_url: str = "sqlite+aiosqlite:///polycopy.db"
@@ -697,6 +726,33 @@ class Settings(BaseSettings):
         return data
 
     @model_validator(mode="after")
+    def _resolve_machine_id(self) -> "Settings":
+        """Résout ``MACHINE_ID`` (env ou hostname) + normalise (M12_bis §3.1).
+
+        - ``MACHINE_ID`` absent/vide/whitespace → fallback ``socket.gethostname()``.
+        - Normalisation : ``strip().upper()`` → tout caractère hors
+          ``[A-Z0-9_-]`` remplacé par ``-`` → cap 32 chars.
+        - Si la normalisation produit une string vide (entrée ``"@@@"`` par
+          ex.), on retombe sur ``"UNKNOWN"`` pour ne jamais avoir un badge
+          vide dans les alertes Telegram.
+
+        Le flag ``_MACHINE_ID_SOURCE`` est positionné pour que ``cli/runner.py``
+        puisse logger la source (env vs hostname) une fois structlog configuré.
+        """
+        global _MACHINE_ID_SOURCE
+        raw = self.machine_id
+        source = "env"
+        if raw is None or not raw.strip():
+            raw = socket.gethostname()
+            source = "hostname"
+        normalized = re.sub(r"[^A-Z0-9_-]", "-", raw.strip().upper())[:32]
+        if not normalized or not re.search(r"[A-Z0-9]", normalized):
+            normalized = "UNKNOWN"
+        object.__setattr__(self, "machine_id", normalized)
+        _MACHINE_ID_SOURCE = source
+        return self
+
+    @model_validator(mode="after")
     def _validate_discovery_thresholds(self) -> "Settings":
         """Cross-field : demotion_threshold doit être strictement < promotion_threshold.
 
@@ -729,6 +785,15 @@ def legacy_dry_run_detected() -> bool:
     une fois la chaîne structlog configurée.
     """
     return _LEGACY_DRY_RUN_DETECTED
+
+
+def machine_id_source() -> str:
+    """Retourne ``"env"`` ou ``"hostname"`` selon la source de ``MACHINE_ID``.
+
+    Lu par ``cli/runner.py`` pour émettre le log ``machine_id_resolved``
+    une fois la chaîne structlog configurée (cf. spec M12_bis §3.1).
+    """
+    return _MACHINE_ID_SOURCE
 
 
 settings = Settings()
