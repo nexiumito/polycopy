@@ -11,6 +11,7 @@ phases B/C/D. Cf. spec ``docs/specs/M12_bis_multi_machine_remote_control_spec.md
 
 from __future__ import annotations
 
+from polycopy.remote_control.server import build_app
 from polycopy.remote_control.tailscale import (
     RemoteControlBootError,
     resolve_tailscale_ipv4,
@@ -18,5 +19,6 @@ from polycopy.remote_control.tailscale import (
 
 __all__ = [
     "RemoteControlBootError",
+    "build_app",
     "resolve_tailscale_ipv4",
 ]
