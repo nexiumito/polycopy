@@ -4,6 +4,7 @@ Toutes les variables sont chargées depuis l'environnement (ou .env en dev).
 Aucune valeur sensible en dur dans le code.
 """
 
+import ipaddress
 import json
 import re
 import socket
@@ -104,6 +105,67 @@ class Settings(BaseSettings):
             "accommoder les séquences ZWJ/variation selectors."
         ),
     )
+
+    # --- Remote Control (M12_bis Phase B+, opt-in strict) ----------------
+    remote_control_enabled: bool = Field(
+        False,
+        description=(
+            "Opt-in strict M12_bis. Si false (default), le package "
+            "`remote_control` n'est pas instancié (zéro overhead, zéro port "
+            "ouvert). Requiert `REMOTE_CONTROL_TOTP_SECRET` (Phase C) pour "
+            "démarrer si true. Cf. spec §2."
+        ),
+    )
+    remote_control_port: int = Field(
+        8765,
+        ge=1024,
+        le=65535,
+        description=(
+            "Port TCP bindé sur l'IP Tailscale uniquement (jamais 0.0.0.0 ni "
+            "127.0.0.1). 8765 par défaut — pas 8000 (conflit dashboard) ni "
+            "8080 (conflit commun dev)."
+        ),
+    )
+    remote_control_tailscale_ip_override: str | None = Field(
+        None,
+        description=(
+            "Bypass `tailscale ip -4` : force une IP de bind spécifique "
+            "(tests intégration, edge cases NAT exotiques). Doit être une "
+            "IPv4 non-loopback et non-unspecified. Crash boot sinon."
+        ),
+    )
+
+    @field_validator("remote_control_tailscale_ip_override")
+    @classmethod
+    def _validate_remote_control_ip_override(cls, v: str | None) -> str | None:
+        """Refuse 127.x.x.x, 0.0.0.0, ::1, et toute string non-IPv4 (M12_bis §4.4)."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        try:
+            ip = ipaddress.ip_address(stripped)
+        except ValueError as exc:
+            raise ValueError(
+                f"REMOTE_CONTROL_TAILSCALE_IP_OVERRIDE={v!r} n'est pas une IP valide.",
+            ) from exc
+        if not isinstance(ip, ipaddress.IPv4Address):
+            raise ValueError(
+                f"REMOTE_CONTROL_TAILSCALE_IP_OVERRIDE={v!r} doit être IPv4 "
+                "(IPv6 non supporté — Tailscale MagicDNS résout en IPv4).",
+            )
+        if ip.is_loopback:
+            raise ValueError(
+                f"REMOTE_CONTROL_TAILSCALE_IP_OVERRIDE={v!r} interdit : "
+                "bind loopback viderait la garantie Tailscale-only.",
+            )
+        if ip.is_unspecified:
+            raise ValueError(
+                f"REMOTE_CONTROL_TAILSCALE_IP_OVERRIDE={v!r} interdit : "
+                "0.0.0.0 exposerait le port sur toutes les interfaces.",
+            )
+        return stripped
 
     # --- Storage ---
     database_url: str = "sqlite+aiosqlite:///polycopy.db"
