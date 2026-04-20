@@ -28,6 +28,7 @@ from polycopy.monitoring.alert_digest import AlertDigestWindow
 from polycopy.monitoring.alert_dispatcher import AlertDispatcher
 from polycopy.monitoring.alert_renderer import AlertRenderer
 from polycopy.monitoring.daily_summary_scheduler import DailySummaryScheduler
+from polycopy.monitoring.dashboard_url import compute_dashboard_url
 from polycopy.monitoring.dtos import Alert, ShutdownContext
 from polycopy.monitoring.heartbeat_scheduler import HeartbeatScheduler
 from polycopy.monitoring.md_escape import humanize_duration
@@ -94,10 +95,15 @@ class MonitoringOrchestrator:
                 log.info("telegram_enabled")
             else:
                 log.warning("telegram_disabled")
+            # M12_bis Phase G : l'URL dashboard est calculée une seule fois
+            # ici (pas de subprocess par alerte) — Tailscale-aware si
+            # ``DASHBOARD_BIND_TAILSCALE=true``, fallback localhost sinon.
+            dashboard_url = compute_dashboard_url(self._settings)
             renderer = AlertRenderer(
                 mode=self._settings.execution_mode,
                 machine_id=self._settings.machine_id or "UNKNOWN",
                 machine_emoji=self._settings.machine_emoji,
+                dashboard_url=dashboard_url,
             )
             digest = AlertDigestWindow(
                 window_seconds=self._settings.telegram_digest_window_minutes * 60,

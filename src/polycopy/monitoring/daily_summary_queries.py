@@ -56,11 +56,9 @@ async def collect_daily_summary_context(
     alerts = alerts_counts or {}
     alerts_total = sum(alerts.values())
     compact = _compact_alerts(alerts)
-    dashboard_url = (
-        f"http://{settings.dashboard_host}:{settings.dashboard_port}/"
-        if settings.dashboard_enabled
-        else None
-    )
+    # M12_bis Phase G : ``dashboard_url`` centralisé → injection via
+    # ``AlertRenderer._inject_mode`` (setdefault) quand le DTO en porte ``None``.
+    dashboard_url: str | None = None
     human = date_human if date_human is not None else datetime.now(tz=UTC).strftime("%Y-%m-%d")
     return DailySummaryContext(
         date_human=human,

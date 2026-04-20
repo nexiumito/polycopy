@@ -69,6 +69,7 @@ class AlertRenderer:
         mode: str = "dry_run",
         machine_id: str = "UNKNOWN",
         machine_emoji: str = "🖥️",
+        dashboard_url: str | None = None,
     ) -> None:
         root = project_root if project_root is not None else Path.cwd()
         search_paths: list[str] = []
@@ -99,6 +100,10 @@ class AlertRenderer:
         # template (cf. spec §3.2).
         self._machine_id = machine_id
         self._machine_emoji = machine_emoji
+        # M12_bis Phase G : URL dashboard injectée dans chaque template pour
+        # fournir un lien cliquable (``[📊 Dashboard](url)``) depuis téléphone.
+        # Calculée une fois au boot par ``compute_dashboard_url(settings)``.
+        self._dashboard_url = dashboard_url
 
     # ------------------------------------------------------------------
     # API publique
@@ -162,6 +167,13 @@ class AlertRenderer:
         base_ctx.setdefault("mode_badge", self._mode_badge)
         base_ctx.setdefault("machine_id", self._machine_id)
         base_ctx.setdefault("machine_emoji", self._machine_emoji)
+        # M12_bis Phase G : ``dashboard_url`` — les DTO (DigestContext,
+        # DailySummaryContext) sérialisent la clé à ``None`` via
+        # ``model_dump()``, donc ``setdefault`` ne suffirait pas : on override
+        # uniquement si la valeur sérialisée vaut ``None``. Si le DTO/caller
+        # porte une URL explicite, elle gagne (backwards-compat M7).
+        if base_ctx.get("dashboard_url") is None:
+            base_ctx["dashboard_url"] = self._dashboard_url
         return base_ctx
 
     def _startup_vars(self, context: StartupContext) -> dict[str, Any]:
@@ -173,6 +185,11 @@ class AlertRenderer:
         # M12_bis §3.2 : idem pour les bindings machine.
         data.setdefault("machine_id", self._machine_id)
         data.setdefault("machine_emoji", self._machine_emoji)
+        # M12_bis Phase G : inject fallback dashboard_url si le DTO n'en porte
+        # pas (ou en porte un à ``None``). ``model_dump`` renvoie toujours la
+        # clé — on override uniquement si c'est explicitement ``None``.
+        if data.get("dashboard_url") is None:
+            data["dashboard_url"] = self._dashboard_url
         return data
 
     @staticmethod

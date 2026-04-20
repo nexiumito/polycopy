@@ -19,6 +19,7 @@ Ne dépend d'aucun autre module runtime (juste ``config`` via TYPE_CHECKING).
 from __future__ import annotations
 
 import ipaddress
+import json
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -123,3 +124,75 @@ def resolve_tailscale_ipv4(settings: Settings) -> str:
 
     log.info("remote_control_tailscale_ip_resolved", ip=first_line)
     return first_line
+
+
+def resolve_tailnet_name(settings: Settings) -> str | None:
+    """Best-effort : retourne le tailnet MagicDNS suffix ou ``None`` (M12_bis Phase G).
+
+    Contrairement à ``resolve_tailscale_ipv4``, cette fonction **ne lève
+    JAMAIS** — tout échec (binaire absent, daemon down, stdout non-JSON,
+    MagicDNS désactivé, override invalide) est loggé en WARNING et
+    retourne ``None``. L'appelant (``compute_dashboard_url``) est
+    responsable du fallback localhost.
+
+    Args:
+        settings: Pydantic ``Settings`` — consomme ``tailnet_name``
+            (déjà validé regex + lowercase par Pydantic).
+
+    Returns:
+        Tailnet suffix sous forme ``<nom>.ts.net`` (ex. ``"taila157fd.ts.net"``)
+        ou ``None`` si non résoluble.
+    """
+    if settings.tailnet_name is not None:
+        log.info("tailnet_name_override_used", tailnet=settings.tailnet_name)
+        return settings.tailnet_name
+
+    try:
+        result = subprocess.run(  # noqa: S603 — argv list hardcoded, pas de shell=True
+            ["tailscale", "status", "--json"],  # noqa: S607 — binary lookup via PATH
+            capture_output=True,
+            text=True,
+            timeout=_TAILSCALE_CMD_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        log.warning("tailnet_name_resolution_failed", reason="tailscale_not_installed")
+        return None
+    except subprocess.TimeoutExpired:
+        log.warning("tailnet_name_resolution_failed", reason="tailscale_timeout")
+        return None
+
+    if result.returncode != 0:
+        log.warning(
+            "tailnet_name_resolution_failed",
+            reason="cmd_failed",
+            stderr=result.stderr.strip()[:200],
+        )
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log.warning("tailnet_name_resolution_failed", reason="json_decode_error")
+        return None
+
+    if not isinstance(data, dict):
+        log.warning("tailnet_name_resolution_failed", reason="json_not_object")
+        return None
+
+    current = data.get("CurrentTailnet")
+    if not isinstance(current, dict):
+        log.warning("tailnet_name_resolution_failed", reason="no_current_tailnet")
+        return None
+
+    suffix = current.get("MagicDNSSuffix")
+    if not isinstance(suffix, str) or not suffix.strip():
+        log.warning(
+            "tailnet_name_resolution_failed",
+            reason="empty_or_magicdns_disabled",
+        )
+        return None
+
+    normalized = suffix.strip().lower()
+    log.info("tailnet_name_resolved", tailnet=normalized, source="tailscale_status")
+    return normalized

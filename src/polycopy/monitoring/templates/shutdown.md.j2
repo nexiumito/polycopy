@@ -4,3 +4,7 @@ _\[{{ mode_badge | telegram_md_escape }}\]_
 
 _Durée de run :_ {{ duration_human | telegram_md_escape }}
 _Version :_ {{ version | telegram_md_escape }}
+{% if dashboard_url %}
+
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

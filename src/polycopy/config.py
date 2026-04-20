@@ -105,6 +105,45 @@ class Settings(BaseSettings):
             "accommoder les séquences ZWJ/variation selectors."
         ),
     )
+    tailnet_name: str | None = Field(
+        None,
+        description=(
+            "Override pour la résolution du tailnet Tailscale (default : auto "
+            "via `tailscale status --json` → CurrentTailnet.MagicDNSSuffix). "
+            "Format strict `<nom>.ts.net`, lowercase forcé. Utile si MagicDNS "
+            "désactivé côté tailnet OU pour tests intégration. Consommé par "
+            "`compute_dashboard_url` (M12_bis Phase G) pour générer les liens "
+            "Telegram cliquables vers le dashboard multi-machine. Public, "
+            "non-sensible — loggé en clair."
+        ),
+    )
+
+    @field_validator("tailnet_name", mode="before")
+    @classmethod
+    def _normalize_tailnet_name(cls, v: object) -> object:
+        """Normalise vide → None pour cohérence avec env var non-settée."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return None
+            return stripped.lower()
+        return v
+
+    @field_validator("tailnet_name")
+    @classmethod
+    def _validate_tailnet_name(cls, v: str | None) -> str | None:
+        """Refuse tout ce qui n'est pas ``<nom>.ts.net`` (M12_bis Phase G)."""
+        if v is None:
+            return None
+        if not re.fullmatch(r"[a-z0-9-]+\.ts\.net", v):
+            raise ValueError(
+                f"TAILNET_NAME={v!r} format invalide. Attendu `<nom>.ts.net` "
+                "(lowercase, chars ``[a-z0-9-]`` uniquement). "
+                "Exemple valable : `taila157fd.ts.net` ou `alpha-beta.ts.net`.",
+            )
+        return v
 
     # --- Remote Control (M12_bis Phase B+, opt-in strict) ----------------
     remote_control_enabled: bool = Field(

@@ -7,3 +7,6 @@ _\[{{ mode_badge | telegram_md_escape }}\]_
 _Action requise :_ vérifier les positions ouvertes et l'état du wallet\. Le bot est *arrêté*\.
 🔁 _La machine redémarrera en mode_ *paused* _au respawn\._
 _Utiliser_ `POST /v1/resume/{{ machine_id | telegram_md_escape }}` _depuis le téléphone pour reprendre\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

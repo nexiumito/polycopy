@@ -5,3 +5,6 @@ _\[{{ mode_badge | telegram_md_escape }}\]_
 {{ body | telegram_md_escape }}
 
 _Action requise :_ vérifier `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER` et `POLYMARKET_SIGNATURE_TYPE`\.
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

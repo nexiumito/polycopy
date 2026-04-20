@@ -11,5 +11,5 @@ _{{ count }} alertes `{{ event_type | telegram_md_escape }}` dans les {{ window_
 {% endif %}
 
 {% if dashboard_url %}
-_Voir le dashboard pour le détail_ : {{ dashboard_url | telegram_md_escape }}
+[📊 Dashboard]({{ dashboard_url }})
 {% endif %}

@@ -243,3 +243,158 @@ def test_machine_id_url_like_content_is_escaped(renderer: AlertRenderer) -> None
     assert lines[1] == "🖥️ *HTTP\\-LOCALHOST\\-8000*"
     # Pas de lien cliquable : `http://` brut ne doit pas apparaître dans le header.
     assert "http://" not in lines[1]
+
+
+# --- M12_bis Phase G : dashboard_url injecté dans chaque template -----------
+
+
+_ALERT_EVENTS = list(_LEVEL_BY_EVENT.keys()) + ["remote_control_brute_force_detected"]
+
+
+@pytest.mark.parametrize("event", _ALERT_EVENTS)
+def test_alert_template_renders_without_dashboard_link_when_none(event: str) -> None:
+    """Sans ``dashboard_url`` : aucun lien ``[📊 Dashboard]`` dans la sortie."""
+    renderer = AlertRenderer(dashboard_url=None)
+    out = renderer.render_alert(
+        Alert(level=_LEVEL_BY_EVENT.get(event, "CRITICAL"), event=event, body="x."),  # type: ignore[arg-type]
+    )
+    assert "[📊 Dashboard]" not in out
+
+
+@pytest.mark.parametrize("event", _ALERT_EVENTS)
+def test_alert_template_renders_dashboard_link_when_set(event: str) -> None:
+    """Avec ``dashboard_url`` : footer ``[📊 Dashboard](http://...)`` présent.
+
+    Cover les 10 templates alert-based + fallback (`event=unknown_event_v3`
+    couvert par un test séparé ci-dessous).
+    """
+    renderer = AlertRenderer(dashboard_url="http://pc-fixe.taila157fd.ts.net:8787/")
+    out = renderer.render_alert(
+        Alert(level=_LEVEL_BY_EVENT.get(event, "CRITICAL"), event=event, body="x."),  # type: ignore[arg-type]
+    )
+    assert "[📊 Dashboard](http://pc-fixe.taila157fd.ts.net:8787/)" in out
+
+
+def test_fallback_template_includes_dashboard_link_when_set() -> None:
+    renderer = AlertRenderer(dashboard_url="http://host.ts.net:8787/")
+    out = renderer.render_alert(
+        Alert(level="INFO", event="unknown_future_event_v3", body="(a) - b."),
+    )
+    assert "[📊 Dashboard](http://host.ts.net:8787/)" in out
+
+
+def test_fallback_template_hides_dashboard_link_when_none() -> None:
+    renderer = AlertRenderer(dashboard_url=None)
+    out = renderer.render_alert(
+        Alert(level="INFO", event="unknown_future_event_v4", body="x."),
+    )
+    assert "[📊 Dashboard]" not in out
+
+
+def test_startup_template_with_dashboard_url_contains_link() -> None:
+    renderer = AlertRenderer()
+    ctx = StartupContext(
+        version="0.0.0",
+        mode="dry_run",
+        boot_at=datetime(2026, 4, 18, 14, 30, tzinfo=UTC),
+        pinned_wallets=[],
+        modules=[ModuleStatus(name="Watcher", enabled=True, detail="0 wallets")],
+        dashboard_url="http://pc-fixe.taila157fd.ts.net:8787/",
+    )
+    out = renderer.render_startup(ctx)
+    assert "[📊 Dashboard](http://pc-fixe.taila157fd.ts.net:8787/)" in out
+
+
+def test_startup_template_without_dashboard_url_no_link() -> None:
+    renderer = AlertRenderer()
+    ctx = StartupContext(
+        version="0.0.0",
+        mode="dry_run",
+        boot_at=datetime(2026, 4, 18, 14, 30, tzinfo=UTC),
+        pinned_wallets=[],
+        modules=[ModuleStatus(name="Watcher", enabled=True, detail="0 wallets")],
+        dashboard_url=None,
+    )
+    out = renderer.render_startup(ctx)
+    assert "[📊 Dashboard]" not in out
+
+
+def test_heartbeat_template_with_dashboard_link() -> None:
+    renderer = AlertRenderer(dashboard_url="http://host.ts.net:8787/")
+    out = renderer.render_heartbeat(
+        HeartbeatContext(
+            uptime_human="12 h",
+            heartbeat_index=1,
+            watcher_count=0,
+            positions_open=0,
+            critical_alerts_in_window=0,
+        ),
+    )
+    assert "[📊 Dashboard](http://host.ts.net:8787/)" in out
+
+
+def test_heartbeat_template_without_dashboard_link() -> None:
+    renderer = AlertRenderer(dashboard_url=None)
+    out = renderer.render_heartbeat(
+        HeartbeatContext(
+            uptime_human="12 h",
+            heartbeat_index=1,
+            watcher_count=0,
+            positions_open=0,
+            critical_alerts_in_window=0,
+        ),
+    )
+    assert "[📊 Dashboard]" not in out
+
+
+def test_shutdown_template_with_dashboard_link() -> None:
+    renderer = AlertRenderer(dashboard_url="http://host.ts.net:8787/")
+    out = renderer.render_shutdown(
+        ShutdownContext(duration_human="1 h", version="0.1.0"),
+    )
+    assert "[📊 Dashboard](http://host.ts.net:8787/)" in out
+
+
+def test_digest_template_with_dashboard_link_via_dto() -> None:
+    """Le DTO ``DigestContext.dashboard_url`` est respecté (backwards-compat M7)."""
+    renderer = AlertRenderer(dashboard_url="http://renderer.fallback/")
+    out = renderer.render_digest(
+        DigestContext(
+            event_type="order_filled_large",
+            count=3,
+            window_minutes=10,
+            level="INFO",
+            sample_lines=["x"],
+            truncated_count=0,
+            dashboard_url="http://dto.value/",
+        ),
+    )
+    assert "[📊 Dashboard](http://dto.value/)" in out
+    assert "http://renderer.fallback/" not in out
+
+
+def test_every_template_with_dashboard_url_renders_valid_link_syntax() -> None:
+    """Grep statique : chaque template exposant `dashboard_url` utilise la
+    syntaxe link MarkdownV2 ``[...](url)``, jamais ``{{ dashboard_url | telegram_md_escape }}``
+    qui casserait le lien cliquable.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).parents[2]
+    templates_dir = root / "src" / "polycopy" / "monitoring" / "templates"
+    link_pattern = re.compile(r"\[📊 Dashboard\]\(\{\{ dashboard_url \}\}\)")
+    banned_pattern = re.compile(
+        r"\{\{\s*dashboard_url\s*\|\s*telegram_md_escape\s*\}\}",
+    )
+    for path in templates_dir.glob("*.md.j2"):
+        content = path.read_text()
+        if "dashboard_url" not in content:
+            continue
+        assert link_pattern.search(content), (
+            f"{path.name}: dashboard_url présent mais pas de lien `[📊 Dashboard](...)`"
+        )
+        assert not banned_pattern.search(content), (
+            f"{path.name}: dashboard_url échappé dans une expr `{{ ... | telegram_md_escape }}` "
+            "— casserait la syntaxe link MarkdownV2"
+        )

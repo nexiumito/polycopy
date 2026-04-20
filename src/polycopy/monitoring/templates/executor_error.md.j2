@@ -3,3 +3,7 @@ _\[{{ mode_badge | telegram_md_escape }}\]_
 🔴 *\[executor\_error\]* ERROR
 
 {{ body | telegram_md_escape }}
+{% if dashboard_url %}
+
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

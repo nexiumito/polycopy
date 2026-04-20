@@ -72,18 +72,15 @@ class StartupNotifier:
     async def _build_context(self) -> StartupContext:
         pinned = await self._load_pinned_wallets()
         modules = self._build_modules()
-        dashboard_url = (
-            f"http://{self._settings.dashboard_host}:{self._settings.dashboard_port}/"
-            if self._settings.dashboard_enabled
-            else None
-        )
+        # M12_bis Phase G : ``dashboard_url`` centralisé → injection via
+        # ``AlertRenderer._startup_vars`` quand le DTO en porte ``None``.
         return StartupContext(
             version=_resolve_version(),
             mode=self._settings.execution_mode,
             boot_at=datetime.now(tz=UTC),
             pinned_wallets=pinned,
             modules=modules,
-            dashboard_url=dashboard_url,
+            dashboard_url=None,
             paused=self._paused,
         )
 

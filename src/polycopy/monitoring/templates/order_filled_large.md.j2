@@ -3,3 +3,7 @@ _\[{{ mode_badge | telegram_md_escape }}\]_
 🟢 *\[order\_filled\_large\]* INFO
 
 {{ body | telegram_md_escape }}
+{% if dashboard_url %}
+
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

@@ -136,7 +136,9 @@ def test_render_startup_full() -> None:
     out = renderer.render_startup(ctx)
     assert "polycopy démarré" in out
     assert "Smart Money" in out
-    assert "127\\.0\\.0\\.1:8787" in out
+    # M12_bis Phase G : format du lien dashboard devient ``[📊 Dashboard](url)``
+    # — l'URL entre parenthèses n'est plus échappée (syntaxe link MarkdownV2).
+    assert "[📊 Dashboard](http://127.0.0.1:8787/)" in out
     assert "⏸️ Discovery" in out
 
 
@@ -320,3 +322,101 @@ def test_startup_vars_adds_machine_context() -> None:
     assert data["machine_id"] == "UNI-DEBIAN"
     assert data["machine_emoji"] == "🏫"
     assert data["mode_badge"] == "🔴 LIVE"
+
+
+# --- M12_bis Phase G : dashboard_url injection via AlertRenderer ------------
+
+
+def test_renderer_stores_dashboard_url() -> None:
+    renderer = AlertRenderer(dashboard_url="http://pc-fixe.taila157fd.ts.net:8787/")
+    assert renderer._dashboard_url == "http://pc-fixe.taila157fd.ts.net:8787/"
+
+
+def test_renderer_dashboard_url_default_none() -> None:
+    renderer = AlertRenderer()
+    assert renderer._dashboard_url is None
+
+
+def test_inject_mode_injects_dashboard_url() -> None:
+    renderer = AlertRenderer(
+        machine_id="PC-FIXE",
+        dashboard_url="http://pc-fixe.taila157fd.ts.net:8787/",
+    )
+    ctx = renderer._inject_mode({"event_type": "test"})
+    assert ctx["dashboard_url"] == "http://pc-fixe.taila157fd.ts.net:8787/"
+
+
+def test_inject_mode_does_not_override_existing_dashboard_url() -> None:
+    """``setdefault`` : si un caller a déjà setté ``dashboard_url``, on respecte."""
+    renderer = AlertRenderer(dashboard_url="http://renderer.default/")
+    ctx = renderer._inject_mode({"dashboard_url": "http://caller.override/"})
+    assert ctx["dashboard_url"] == "http://caller.override/"
+
+
+def test_startup_vars_fills_dashboard_url_when_dto_has_none() -> None:
+    """Le DTO ``StartupContext.dashboard_url=None`` → fallback sur renderer."""
+    ctx_obj = StartupContext(
+        version="1.0.0",
+        mode="dry_run",
+        boot_at=datetime(2026, 4, 20, tzinfo=UTC),
+        pinned_wallets=[],
+        modules=[],
+        dashboard_url=None,
+    )
+    renderer = AlertRenderer(dashboard_url="http://fallback.ts.net:8787/")
+    data = renderer._startup_vars(ctx_obj)
+    assert data["dashboard_url"] == "http://fallback.ts.net:8787/"
+
+
+def test_startup_vars_preserves_dto_dashboard_url() -> None:
+    """Le DTO ``StartupContext.dashboard_url="http://..."`` gagne sur le renderer."""
+    ctx_obj = StartupContext(
+        version="1.0.0",
+        mode="dry_run",
+        boot_at=datetime(2026, 4, 20, tzinfo=UTC),
+        pinned_wallets=[],
+        modules=[],
+        dashboard_url="http://dto.value/",
+    )
+    renderer = AlertRenderer(dashboard_url="http://renderer.value/")
+    data = renderer._startup_vars(ctx_obj)
+    assert data["dashboard_url"] == "http://dto.value/"
+
+
+def test_alert_template_rendered_contains_dashboard_link() -> None:
+    """Render d'une alerte event-based : le footer ``[📊 Dashboard](url)`` apparaît."""
+    renderer = AlertRenderer(
+        mode="live",
+        machine_id="PC-FIXE",
+        dashboard_url="http://pc-fixe.taila157fd.ts.net:8787/",
+    )
+    out = renderer.render_alert(
+        Alert(level="CRITICAL", event="kill_switch_triggered", body="Drawdown 30%."),
+    )
+    assert "[📊 Dashboard](http://pc-fixe.taila157fd.ts.net:8787/)" in out
+
+
+def test_alert_template_without_dashboard_url_hides_link() -> None:
+    """Render sans ``dashboard_url`` : aucun footer ajouté."""
+    renderer = AlertRenderer(mode="live", machine_id="PC-FIXE", dashboard_url=None)
+    out = renderer.render_alert(
+        Alert(level="INFO", event="order_filled_large", body="x."),
+    )
+    assert "Dashboard" not in out
+    assert "📊" not in out
+
+
+def test_digest_template_via_renderer_url_fallback() -> None:
+    """Digest : ``DigestContext.dashboard_url=None`` + renderer URL → link présent."""
+    renderer = AlertRenderer(dashboard_url="http://fallback.ts.net:8787/")
+    ctx = DigestContext(
+        event_type="order_filled_large",
+        count=3,
+        window_minutes=10,
+        level="INFO",
+        sample_lines=["a"],
+        truncated_count=0,
+        dashboard_url=None,
+    )
+    out = renderer.render_digest(ctx)
+    assert "[📊 Dashboard](http://fallback.ts.net:8787/)" in out

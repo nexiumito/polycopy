@@ -165,7 +165,10 @@ class AlertDispatcher:
         buffered = list(self._digest_buffer[representative.event])
         sample = [a.body for a in buffered[-_DIGEST_SAMPLE_MAX:]]
         truncated = max(0, count - len(sample))
-        dashboard_url = self._dashboard_url_or_none()
+        # M12_bis Phase G : ``dashboard_url`` est calculée une fois au boot
+        # par ``MonitoringOrchestrator`` et injectée dans chaque template via
+        # ``AlertRenderer._inject_mode``. On laisse la valeur DTO à ``None``
+        # pour activer ce fallback — ``setdefault`` du renderer prend le relais.
         ctx = DigestContext(
             event_type=representative.event,
             count=count,
@@ -173,14 +176,9 @@ class AlertDispatcher:
             level=representative.level,
             sample_lines=sample,
             truncated_count=truncated,
-            dashboard_url=dashboard_url,
+            dashboard_url=None,
         )
         return self._renderer.render_digest(ctx)
-
-    def _dashboard_url_or_none(self) -> str | None:
-        if not self._settings.dashboard_enabled:
-            return None
-        return f"http://{self._settings.dashboard_host}:{self._settings.dashboard_port}/"
 
     @staticmethod
     def _now() -> datetime:
