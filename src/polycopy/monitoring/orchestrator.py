@@ -79,7 +79,11 @@ class MonitoringOrchestrator:
                 log.info("telegram_enabled")
             else:
                 log.warning("telegram_disabled")
-            renderer = AlertRenderer(mode=self._settings.execution_mode)
+            renderer = AlertRenderer(
+                mode=self._settings.execution_mode,
+                machine_id=self._settings.machine_id or "UNKNOWN",
+                machine_emoji=self._settings.machine_emoji,
+            )
             digest = AlertDigestWindow(
                 window_seconds=self._settings.telegram_digest_window_minutes * 60,
                 threshold=self._settings.telegram_digest_threshold,

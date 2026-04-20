@@ -67,6 +67,8 @@ class AlertRenderer:
         self,
         project_root: Path | None = None,
         mode: str = "dry_run",
+        machine_id: str = "UNKNOWN",
+        machine_emoji: str = "🖥️",
     ) -> None:
         root = project_root if project_root is not None else Path.cwd()
         search_paths: list[str] = []
@@ -93,6 +95,10 @@ class AlertRenderer:
         # M10 : le badge est pré-résolu ; fallback défensif au cas d'un mode
         # inconnu (ne devrait jamais arriver vu la Literal côté Settings).
         self._mode_badge = _MODE_BADGE.get(mode, f"? {mode}")
+        # M12_bis : identité multi-machine injectée dans chaque contexte
+        # template (cf. spec §3.2).
+        self._machine_id = machine_id
+        self._machine_emoji = machine_emoji
 
     # ------------------------------------------------------------------
     # API publique
@@ -144,14 +150,18 @@ class AlertRenderer:
     # ------------------------------------------------------------------
 
     def _inject_mode(self, base_ctx: dict[str, Any]) -> dict[str, Any]:
-        """Ajoute ``mode`` + ``mode_badge`` au context Jinja (M10 §3.4.1).
+        """Ajoute ``mode`` + ``mode_badge`` + ``machine_id`` + ``machine_emoji``.
 
-        Les templates peuvent référencer ``{{ mode_badge | telegram_md_escape }}``
-        pour afficher le badge visuel. ``mode`` est disponible pour du contenu
-        conditionnel fin si besoin, mais M10 privilégie le badge seul.
+        M10 : ``mode_badge`` (🟢 DRY-RUN / 🔴 LIVE / 🟢 SIMULATION) —
+        consommé par la 1ère ligne de chaque template.
+        M12_bis §3.2 : ``machine_id`` + ``machine_emoji`` — consommés par la
+        2e ligne (``{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*``)
+        pour identifier la machine source en multi-machine.
         """
         base_ctx.setdefault("mode", self._mode)
         base_ctx.setdefault("mode_badge", self._mode_badge)
+        base_ctx.setdefault("machine_id", self._machine_id)
+        base_ctx.setdefault("machine_emoji", self._machine_emoji)
         return base_ctx
 
     def _startup_vars(self, context: StartupContext) -> dict[str, Any]:
@@ -160,6 +170,9 @@ class AlertRenderer:
         # M10 : le StartupContext porte déjà `mode` (enum execution_mode),
         # mais on ajoute le badge sans overrider le champ existant.
         data.setdefault("mode_badge", self._mode_badge)
+        # M12_bis §3.2 : idem pour les bindings machine.
+        data.setdefault("machine_id", self._machine_id)
+        data.setdefault("machine_emoji", self._machine_emoji)
         return data
 
     @staticmethod
