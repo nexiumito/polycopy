@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  Windows Task Scheduler — auto-start WSL2 Ubuntu au logon user
+  (M12_bis Phase F §4.8.3 couche extérieure). La couche intérieure
+  (systemd inside WSL) prend ensuite le relais pour superviser polycopy.
+
+  Placeholders :
+  - {{WIN_USER}} : nom utilisateur Windows (SID résolu par schtasks au import).
+
+  Import :
+    schtasks /create /xml polycopy-wsl-autostart.xml /tn "polycopy-wsl-autostart"
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Démarre WSL2 Ubuntu au logon pour que systemd inside puisse superviser polycopy (M12_bis).</Description>
+    <URI>\polycopy-wsl-autostart</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{WIN_USER}}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{WIN_USER}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <!-- wsl.exe --exec /bin/true démarre la distro (et donc systemd inside
+         si /etc/wsl.conf [boot] systemd=true) puis sort. systemd prend
+         le relais et démarre ~/.config/systemd/user/polycopy.service. -->
+    <Exec>
+      <Command>wsl.exe</Command>
+      <Arguments>-d Ubuntu --exec /bin/true</Arguments>
+    </Exec>
+  </Actions>
+</Task>

@@ -1,0 +1,29 @@
+[Unit]
+# systemd user unit — polycopy bot (M12_bis Phase F §4.8.1).
+# À installer dans ~/.config/systemd/user/polycopy.service + enable.
+# Placeholders {{POLYCOPY_PATH}} et {{VENV_PATH}} à substituer via `sed`.
+# Cf. docs/specs/M12_bis_remote_control_setup_guide.md §6.
+Description=polycopy - Polymarket copy trading bot (M12_bis)
+# tailscaled.service peut ne pas être un user unit ; on attend plutôt
+# network-online pour garantir connectivité Tailscale avant boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{POLYCOPY_PATH}}
+EnvironmentFile={{POLYCOPY_PATH}}/.env
+# --no-cli : mode daemon, zéro stdout (logs via LOG_FILE rotation M9).
+ExecStart={{VENV_PATH}}/bin/python -m polycopy --no-cli
+# Restart=always requis (pas on-failure) : /restart et /resume font exit 0
+# pour signaler un respawn volontaire. on-failure laisserait le bot down.
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+# Hardening basique — pas plus, le bot lit ~/.polycopy/{logs,halt.flag}.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
