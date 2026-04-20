@@ -328,12 +328,18 @@ def test_is_locked_false_initially(tmp_path: Path) -> None:
     assert lockdown.is_locked is False
 
 
-def test_is_locked_true_if_preexisting_sentinel(tmp_path: Path) -> None:
-    """Si le sentinel existe déjà au boot → ``is_locked`` lu depuis le FS."""
+def test_is_locked_false_if_preexisting_sentinel(tmp_path: Path) -> None:
+    """Un sentinel pré-existant NE doit PAS activer ``is_locked`` au boot.
+
+    Le sentinel peut provenir d'un ``/stop`` utilisateur ou d'un kill
+    switch normal — pas nécessairement d'un brute-force. Le lockdown est
+    réinitialisé à chaque respawn pour permettre ``/resume`` après
+    nettoyage manuel.
+    """
     sentinel = SentinelFile(tmp_path / "halt.flag")
     sentinel.touch(reason="previous_run_kill_switch")
     lockdown = AutoLockdown(sentinel=sentinel)
-    assert lockdown.is_locked is True
+    assert lockdown.is_locked is False
 
 
 # ---------------------------------------------------------------------------

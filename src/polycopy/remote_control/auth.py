@@ -172,8 +172,17 @@ class AutoLockdown:
 
     @property
     def is_locked(self) -> bool:
-        """True si lockdown déjà déclenché OU sentinel préexistant."""
-        return self._locked or self._sentinel.exists()
+        """True si lockdown brute-force déclenché dans CE process.
+
+        Sémantique "jusqu'à respawn" (spec §4.4.5) : un respawn démarre
+        une nouvelle instance ``AutoLockdown`` avec ``_locked=False``,
+        même si le sentinel posé par le brute-force précédent existe
+        toujours. Cela permet à ``/resume`` de nettoyer le sentinel
+        après redémarrage manuel (``--force-resume`` ou `rm halt.flag`).
+        Le sentinel seul n'implique pas lockdown — il peut venir d'un
+        ``/stop`` utilisateur ou d'un kill switch normal.
+        """
+        return self._locked
 
     def record_failure(self, ip: str) -> bool:
         """Enregistre un échec TOTP pour ``ip``. Retourne True si lockdown s'active."""

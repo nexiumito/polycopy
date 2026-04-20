@@ -24,7 +24,6 @@ from polycopy.remote_control import (
     RemoteControlOrchestrator,
 )
 
-
 _TOTP_SECRET = "JBSWY3DPEHPK3PXP"  # Phase C requirement
 
 
