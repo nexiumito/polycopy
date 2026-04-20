@@ -12,9 +12,11 @@ import asyncio
 import contextlib
 import signal
 import sys
+from typing import Literal
 
 import structlog
 
+from polycopy.cli.boot import build_orchestrators
 from polycopy.cli.logging_config import configure_logging
 from polycopy.cli.status_screen import (
     build_initial_module_status,
@@ -24,20 +26,13 @@ from polycopy.cli.status_screen import (
 )
 from polycopy.cli.version import get_version
 from polycopy.config import legacy_dry_run_detected, settings
-from polycopy.dashboard.orchestrator import DashboardOrchestrator
-from polycopy.discovery.orchestrator import DiscoveryOrchestrator
-from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.monitoring.dtos import Alert
-from polycopy.monitoring.orchestrator import MonitoringOrchestrator
-from polycopy.remote_control.orchestrator import RemoteControlOrchestrator
+from polycopy.remote_control.sentinel import SentinelFile
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
-from polycopy.storage.latency_purge_scheduler import LatencyPurgeScheduler
 from polycopy.storage.repositories import TradeLatencyRepository
 from polycopy.strategy.dtos import OrderApproved
-from polycopy.strategy.orchestrator import StrategyOrchestrator
-from polycopy.watcher.orchestrator import WatcherOrchestrator
 
 _QUEUE_MAXSIZE = 1000
 _ALERTS_QUEUE_MAXSIZE = 100
@@ -84,6 +79,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Tous les logs vont uniquement vers LOG_FILE. Pour systemd / nohup."
         ),
     )
+    parser.add_argument(
+        "--force-resume",
+        action="store_true",
+        help=(
+            "M12_bis : supprime ~/.polycopy/halt.flag AVANT le boot → force "
+            "le mode normal même si un /stop ou un kill switch avait posé "
+            "le sentinel. Utile pour récupérer d'un auto-lockdown brute-force "
+            "sans passer par /resume HTTP."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -102,6 +107,26 @@ def _install_signal_handlers(
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _request_stop)
+
+
+def _force_resume_sentinel(log: structlog.stdlib.BoundLogger) -> None:
+    """M12_bis Phase D : supprime le sentinel pour forcer un boot en mode normal.
+
+    Utilisé par le flag CLI ``--force-resume``. Log l'événement
+    ``sentinel_force_cleared`` avec la raison précédente (si lisible)
+    pour audit, puis clear. No-op si le sentinel n'existe pas.
+    """
+    sentinel = SentinelFile(settings.remote_control_sentinel_path)
+    if not sentinel.exists():
+        log.info("sentinel_force_cleared", previous=None, was_present=False)
+        return
+    previous_reason = sentinel.reason()
+    sentinel.clear()
+    log.info(
+        "sentinel_force_cleared",
+        previous=previous_reason,
+        was_present=True,
+    )
 
 
 async def _async_main() -> None:
@@ -145,67 +170,31 @@ async def _async_main() -> None:
         stop_event = asyncio.Event()
         _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
-        watcher = WatcherOrchestrator(
-            session_factory,
-            settings,
-            detected_trades_queue=detected_trades_queue,
-            alerts_queue=alerts_queue,
+        # M12_bis Phase D §4.2 : détection sentinel `~/.polycopy/halt.flag`
+        # au boot → bifurcation running/paused. Le sentinel peut être posé
+        # par `/stop` (Phase C), le kill switch M4 (Phase D commit #4), ou
+        # l'auto-lockdown brute-force (Phase C).
+        sentinel = SentinelFile(settings.remote_control_sentinel_path)
+        boot_mode: Literal["normal", "paused"] = "paused" if sentinel.exists() else "normal"
+        log.info(
+            "polycopy_boot_mode",
+            mode=boot_mode,
+            halt_reason=sentinel.reason() if boot_mode == "paused" else None,
         )
-        strategy = StrategyOrchestrator(
-            session_factory,
-            settings,
+
+        orchestrators = build_orchestrators(
+            session_factory=session_factory,
+            settings=settings,
             detected_trades_queue=detected_trades_queue,
             approved_orders_queue=approved_orders_queue,
             alerts_queue=alerts_queue,
+            mode=boot_mode,
         )
-        # ExecutorOrchestrator lève RuntimeError si DRY_RUN=false sans clés
-        # (instancié AVANT le TaskGroup pour propager l'erreur clairement).
-        executor = ExecutorOrchestrator(
-            session_factory,
-            settings,
-            approved_orders_queue=approved_orders_queue,
-            alerts_queue=alerts_queue,
-        )
-        monitoring = MonitoringOrchestrator(session_factory, settings, alerts_queue)
-
-        dashboard: DashboardOrchestrator | None = None
-        if settings.dashboard_enabled:
-            dashboard = DashboardOrchestrator(session_factory, settings)
-
-        discovery: DiscoveryOrchestrator | None = None
-        if settings.discovery_enabled:
-            discovery = DiscoveryOrchestrator(session_factory, settings, alerts_queue)
-
-        latency_purge: LatencyPurgeScheduler | None = None
-        if settings.latency_instrumentation_enabled:
-            latency_purge = LatencyPurgeScheduler(
-                TradeLatencyRepository(session_factory),
-                settings,
-            )
-
-        # M12_bis Phase B/C : RemoteControlOrchestrator instancié AVANT le
-        # TaskGroup. Si Tailscale down / absent, `RemoteControlBootError`
-        # remonte ici et crashe le process clair (pas silencieusement).
-        # Phase C : `alerts_queue` transmis pour que AutoLockdown pousse les
-        # alertes `remote_control_brute_force_detected` via le dispatcher M4.
-        remote_control: RemoteControlOrchestrator | None = None
-        if settings.remote_control_enabled:
-            remote_control = RemoteControlOrchestrator(settings, alerts_queue=alerts_queue)
 
         try:
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(watcher.run_forever(stop_event))
-                tg.create_task(strategy.run_forever(stop_event))
-                tg.create_task(executor.run_forever(stop_event))
-                tg.create_task(monitoring.run_forever(stop_event))
-                if dashboard is not None:
-                    tg.create_task(dashboard.run_forever(stop_event))
-                if discovery is not None:
-                    tg.create_task(discovery.run_forever(stop_event))
-                if latency_purge is not None:
-                    tg.create_task(latency_purge.run_forever(stop_event))
-                if remote_control is not None:
-                    tg.create_task(remote_control.run_forever(stop_event))
+                for orch in orchestrators:
+                    tg.create_task(orch.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:
@@ -237,6 +226,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     log = structlog.get_logger()
+
+    # M12_bis Phase D : --force-resume efface le sentinel AVANT que
+    # _async_main ne le lise. Doit être après configure_logging pour que
+    # l'event `sentinel_force_cleared` aille dans le fichier log M9.
+    if args.force_resume:
+        _force_resume_sentinel(log)
 
     # M10 : deprecation warning pour DRY_RUN env var legacy + --dry-run CLI flag.
     # Émis après configure_logging pour que le warning aille dans le fichier M9.

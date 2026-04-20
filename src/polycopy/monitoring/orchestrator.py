@@ -34,6 +34,7 @@ from polycopy.monitoring.md_escape import humanize_duration
 from polycopy.monitoring.pnl_writer import PnlSnapshotWriter
 from polycopy.monitoring.startup_notifier import StartupNotifier
 from polycopy.monitoring.telegram_client import TelegramClient
+from polycopy.remote_control.sentinel import SentinelFile
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -44,17 +45,31 @@ _SHUTDOWN_SEND_TIMEOUT_SECONDS: float = 3.0
 
 
 class MonitoringOrchestrator:
-    """Co-lance writer + dispatcher + (startup, heartbeat, daily) selon settings."""
+    """Co-lance writer + dispatcher + (startup, heartbeat, daily) selon settings.
+
+    M12_bis Phase D : flag ``paused`` (opt-in au __init__) — quand le runner
+    a détecté ``~/.polycopy/halt.flag`` au boot, l'orchestrateur réduit
+    son périmètre :
+    - ``PnlSnapshotWriter`` : **OFF** (pas de re-trigger kill switch, le
+      sentinel est déjà posé).
+    - ``DailySummaryScheduler`` : **OFF** (pas de trades ni décisions à
+      résumer en paused).
+    - ``AlertDispatcher``, ``StartupNotifier``, ``HeartbeatScheduler`` :
+      **ON** (nécessaires pour alerter l'utilisateur de l'état paused).
+    """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
         alerts_queue: asyncio.Queue[Alert],
+        *,
+        paused: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._alerts = alerts_queue
+        self._paused = paused
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale : tous les schedulers jusqu'à ``stop_event.set()``."""
@@ -95,11 +110,16 @@ class MonitoringOrchestrator:
                 renderer=renderer,
                 digest=digest,
             )
+            # M12_bis Phase D §4.6 : injection du sentinel → le
+            # PnlSnapshotWriter touche halt.flag avant stop_event.set() sur
+            # kill switch pour que le respawn superviseur retombe en paused.
+            sentinel = SentinelFile(self._settings.remote_control_sentinel_path)
             writer = PnlSnapshotWriter(
                 self._session_factory,
                 self._settings,
                 wallet_reader,
                 self._alerts,
+                sentinel=sentinel,
             )
             log.info(
                 "monitoring_started",
@@ -109,11 +129,15 @@ class MonitoringOrchestrator:
                 heartbeat=self._settings.telegram_heartbeat_enabled,
                 daily_summary=self._settings.telegram_daily_summary,
                 execution_mode=self._settings.execution_mode,
+                paused=self._paused,
             )
 
             try:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(writer.run(stop_event))
+                    # M12_bis Phase D : en paused, pas de PnlSnapshotWriter
+                    # (évite re-trigger kill switch) ni DailySummaryScheduler.
+                    if not self._paused:
+                        tg.create_task(writer.run(stop_event))
                     tg.create_task(dispatcher.run(stop_event))
                     if self._settings.telegram_startup_message:
                         startup = StartupNotifier(
@@ -121,6 +145,7 @@ class MonitoringOrchestrator:
                             telegram,
                             renderer,
                             self._settings,
+                            paused=self._paused,
                         )
                         tg.create_task(startup.send_once(stop_event))
                     if self._settings.telegram_heartbeat_enabled:
@@ -130,9 +155,10 @@ class MonitoringOrchestrator:
                             renderer,
                             self._settings,
                             dispatcher,
+                            paused=self._paused,
                         )
                         tg.create_task(heartbeat.run(stop_event))
-                    if self._settings.telegram_daily_summary:
+                    if self._settings.telegram_daily_summary and not self._paused:
                         daily = DailySummaryScheduler(
                             self._session_factory,
                             telegram,
