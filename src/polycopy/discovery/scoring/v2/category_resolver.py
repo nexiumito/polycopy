@@ -70,6 +70,12 @@ _OTHER_CATEGORY = "other"
 _GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 _GAMMA_TIMEOUT = 15.0
 
+# Taille max d'un batch envoyé à Gamma ``/markets?condition_ids=<csv>``. Chaque
+# ``condition_id`` fait 66 chars (``0x`` + 64 hex) ; 50 IDs → URL ~3.3 KB, bien
+# sous le seuil ~8 KB des serveurs HTTP standards (nginx default). Au-delà :
+# 414 URI Too Long.
+_BATCH_SIZE_CONDITION_IDS = 50
+
 
 class MarketCategoryResolver:
     """Résout condition_id → catégorie top-level canonique.
@@ -87,7 +93,10 @@ class MarketCategoryResolver:
         """Retourne ``{condition_id: category}`` pour chaque cid demandé.
 
         Les cids déjà en cache court-circuitent l'appel réseau. Les cids
-        absents du cache sont fetchés en 1 batch Gamma.
+        absents du cache sont fetchés en lots de :data:`_BATCH_SIZE_CONDITION_IDS`
+        vers Gamma. Les cids appartenant à un batch en échec réseau (414,
+        timeout…) reçoivent ``_OTHER_CATEGORY`` mais **ne sont pas cachés**,
+        pour être re-tentés au cycle suivant.
         """
         cids = [c for c in condition_ids if c]
         if not cids:
@@ -102,38 +111,93 @@ class MarketCategoryResolver:
                 missing.append(cid)
         if not missing:
             return result
-        # Fetch missing en 1 batch.
-        fetched = await self._fetch_categories(missing)
+        fetched, failed_cids = await self._fetch_categories(missing)
         for cid in missing:
+            if cid in failed_cids:
+                # Batch réseau en échec : fallback mais pas de cache (retry
+                # au prochain cycle).
+                result[cid] = _OTHER_CATEGORY
+                continue
+            # Batch OK : soit Gamma a retourné une catégorie, soit le marché
+            # n'existe pas côté Gamma (→ "other" légitime, cachable).
             category = fetched.get(cid, _OTHER_CATEGORY)
             self._cache[cid] = category
             result[cid] = category
         return result
 
-    async def _fetch_categories(self, condition_ids: list[str]) -> dict[str, str]:
+    async def _fetch_categories(
+        self,
+        condition_ids: list[str],
+    ) -> tuple[dict[str, str], set[str]]:
         """Batch fetch Gamma ``/markets?condition_ids=...&include_tag=true``.
 
-        Retourne ``{conditionId: category}`` pour les marchés retournés.
-        Marchés non retournés → pas de row (caller mettra ``_OTHER_CATEGORY``).
+        Les ``condition_ids`` sont chunkés sériellement en lots de
+        :data:`_BATCH_SIZE_CONDITION_IDS` pour rester sous la limite d'URI
+        serveur (~8 KB). Boucle sérielle (pas d'``asyncio.gather``) pour ne
+        pas surcharger l'API publique Gamma.
+
+        Partial failure toléré : si un batch échoue (414, 5xx, timeout…), il
+        est loggé en ``warning`` et les autres batches continuent.
+
+        Retourne un tuple ``(categories, failed_cids)`` :
+
+        - ``categories`` : ``{conditionId: category}`` pour les marchés
+          retournés par Gamma (batches OK uniquement).
+        - ``failed_cids`` : ensemble des cids dont le batch a échoué
+          réseau-côté. Le caller doit leur appliquer ``_OTHER_CATEGORY``
+          sans les cacher (retry au prochain cycle).
         """
         if not condition_ids:
-            return {}
+            return {}, set()
+        out: dict[str, str] = {}
+        failed: set[str] = set()
+        for batch_index, start in enumerate(
+            range(0, len(condition_ids), _BATCH_SIZE_CONDITION_IDS),
+        ):
+            batch = condition_ids[start : start + _BATCH_SIZE_CONDITION_IDS]
+            batch_result = await self._fetch_categories_single_batch(batch, batch_index)
+            if batch_result is None:
+                failed.update(batch)
+                continue
+            out.update(batch_result)
+        return out, failed
+
+    async def _fetch_categories_single_batch(
+        self,
+        batch: list[str],
+        batch_index: int,
+    ) -> dict[str, str] | None:
+        """Fetch un lot unique.
+
+        Retourne ``None`` si le batch échoue (erreur HTTP/réseau) — le caller
+        marquera tous les cids comme failed. Retourne un dict (possiblement
+        vide) si le batch réussit.
+        """
         try:
             response = await self._http.get(
                 f"{_GAMMA_BASE_URL}/markets",
                 params={
-                    "condition_ids": ",".join(condition_ids),
+                    "condition_ids": ",".join(batch),
                     "include_tag": "true",
                 },
                 timeout=_GAMMA_TIMEOUT,
             )
             response.raise_for_status()
             data = response.json()
-        except httpx.HTTPError:
-            log.exception("gamma_categories_fetch_failed", count=len(condition_ids))
-            return {}
+        except httpx.HTTPError as exc:
+            log.warning(
+                "gamma_categories_batch_failed",
+                batch_index=batch_index,
+                batch_size=len(batch),
+                error=str(exc),
+            )
+            return None
         if not isinstance(data, list):
-            log.warning("gamma_categories_unexpected_payload_type", type=type(data).__name__)
+            log.warning(
+                "gamma_categories_unexpected_payload_type",
+                batch_index=batch_index,
+                type=type(data).__name__,
+            )
             return {}
         out: dict[str, str] = {}
         for item in data:

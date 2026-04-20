@@ -450,16 +450,11 @@ def _delta_sign(delta: float | None) -> Literal["positive", "negative", "neutral
 
 
 def _format_card_usd(value: float | None) -> str:
-    """Formatage USD inline (cohérent avec ``jinja_filters.format_usd``)."""
+    """Formatage USD entier arrondi avec séparateurs de milliers (ex. ``$1,024``)."""
     if value is None:
         return "—"
-    abs_value = abs(value)
     sign = "-" if value < 0 else ""
-    if abs_value >= 1_000_000:
-        return f"{sign}${abs_value / 1_000_000:.1f}M"
-    if abs_value >= 1_000:
-        return f"{sign}${abs_value / 1_000:.1f}k"
-    return f"{sign}${abs_value:.2f}"
+    return f"{sign}${abs(round(value)):,}"
 
 
 def _format_card_delta(delta_pct: float | None) -> str | None:
