@@ -79,6 +79,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Tous les logs vont uniquement vers LOG_FILE. Pour systemd / nohup."
         ),
     )
+    parser.add_argument(
+        "--force-resume",
+        action="store_true",
+        help=(
+            "M12_bis : supprime ~/.polycopy/halt.flag AVANT le boot → force "
+            "le mode normal même si un /stop ou un kill switch avait posé "
+            "le sentinel. Utile pour récupérer d'un auto-lockdown brute-force "
+            "sans passer par /resume HTTP."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -97,6 +107,26 @@ def _install_signal_handlers(
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _request_stop)
+
+
+def _force_resume_sentinel(log: structlog.stdlib.BoundLogger) -> None:
+    """M12_bis Phase D : supprime le sentinel pour forcer un boot en mode normal.
+
+    Utilisé par le flag CLI ``--force-resume``. Log l'événement
+    ``sentinel_force_cleared`` avec la raison précédente (si lisible)
+    pour audit, puis clear. No-op si le sentinel n'existe pas.
+    """
+    sentinel = SentinelFile(settings.remote_control_sentinel_path)
+    if not sentinel.exists():
+        log.info("sentinel_force_cleared", previous=None, was_present=False)
+        return
+    previous_reason = sentinel.reason()
+    sentinel.clear()
+    log.info(
+        "sentinel_force_cleared",
+        previous=previous_reason,
+        was_present=True,
+    )
 
 
 async def _async_main() -> None:
@@ -196,6 +226,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     log = structlog.get_logger()
+
+    # M12_bis Phase D : --force-resume efface le sentinel AVANT que
+    # _async_main ne le lise. Doit être après configure_logging pour que
+    # l'event `sentinel_force_cleared` aille dans le fichier log M9.
+    if args.force_resume:
+        _force_resume_sentinel(log)
 
     # M10 : deprecation warning pour DRY_RUN env var legacy + --dry-run CLI flag.
     # Émis après configure_logging pour que le warning aille dans le fichier M9.
