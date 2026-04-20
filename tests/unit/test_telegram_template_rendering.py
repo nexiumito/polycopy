@@ -172,3 +172,74 @@ def test_no_secret_value_in_template_sources() -> None:
             assert not pattern.search(content), (
                 f"{path} references a secret Jinja variable ({pattern.pattern})"
             )
+
+
+# --- M12_bis : présence du badge machine dans les 15 templates --------------
+
+
+def test_every_alert_template_contains_machine_badge_bindings() -> None:
+    """Grep statique : chaque template principal a la ligne badge M12_bis.
+
+    Invariant §3.3 : la 2e ligne de chaque template est
+    ``{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*``.
+    ``partials/common_partials.md.j2`` est exclu (partial réutilisable,
+    pas de header).
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).parents[2]
+    templates_dir = root / "src" / "polycopy" / "monitoring" / "templates"
+    for path in sorted(templates_dir.glob("*.md.j2")):
+        content = path.read_text()
+        assert "{{ machine_emoji }}" in content, f"{path.name}: missing machine_emoji binding"
+        assert "{{ machine_id | telegram_md_escape }}" in content, (
+            f"{path.name}: missing machine_id (escaped) binding"
+        )
+
+
+def test_machine_id_is_always_escaped_in_templates() -> None:
+    """Aucun template ne doit référencer ``{{ machine_id }}`` **sans** filtre escape.
+
+    MACHINE_ID est user-controlled (env var) — même après normalisation
+    Pydantic (regex ^[A-Z0-9_-]+$), le tiret ``-`` et l'underscore ``_``
+    sont des chars actifs MarkdownV2 → escape obligatoire.
+    """
+    import pathlib
+    import re
+
+    unsafe_pattern = re.compile(r"\{\{\s*machine_id\s*\}\}")
+    safe_pattern = re.compile(r"\{\{\s*machine_id\s*\|\s*telegram_md_escape\s*\}\}")
+
+    root = pathlib.Path(__file__).parents[2]
+    templates_dir = root / "src" / "polycopy" / "monitoring" / "templates"
+    for path in templates_dir.rglob("*.md.j2"):
+        content = path.read_text()
+        for match in unsafe_pattern.finditer(content):
+            # La regex unsafe ne doit JAMAIS matcher hors d'un usage escaped.
+            span = content[max(0, match.start() - 30) : match.end() + 30]
+            assert safe_pattern.search(span), (
+                f"{path.name}: unescaped machine_id usage detected in context: {span!r}"
+            )
+
+
+def test_machine_id_url_like_content_is_escaped(renderer: AlertRenderer) -> None:
+    """Rendering sécurité : MACHINE_ID simulant une URL reste inactif MarkdownV2.
+
+    Protection contre un env var mal configuré par l'utilisateur (ex. copier
+    un URL dans MACHINE_ID par erreur). La normalisation Pydantic remplace
+    ``/``, ``:``, ``.`` par ``-`` → on teste ici directement le path
+    renderer avec une valeur déjà normalisée contenant des chars actifs.
+    """
+    custom = AlertRenderer(
+        mode="live",
+        machine_id="HTTP-LOCALHOST-8000",  # post-normalisation d'une URL
+        machine_emoji="🖥️",
+    )
+    out = custom.render_alert(
+        Alert(level="INFO", event="order_filled_large", body="x."),
+    )
+    lines = out.splitlines()
+    # Tous les tirets sont escapés.
+    assert lines[1] == "🖥️ *HTTP\\-LOCALHOST\\-8000*"
+    # Pas de lien cliquable : `http://` brut ne doit pas apparaître dans le header.
+    assert "http://" not in lines[1]
