@@ -79,3 +79,78 @@ def test_status_response_contains_required_fields() -> None:
 def test_docs_endpoints_disabled(path: str) -> None:
     response = _client().get(path)
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Schema complet — contrat stable pour clients iOS Shortcut / curl
+# ---------------------------------------------------------------------------
+
+
+def test_status_schema_all_nullable_fields_present() -> None:
+    """Phase B : les 5 champs optionnels sont explicitement ``None`` (pas absents)."""
+    response = _client().get("/v1/status/PC-FIXE")
+    body = response.json()
+    for nullable_field in (
+        "heartbeat_index",
+        "positions_open",
+        "pnl_today_usdc",
+        "halt_reason",
+        "halted_since",
+    ):
+        assert nullable_field in body
+        assert body[nullable_field] is None
+
+
+def test_status_mode_is_running_in_phase_b() -> None:
+    """Phase B sans sentinel : mode toujours `running` (Phase D ajoute `paused`)."""
+    response = _client().get("/v1/status/PC-FIXE")
+    assert response.json()["mode"] == "running"
+
+
+def test_status_uptime_starts_non_negative() -> None:
+    response = _client().get("/v1/status/PC-FIXE")
+    assert response.json()["uptime_seconds"] >= 0
+
+
+def test_status_uptime_increases_between_calls() -> None:
+    """Boot à l'instant T ; deux requêtes successives ⇒ uptime croît."""
+    client = _client()
+    first = client.get("/v1/status/PC-FIXE").json()["uptime_seconds"]
+    # Sleep minimal pour que le `int(seconds)` puisse avancer.
+    import time
+
+    time.sleep(1.1)
+    second = client.get("/v1/status/PC-FIXE").json()["uptime_seconds"]
+    assert second > first
+
+
+# ---------------------------------------------------------------------------
+# 404 — autres cas de mismatch
+# ---------------------------------------------------------------------------
+
+
+def test_status_mismatch_different_machine() -> None:
+    response = _client(machine_id="PC-FIXE").get("/v1/status/MACBOOK")
+    assert response.status_code == 404
+    assert response.content == b""
+
+
+def test_status_mismatch_whitespace_in_path() -> None:
+    """Espaces dans le path param ne matchent pas après upper strict (§4.3)."""
+    response = _client(machine_id="PC-FIXE").get("/v1/status/PC%20FIXE")
+    assert response.status_code == 404
+
+
+def test_status_mismatch_logs_structlog_event() -> None:
+    """Audit local : chaque 404 émet ``remote_control_status_machine_mismatch``.
+
+    En test, structlog route par ``ConsoleRenderer`` → stdout (pas stdlib).
+    On utilise ``structlog.testing.capture_logs`` qui intercepte les events
+    avant formatage.
+    """
+    import structlog
+
+    with structlog.testing.capture_logs() as logs:
+        _client(machine_id="PC-FIXE").get("/v1/status/INTRUDER")
+    events = [entry["event"] for entry in logs]
+    assert "remote_control_status_machine_mismatch" in events
