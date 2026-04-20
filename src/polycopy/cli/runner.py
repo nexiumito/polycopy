@@ -29,6 +29,7 @@ from polycopy.discovery.orchestrator import DiscoveryOrchestrator
 from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.monitoring.dtos import Alert
 from polycopy.monitoring.orchestrator import MonitoringOrchestrator
+from polycopy.remote_control.orchestrator import RemoteControlOrchestrator
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
@@ -182,6 +183,13 @@ async def _async_main() -> None:
                 settings,
             )
 
+        # M12_bis Phase B : RemoteControlOrchestrator instancié AVANT le
+        # TaskGroup. Si Tailscale down / absent, `RemoteControlBootError`
+        # remonte ici et crashe le process clair (pas silencieusement).
+        remote_control: RemoteControlOrchestrator | None = None
+        if settings.remote_control_enabled:
+            remote_control = RemoteControlOrchestrator(settings)
+
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(watcher.run_forever(stop_event))
@@ -194,6 +202,8 @@ async def _async_main() -> None:
                     tg.create_task(discovery.run_forever(stop_event))
                 if latency_purge is not None:
                     tg.create_task(latency_purge.run_forever(stop_event))
+                if remote_control is not None:
+                    tg.create_task(remote_control.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:
