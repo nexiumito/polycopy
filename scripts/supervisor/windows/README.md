@@ -50,19 +50,34 @@ WSL2 exactement comme sur Debian native.
 
 ### 3. Couche extérieure — Task Scheduler
 
-Importer la task :
+Depuis PowerShell (host Windows). Le XML vit dans WSL — on le lit via le
+share `\\wsl.localhost\` et on rend une copie locale avant import.
+
+Important :
+- **Encodage** : le XML déclare `encoding="UTF-16"` ; sauve avec
+  `-Encoding Unicode` (= UTF-16 LE BOM) pour que `schtasks` parse OK.
+- **Distro WSL** : si la tienne ne s'appelle pas `Ubuntu`, ajuste le
+  `<Arguments>` du XML (`-d <ta-distro>`) avant rendu.
+- **Adapte le chemin WSL** si ton user Linux n'est pas `nexium` ou si
+  le repo n'est pas dans `~/code/polycopy`.
 
 ```powershell
-# Substituer {{WIN_USER}} dans le XML avant import
+# Rendu (UNC path WSL → fichier local Windows)
+$src = "\\wsl.localhost\Ubuntu\home\nexium\code\polycopy\scripts\supervisor\windows\polycopy-wsl-autostart.xml"
+$dst = "$env:USERPROFILE\polycopy-wsl-autostart.rendered.xml"
 $winUser = "$env:USERDOMAIN\$env:USERNAME"
-(Get-Content polycopy-wsl-autostart.xml) -replace '\{\{WIN_USER\}\}', $winUser `
-    | Set-Content polycopy-wsl-autostart.rendered.xml
 
-# Import dans Task Scheduler
-schtasks /create /xml polycopy-wsl-autostart.rendered.xml /tn "polycopy-wsl-autostart"
+(Get-Content $src -Raw) -replace '\{\{WIN_USER\}\}', $winUser `
+    | Set-Content $dst -Encoding Unicode
 
-# Vérifier
+# Import (/f écrase une task partielle laissée par un essai précédent)
+schtasks /create /xml $dst /tn "polycopy-wsl-autostart" /f
+
+# Vérifier l'enregistrement
 schtasks /query /tn "polycopy-wsl-autostart"
+
+# Smoke test sans relogin : déclenche la task à la main
+schtasks /run /tn "polycopy-wsl-autostart"
 ```
 
 Au prochain logon, WSL2 boot automatiquement → systemd inside démarre polycopy.

@@ -9,11 +9,15 @@ LaunchDaemon (pas besoin de root ni de tourner avant le login).
 
 ## Install (≈ 2 min)
 
+À lancer depuis la racine `~/code/polycopy` (chemin canonique).
+
 ```bash
-# 1. Substituer les placeholders
+# 1. Créer le dossier de destination puis substituer les placeholders
+mkdir -p ~/Library/LaunchAgents
 sed -e "s|{{POLYCOPY_PATH}}|$HOME/code/polycopy|g" \
     -e "s|{{VENV_PATH}}|$HOME/code/polycopy/.venv|g" \
-    fr.polycopy.bot.plist > ~/Library/LaunchAgents/fr.polycopy.bot.plist
+    scripts/supervisor/launchd/fr.polycopy.bot.plist \
+    > ~/Library/LaunchAgents/fr.polycopy.bot.plist
 
 # 2. Permissions (launchd refuse 0o666)
 chmod 0644 ~/Library/LaunchAgents/fr.polycopy.bot.plist

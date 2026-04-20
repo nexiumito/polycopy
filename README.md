@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
-  <img src="https://img.shields.io/badge/status-prototype--M12-orange.svg" alt="Prototype M12">
+  <img src="https://img.shields.io/badge/status-prototype--M12__bis-orange.svg" alt="Prototype M12_bis">
   <img src="https://img.shields.io/badge/execution__mode-by%20default-cyan.svg" alt="execution_mode by default">
 </p>
 
@@ -28,6 +28,7 @@
 
 - [Quickstart (5 minutes)](#quickstart-5-minutes)
 - [Tutorial pas-à-pas](#tutorial-pas-à-pas)
+- [Pilote tes bots depuis ton téléphone (M12_bis)](#pilote-tes-bots-depuis-ton-téléphone-m12_bis)
 - [FAQ](#faq)
 - [Comparaison avec d'autres bots Polymarket](#comparaison-avec-dautres-bots-polymarket)
 - [Hall of Fame — wallets publics notables](#hall-of-fame--wallets-publics-notables)
@@ -77,6 +78,9 @@ DASHBOARD_ENABLED=true EXECUTION_MODE=dry_run python -m polycopy
 </p>
 
 **C'est tout.** Le bot détecte les trades de ton wallet cible et log ce qu'il **ferait**, **sans jamais envoyer d'ordre** — mais **avec** le kill switch actif et les alertes Telegram déclenchées identiques à un run live.
+
+> [!TIP]
+> Tu veux pouvoir l'arrêter / le redémarrer depuis ton téléphone, même en 4G hors wifi maison ? Saute à [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone-m12_bis) (~30 min de setup, opt-in strict, désactivé par défaut).
 
 ---
 
@@ -325,6 +329,36 @@ Si une clé manque, le bot **refuse de démarrer** avec un `RuntimeError` clair 
 
 ---
 
+## Pilote tes bots depuis ton téléphone (M12_bis)
+
+Tu fais tourner polycopy sur 1 ou plusieurs machines (PC fixe, MacBook, serveur fac…), et tu veux pouvoir l'arrêter, le redémarrer ou consulter son statut depuis ton téléphone — depuis n'importe où, même en 4G hors wifi maison, en moins de 10 secondes. C'est ce que résout **M12_bis** (avril 2026, 6 PRs).
+
+Trois briques empilées, **toutes opt-in** (`REMOTE_CONTROL_ENABLED=false` par défaut, zéro surface ajoutée si tu ne l'actives pas) :
+
+1. **Identité multi-machine** (Phase A) — chaque alerte Telegram porte un badge `🖥️ PC-FIXE` / `💻 MACBOOK` / `🏫 UNI-DEBIAN` pour que tu saches d'où vient le signal en un coup d'œil. Variable : `MACHINE_ID` (fallback `socket.gethostname()`) + `MACHINE_EMOJI`.
+2. **API HTTP Tailscale-only + TOTP** (Phases B-D) — 4 routes (`GET /v1/status`, `POST /v1/{stop,resume,restart}`) protégées par 2FA RFC 6238, accessibles **uniquement** depuis ton tailnet privé (bind validé strict CGNAT `100.64.0.0/10`). Auto-lockdown 3-strikes après brute force → touch sentinel + alerte Telegram CRITICAL.
+3. **Auto-resurrection sous superviseur** (Phase F) — systemd user unit (Linux/WSL2), launchd LaunchAgent (macOS), Task Scheduler (Windows). Un crash → respawn ≤ 5 s. Un kill switch drawdown -20 % → touch sentinel `halt.flag` → respawn en mode `paused` (Watcher/Strategy/Executor exclus, **zéro nouveau trade**) jusqu'à ce que **tu** valides un `/resume` explicite depuis ton phone.
+
+```
+   Téléphone (4G ou wifi)
+        │
+        │  POST /v1/stop/PC-FIXE  {"totp": "927848"}
+        ▼
+   Tailscale (CGNAT 100.64.0.0/10, traverse NAT, mesh privé)
+        │
+        ▼
+   Bot polycopy sur PC fixe (WSL2)
+        ├─ valide TOTP (±30 s)
+        ├─ touch ~/.polycopy/halt.flag  (sentinel, 0o600)
+        └─ exit 0  →  systemd respawn  →  mode paused (dashboard reste up)
+```
+
+Setup pas-à-pas : [docs/specs/M12_bis_remote_control_setup_guide.md](docs/specs/M12_bis_remote_control_setup_guide.md) — compte ~30-45 min d'install par machine + 10 min tailnet initial. Spec technique complète : [docs/specs/M12_bis_multi_machine_remote_control_spec.md](docs/specs/M12_bis_multi_machine_remote_control_spec.md). Variables d'environnement : voir bloc dédié dans [Variables d'environnement](#variables-denvironnement).
+
+**Garantie sécurité M12_bis** : aucun port public ouvert sur Internet (Tailscale est un mesh chiffré WireGuard), pas de SSH à se rappeler, pas de VPN à activer manuellement. `REMOTE_CONTROL_TOTP_SECRET` ne fuite jamais dans les logs / alertes / repr objets (test de non-régression `test_remote_control_no_secret_leak.py`). Le bind est strictement limité à l'IPv4 Tailscale CGNAT — jamais `0.0.0.0` ni `127.0.0.1` (refusé par validator Pydantic + double-check au boot).
+
+---
+
 ## FAQ
 
 <details>
@@ -384,6 +418,17 @@ Avant tout live, fais tourner ≥ 7 jours en `EXECUTION_MODE=dry_run` avec `DRY_
 3. **Logs** : `tail -f ~/.polycopy/logs/polycopy.log | jq .event` fait défiler des events.
 
 Si l'un des 3 stoppe : process probablement mort.
+
+</details>
+
+<details>
+<summary><strong>Comment je pilote le bot quand je suis en déplacement ?</strong></summary>
+
+Depuis **M12_bis** : Tailscale + TOTP + supervisor = tu pilotes depuis ton téléphone via 4 raccourcis iOS Shortcuts ou Android HTTP Shortcuts (`status` / `stop` / `resume` / `restart`). Pas de port public ouvert sur Internet, pas de SSH à se rappeler, pas de VPN manuel — Tailscale est un mesh privé WireGuard qui traverse les NATs.
+
+`REMOTE_CONTROL_ENABLED=false` par défaut (zéro surface ajoutée). Si tu actives, le bind est strictement limité à l'IP Tailscale CGNAT (`100.64.0.0/10`) — jamais `0.0.0.0` ni `127.0.0.1`, refusé 2× par validator Pydantic et par re-check au boot. TOTP RFC 6238 base32, fenêtre ±30 s, lockdown auto après 3 fails (touch sentinel + alerte Telegram CRITICAL).
+
+Pour la chaîne complète et le smoke test depuis 4G hors wifi : section dédiée [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone-m12_bis) + [setup guide](docs/specs/M12_bis_remote_control_setup_guide.md).
 
 </details>
 
@@ -653,6 +698,18 @@ Score_v2 = 0.25 · risk_adjusted    (Sortino 90d + Calmar 90d)
 
 Prérequis `TraderDailyPnl` : table append-only (migration 0006) peuplée toutes les 24 h par `TraderDailyPnlWriter` co-lancé dans `DiscoveryOrchestrator`. Source unique Sortino/Calmar/consistency. Contient uniquement `wallet_address` publique + `equity_usdc` + `date` — aucun secret, aucun PII.
 
+### M12_bis — multi-machine + remote control
+
+Side-car opt-in (`REMOTE_CONTROL_ENABLED=false` par défaut), strictement additif aux 5 couches existantes. Aucune ligne modifiée dans les chemins live M3 / kill switch M4 / dry-run M8.
+
+- [`src/polycopy/remote_control/`](src/polycopy/remote_control/) — package isolé : `tailscale.py` (résolution `tailscale ip -4` + validator CGNAT), `auth.py` (`TOTPGuard` pyotp + `RateLimiter` deque + `AutoLockdown` 3-strikes), `sentinel.py` (`SentinelFile` `~/.polycopy/halt.flag` 0o600/0o700), `server.py` (FastAPI 4 routes `GET /v1/health`, `GET /v1/status/<machine>`, `POST /v1/{restart,stop,resume}/<machine>`), `orchestrator.py` (uvicorn bind Tailscale exclusif).
+- **Bifurcation `cli/boot.py::build_orchestrators(mode)`** : au boot, lecture du sentinel `halt.flag`. Si présent → mode `paused` (Monitoring + Dashboard + RemoteControl uniquement, **Watcher/Strategy/Executor exclus** = zéro nouveau trade). Si absent → mode `normal` (stack complet). Seul un `POST /v1/resume` (TOTP humain) clear le sentinel et déclenche un respawn en mode normal.
+- **Ordre sacré du kill switch** : `PnlSnapshotWriter` détecte drawdown ≥ 20 % → `touch sentinel` puis `stop_event.set()` (ordre inverse = respawn unsafe en mode normal malgré drawdown).
+- **Identité multi-machine** : injection `machine_id` + `machine_emoji` en 2ᵉ ligne de chaque alerte Telegram via [alert_renderer.py:146-170](src/polycopy/monitoring/alert_renderer.py#L146-L170) — pattern strict copy-paste du `mode_badge` M10. Public, non-sensible, loggé en clair au boot via event `machine_id_resolved`.
+- **Auto-resurrection** : superviseurs déclaratifs `Restart=always` (systemd) / `KeepAlive=true` (launchd) / Task Scheduler logon trigger (Windows). Tous les artefacts dans [scripts/supervisor/{systemd,launchd,windows}/](scripts/supervisor/).
+
+Pitch & setup utilisateur : section [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone-m12_bis). Spec technique : [docs/specs/M12_bis_multi_machine_remote_control_spec.md](docs/specs/M12_bis_multi_machine_remote_control_spec.md). ADR : [docs/specs/idea2_remote_control_decision.md](docs/specs/idea2_remote_control_decision.md).
+
 Règle de dépendance : `watcher` → `storage`, `strategy` → `storage`, `executor` → `storage`. Aucun module ne dépend d'un autre module fonctionnel directement, tout passe par la DB ou par des events asyncio. Le `__main__` orchestre.
 
 Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [specs/](specs/).
@@ -823,6 +880,22 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 
 </details>
 
+<details>
+<summary><strong>Multi-machine + remote control (M12_bis)</strong></summary>
+
+| Variable | Description | Default | Requis |
+|---|---|---|---|
+| `MACHINE_ID` | Badge texte affiché dans toutes les alertes Telegram (ex. `PC-FIXE`, `MACBOOK`). Public, non-sensible, loggé en clair au boot. Fallback `socket.gethostname()` si vide. Normalisé upper, regex `^[A-Z0-9_-]+$`, cap 32 chars. Doit matcher le hostname Tailscale (case-insensitive). | (hostname) | non |
+| `MACHINE_EMOJI` | Emoji devant `MACHINE_ID` dans les alertes. Choix utilisateur par machine (`🖥️` desktop, `💻` portable, `🏫` université, `🏠` maison…). Pas de mapping auto hostname→emoji. Max 8 chars (séquences ZWJ). | `🖥️` | non |
+| `REMOTE_CONTROL_ENABLED` | ⚠️ Opt-in strict M12_bis. Si `false`, le package `remote_control` n'est même pas instancié (zéro overhead, zéro port ouvert). Si `true`, crash boot si Tailscale absent OU `REMOTE_CONTROL_TOTP_SECRET` vide. | `false` | non |
+| `REMOTE_CONTROL_PORT` | Port TCP bindé sur l'IP Tailscale **uniquement** (jamais `0.0.0.0` ni `127.0.0.1` — refusé par validator Pydantic). Différent de 8787 (dashboard) et 8000/8080 (conflits communs). | `8765` | non |
+| `REMOTE_CONTROL_TOTP_SECRET` | Secret TOTP RFC 6238 base32 (≥ 16 chars). Discipline secret identique `TELEGRAM_BOT_TOKEN` : jamais committé, jamais loggé (même partiel, même en exception, même dans `repr(TOTPGuard)`). Génération : `python -c "import pyotp; print(pyotp.random_base32())"`. Rotation trimestrielle. | — | **si `REMOTE_CONTROL_ENABLED=true`** |
+| `REMOTE_CONTROL_TAILSCALE_IP_OVERRIDE` | Bypass `tailscale ip -4` (tests intégration, edge cases NAT exotiques). Refus loopback / `0.0.0.0` / IPv6 par validator. | — | non |
+| `REMOTE_CONTROL_SENTINEL_PATH` | Chemin du sentinel `halt.flag` (kill switch + `/stop` + auto-lockdown). Permissions strictes 0o600 fichier + 0o700 parent appliquées au boot. | `~/.polycopy/halt.flag` | non |
+| `DASHBOARD_BIND_TAILSCALE` | Bind le dashboard sur la même IP Tailscale (au lieu de `DASHBOARD_HOST`). Recommandé en multi-machine pour consultation depuis le phone à `http://<hostname>.<tailnet>.ts.net:8787/`. Crash boot si Tailscale absent (même résolveur que `remote_control`). Si `true` ET `DASHBOARD_HOST` set : warning au boot, priorité au bind Tailscale. Routes GET-only inchangées (M4.5/M6). | `false` | non |
+
+</details>
+
 ---
 
 ## Going live (passage du dry-run au mode réel)
@@ -879,7 +952,8 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 - [x] **M9** : CLI silencieux + onglet `/logs` + README overhaul
 - [x] **M10** : parité dry-run / live (kill switch + alertes identiques, badges de mode) + log hygiene (processor middleware, exclusion `dashboard_request` par défaut)
 - [x] **M11** : pipeline temps réel phase 1 (WS CLOB channel `market` + cache Gamma adaptatif + instrumentation latence 6 stages + onglet `/latency`)
-- [x] **M12** : scoring v2 (formule hybride 6 facteurs + 6 gates durs pré-scoring + shadow period v1/v2 + onglet `/traders/scoring`) (← *tu es ici*)
+- [x] **M12** : scoring v2 (formule hybride 6 facteurs + 6 gates durs pré-scoring + shadow period v1/v2 + onglet `/traders/scoring`)
+- [x] **M12_bis** : multi-machine (`MACHINE_ID` dans alertes Telegram) + remote control Tailscale (4 routes HTTP + TOTP + sentinel `halt.flag` + auto-lockdown 3-strikes) + auto-resurrection (systemd / launchd / Task Scheduler) (← *tu es ici*)
 
 ### Suite (idées, pas engagement)
 
@@ -904,4 +978,4 @@ Ce code est fourni à titre éducatif. **Aucune garantie sur le fonctionnement, 
 
 Aucun support garanti. Issues GitHub welcome mais réponses best-effort.
 
-_Last reviewed : 2026-04-19 (M12)._
+_Last reviewed : 2026-04-20 (M12_bis)._

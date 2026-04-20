@@ -46,9 +46,10 @@
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
-    <!-- wsl.exe --exec /bin/true démarre la distro (et donc systemd inside
-         si /etc/wsl.conf [boot] systemd=true) puis sort. systemd prend
-         le relais et démarre ~/.config/systemd/user/polycopy.service. -->
+    <!-- wsl.exe -d Ubuntu lance la distro (et donc systemd inside
+         si /etc/wsl.conf [boot] systemd=true) puis sort via /bin/true.
+         systemd prend le relais et démarre
+         ~/.config/systemd/user/polycopy.service. -->
     <Exec>
       <Command>wsl.exe</Command>
       <Arguments>-d Ubuntu --exec /bin/true</Arguments>

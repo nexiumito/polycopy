@@ -70,31 +70,49 @@ tailscale ip -4
 
 ### 2.3 Windows 10 + WSL2
 
-**Coucher extérieure (Windows)** — Tailscale app Windows :
+⚠️ **Piège testé sur PC-ELIE (2026-04-20)** : en mode WSL2 par défaut
+(`networkingMode=nat`), l'interface Tailscale du host Windows **n'est
+pas visible dans WSL** (eth0 WSL est sur un réseau privé `192.168.x.x`
+isolé). Conséquence : même si `tailscale.exe` du host répond,
+`uvicorn.bind("100.x.y.z", port)` côté polycopy échouerait avec
+`EADDRNOTAVAIL`. La doc précédente sous-entendait que ça marchait — c'est
+faux. **Il faut deux installs Tailscale séparées** : une côté Windows
+(pour l'usage desktop/téléphone), une native dans WSL (pour polycopy).
+Les deux apparaîtront comme deux machines distinctes du tailnet, ce qui
+est attendu et propre.
+
+**Couche extérieure (Windows)** — usage desktop, navigation tailnet :
 
 1. Télécharger [Tailscale pour Windows](https://tailscale.com/download/windows)
    et installer.
 2. Démarrer → Log in via le navigateur.
-3. Via le tray icon → Preferences → hostname `pc-fixe`.
+3. Via le tray icon → Preferences → hostname `pc-fixe-desktop` (suffixe
+   `-desktop` pour différencier de l'install WSL native ci-dessous).
 
-**Couche intérieure (WSL2)** — le daemon Tailscale Windows expose
-l'interface sur la machine hôte, et `wsl.exe` hérite de la configuration
-réseau. **Aucune install Tailscale inside WSL2 nécessaire** — mais
-`tailscale ip -4` doit marcher dans le shell WSL.
-
-Test :
+**Couche intérieure (WSL2)** — host de polycopy, install native obligatoire :
 
 ```bash
 # Depuis WSL2 Ubuntu
-tailscale ip -4  # doit retourner 100.64.x.x
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Le service tailscaled tourne en system-systemd (pas user-systemd)
+sudo systemctl enable --now tailscaled
+
+# Enrôler WSL dans le tailnet (suivre le lien d'auth affiché)
+sudo tailscale up --hostname=pc-fixe
+
+# Vérifier
+tailscale ip -4
+# Doit retourner 100.x.y.z (différent de l'IP du host Windows)
 ```
 
-Si `tailscale ip -4` échoue dans WSL2 ("command not found"), deux options :
-- (a) Ajouter `/mnt/c/Program\ Files/Tailscale/` au `$PATH` dans
-  `~/.bashrc`.
-- (b) Installer Tailscale natif dans WSL2 :
-  `curl -fsSL https://tailscale.com/install.sh | sh`. Dans ce cas,
-  **ne pas** faire `tailscale up` dans WSL (conflit avec le host).
+Côté admin Tailscale (<https://login.tailscale.com/admin/machines>),
+tu verras alors **2 machines pour ce poste** :
+
+| Hostname | Rôle | IP exemple |
+|---|---|---|
+| `pc-fixe-desktop` | Tailscale Windows app — accès tailnet depuis le desktop | `100.91.255.104` |
+| `pc-fixe` | Tailscale natif WSL — host polycopy, c'est celui qui matche `MACHINE_ID=PC-FIXE` | `100.90.238.75` |
 
 ### 2.4 Téléphone
 
@@ -322,6 +340,12 @@ ls -l ~/code/polycopy/.env
 
 ### 10.1 Bookmarks dashboard (navigateur phone)
 
+Depuis **M12_bis Phase G**, chaque alerte Telegram contient déjà un
+lien dashboard cliquable `[📊 Dashboard]` pointant sur la machine
+source — donc le bookmark navigateur ci-dessous est devenu
+**optionnel** pour les utilisateurs qui pilotent surtout via alertes.
+Garde-le si tu veux ouvrir le dashboard sans attendre une alerte.
+
 Ajouter un bookmark par machine :
 
 - `http://pc-fixe.<ton-tailnet>.ts.net:8787/`
@@ -333,24 +357,99 @@ admin Tailscale, ex. `tailXXXX`).
 
 ### 10.2 iOS Shortcuts — recette par machine
 
-Créer dans l'app Shortcuts (une shortcut par action par machine) :
+L'app **Raccourcis** est préinstallée sur iOS. Walkthrough testé sur iOS
+26 FR (les noms d'actions sont localisés — équivalents EN entre parenthèses).
 
-**Exemple : "polycopy restart PC-FIXE"** :
+#### Conventions d'URL
 
-1. `Ask for Input` → Type : Number → Prompt : "TOTP code".
-2. `URL` → `http://pc-fixe.<tailnet>.ts.net:8765/v1/restart/PC-FIXE`.
-3. `Get Contents of URL` :
-   - Method : **POST**.
-   - Headers : `Content-Type: application/json`.
-   - Request Body : **JSON**.
-   - Body : `{ "totp": "<Provided Input>" }` (Provided Input = variable
-     de l'étape 1).
-4. `Show Result` (ou `Show Notification`).
+- **Status** (read-only, GET, no TOTP) :
+  `http://<hostname>.<tailnet>.ts.net:8765/v1/status/<MACHINE_ID>`
+- **Stop / Resume / Restart** (POST + TOTP) :
+  `http://<hostname>.<tailnet>.ts.net:8765/v1/{stop|resume|restart}/<MACHINE_ID>`
 
-Dupliquer pour `/stop`, `/resume`, `/status` × 3 machines = 12 shortcuts.
+⚠️ **Port `8765` = remote control API**, pas `8787` qui est le dashboard
+HTML. Erreur la plus fréquente : copier l'URL du bookmark dashboard
+(8787) dans un shortcut → réponse HTML inutile.
 
-Raccourci recommandé : créer un **Shortcut menu** au lieu de 12 séparés
-(cf. Apple docs `Choose from Menu` action).
+#### Recette 1 — `polycopy status PC-FIXE` (GET, sans TOTP)
+
+1. Ouvre **Raccourcis** → `+` (nouveau raccourci en haut à droite).
+2. Dans la barre de recherche en bas (`Rechercher des apps et des actions`),
+   tape `URL` → ajoute **Obtenir le contenu de l'URL**
+   (*Get contents of URL*).
+3. Touche le champ URL et colle :
+   `http://pc-fixe.<tailnet>.ts.net:8765/v1/status/PC-FIXE`
+4. Méthode : **GET** (default, ne touche pas).
+5. Cherche action **Afficher le contenu** (*Show result* / *Quick Look*) →
+   ajoute (elle prend automatiquement le résultat de l'action du dessus).
+6. Touche le nom en haut → renomme `polycopy status PC-FIXE`.
+7. Optionnel : icône à droite du nom → couleur grise, glyphe `info`.
+8. **OK** en haut à droite (la sauvegarde est automatique au fil de l'eau).
+
+Test : touche le carré du raccourci → tu dois voir une popup JSON type
+`{"mode":"running","machine_id":"PC-FIXE","uptime_seconds":1234,...}`.
+
+#### Recette 2 — `polycopy stop PC-FIXE` (POST + TOTP)
+
+1. Nouveau raccourci.
+2. Cherche **Demander une saisie** (*Ask for input*) :
+   - Type d'entrée : **Nombre**
+   - Question : `Code TOTP`
+3. Cherche **Obtenir le contenu de l'URL** :
+   - URL : `http://pc-fixe.<tailnet>.ts.net:8765/v1/stop/PC-FIXE`
+   - Méthode : **POST**
+   - **En-têtes** (*Headers*) → ajouter :
+     - Clé : `Content-Type`
+     - Valeur : `application/json`
+   - **Corps de requête** (*Request Body*) → choisir **JSON**
+     (n'apparaît qu'après avoir mis Méthode = POST !) :
+     - "Ajouter un nouveau champ" → type **Texte**
+     - Clé : `totp`
+     - Valeur : touche le champ → barre de variables au-dessus du clavier
+       → touche le chip **Saisie fournie** (*Provided Input* — le résultat
+       de l'action étape 2). Le résultat doit être un **chip coloré**, pas
+       le texte littéral "Saisie fournie".
+4. Cherche **Afficher le contenu** → ajoute.
+5. Renomme : `polycopy stop PC-FIXE`. Icône rouge 🛑 conseillée.
+
+Test : lance le raccourci → il demande le code TOTP → ouvre ton
+authenticator → copie le code 6 chiffres pour l'entrée
+`polycopy-PC-FIXE` → colle → OK. Réponse attendue HTTP 202 :
+`{"ok":true,"action":"stop","respawn_mode":"paused",...}`.
+
+#### Recettes 3 & 4 — `resume` et `restart` (clone de la recette 2)
+
+Au lieu de tout retaper :
+
+1. Liste des raccourcis → touche-maintenu sur **`polycopy stop PC-FIXE`**
+   → **Dupliquer**.
+2. Renomme en `polycopy resume PC-FIXE` (icône verte ▶️).
+3. Édite l'URL : remplace `/v1/stop/` par `/v1/resume/`.
+4. Répète : duplique → renomme `polycopy restart PC-FIXE` (icône orange
+   🔄) → URL `/v1/restart/`.
+
+Total pour PC-FIXE : 4 raccourcis (status + stop + resume + restart).
+Compte ~15-20 min la 1ʳᵉ fois, ~5 min pour les 2 autres machines via
+duplication + édition d'URL.
+
+#### Pièges typiques iOS Shortcuts
+
+| Symptôme | Cause | Fix |
+|---|---|---|
+| `{"detail":"Not Found"}` | URL avec mauvais path (ex. `/home`, `/`) | Vérifier le path complet `/v1/<action>/<MACHINE_ID>`. |
+| Réponse HTML au lieu de JSON | Port 8787 (dashboard) au lieu de 8765 | Corriger le port dans l'URL. |
+| HTTP 401 même avec bon code TOTP | Variable `Saisie fournie` insérée comme texte au lieu de chip | Re-éditer le body, supprimer le texte, sélectionner le chip variable. |
+| HTTP 401 systématique | Clock skew >30s entre phone et bot | iPhone Réglages → Général → Date et heure → activer "Réglage automatique". Côté WSL : `sudo hwclock -s`. |
+| HTTP 423 (locked) | Auto-lockdown brute force déclenché | SSH machine → `rm ~/.polycopy/halt.flag` → `systemctl --user restart polycopy` (cf. spec §4.4.4). |
+
+#### Optimisation menu (à faire seulement quand 2-3 machines actives)
+
+Quand tu auras ~12 raccourcis (4 actions × 3 machines), regroupe dans un
+**raccourci unique** avec action **Choisir dans le menu** (*Choose from
+Menu*). Apple docs : <https://support.apple.com/guide/shortcuts/intro-to-shortcuts-apdf22b0444c/ios>.
+
+Ne fais pas ça avec 1 seule machine — l'overhead du menu (+1 tap par
+action) ne se justifie qu'à partir de 8+ raccourcis individuels.
 
 ### 10.3 Android — HTTP Shortcuts
 

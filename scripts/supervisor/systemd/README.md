@@ -9,11 +9,16 @@ Linux (Debian 12 recommandé) + WSL2 Ubuntu si `systemd=true` activé dans
 
 ## Install (≈ 2 min)
 
+À lancer depuis la racine `~/code/polycopy` (chemin canonique).
+
 ```bash
-# 1. Substituer les placeholders {{POLYCOPY_PATH}} et {{VENV_PATH}}
+# 1. Créer le dossier de destination puis substituer les placeholders
+#    {{POLYCOPY_PATH}} et {{VENV_PATH}}
+mkdir -p ~/.config/systemd/user
 sed -e "s|{{POLYCOPY_PATH}}|$HOME/code/polycopy|g" \
     -e "s|{{VENV_PATH}}|$HOME/code/polycopy/.venv|g" \
-    polycopy.service > ~/.config/systemd/user/polycopy.service
+    scripts/supervisor/systemd/polycopy.service \
+    > ~/.config/systemd/user/polycopy.service
 
 # 2. Permettre au service de survivre à la déconnexion SSH
 sudo loginctl enable-linger "$USER"
