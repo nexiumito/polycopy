@@ -17,6 +17,9 @@ cd "${REPO_ROOT}"
 WRAPPER_PATTERN='^systemd-inhibit --what=sleep:idle --who=polycopy'
 BOOT_LOG=/tmp/polycopy_boot.log
 PID_FILE=/tmp/polycopy_night.pid
+# Python du venv local — obligatoire : `python` tout court n'existe pas sur
+# cet environnement (Debian 13, pas d'alias vers python3).
+PYTHON="${REPO_ROOT}/.venv/bin/python"
 
 info() { printf '[reboot] %s\n' "$*"; }
 ok()   { printf '[reboot] \xe2\x9c\x93  %s\n' "$*"; }
@@ -54,9 +57,14 @@ if [ -n "${ORPHANS}" ]; then
 fi
 
 # ── 2. Launch détaché ────────────────────────────────────────────────────────
+# Nettoyage des env vars qui pourraient fuiter depuis le shell interactif et
+# override `.env` (pydantic-settings donne priorité shell > dotenv). On isole
+# explicitement les variables sensibles au routing wallets.
+unset TARGET_WALLETS BLACKLISTED_WALLETS WASH_CLUSTER_WALLETS 2>/dev/null || true
+
 info "Lancement détaché (setsid + systemd-inhibit)"
 setsid systemd-inhibit --what=sleep:idle --who=polycopy --why="14-day test" \
-  python -m polycopy --no-cli > "${BOOT_LOG}" 2>&1 < /dev/null &
+  "${PYTHON}" -m polycopy --no-cli > "${BOOT_LOG}" 2>&1 < /dev/null &
 disown
 
 sleep 4
@@ -84,7 +92,7 @@ if [ -f "${REPO_ROOT}/scripts/night_test_status.py" ]; then
     sleep 1
   done
   info "Boot check"
-  python "${REPO_ROOT}/scripts/night_test_status.py" --boot || true
+  "${PYTHON}" "${REPO_ROOT}/scripts/night_test_status.py" --boot || true
 else
   warn "scripts/night_test_status.py introuvable — skip boot check"
 fi
