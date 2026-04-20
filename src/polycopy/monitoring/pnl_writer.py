@@ -26,6 +26,7 @@ from polycopy.storage.repositories import PnlSnapshotRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.remote_control.sentinel import SentinelFile
 
 log = structlog.get_logger(__name__)
 
@@ -42,11 +43,17 @@ class PnlSnapshotWriter:
         settings: Settings,
         wallet_state_reader: WalletStateReader | VirtualWalletStateReader,
         alerts_queue: asyncio.Queue[Alert],
+        *,
+        sentinel: SentinelFile | None = None,
     ) -> None:
         self._repo = PnlSnapshotRepository(session_factory)
         self._settings = settings
         self._reader = wallet_state_reader
         self._alerts = alerts_queue
+        # M12_bis Phase D : si injecté, le sentinel est touché AVANT
+        # `stop_event.set()` sur kill switch. Optionnel pour compat
+        # ascendante + tests unitaires qui n'ont pas de filesystem.
+        self._sentinel: SentinelFile | None = sentinel
 
     async def run(self, stop_event: asyncio.Event) -> None:
         """Boucle principale : snapshot → kill-switch check → sleep."""
@@ -137,6 +144,13 @@ class PnlSnapshotWriter:
                     cooldown_key="kill_switch",
                 ),
             )
+            # M12_bis Phase D §4.6 : touch sentinel AVANT stop_event.set().
+            # Ordre critique — si crash entre les deux (kill -9), le respawn
+            # superviseur trouvera le sentinel posé → mode paused correct.
+            # Inverse (stop_event set avant touch) = mode normal au respawn
+            # malgré un drawdown = unsafe.
+            if self._sentinel is not None:
+                self._sentinel.touch(reason="kill_switch")
             stop_event.set()
             return
         warning_threshold = _DRAWDOWN_WARNING_RATIO * threshold

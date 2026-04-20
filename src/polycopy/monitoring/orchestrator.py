@@ -34,6 +34,7 @@ from polycopy.monitoring.md_escape import humanize_duration
 from polycopy.monitoring.pnl_writer import PnlSnapshotWriter
 from polycopy.monitoring.startup_notifier import StartupNotifier
 from polycopy.monitoring.telegram_client import TelegramClient
+from polycopy.remote_control.sentinel import SentinelFile
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -109,11 +110,16 @@ class MonitoringOrchestrator:
                 renderer=renderer,
                 digest=digest,
             )
+            # M12_bis Phase D §4.6 : injection du sentinel → le
+            # PnlSnapshotWriter touche halt.flag avant stop_event.set() sur
+            # kill switch pour que le respawn superviseur retombe en paused.
+            sentinel = SentinelFile(self._settings.remote_control_sentinel_path)
             writer = PnlSnapshotWriter(
                 self._session_factory,
                 self._settings,
                 wallet_reader,
                 self._alerts,
+                sentinel=sentinel,
             )
             log.info(
                 "monitoring_started",
