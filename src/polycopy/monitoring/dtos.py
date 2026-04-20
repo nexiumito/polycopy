@@ -56,11 +56,16 @@ class ModuleStatus(BaseModel):
 
 
 class StartupContext(BaseModel):
-    """Context consommé par ``startup.md.j2`` (M7 §4.2, étendu M10 §3.4).
+    """Context consommé par ``startup.md.j2`` (M7 §4.2, étendu M10 §3.4, M12_bis §4.2.1).
 
     ``mode`` reflète la nouvelle enum M10 ``execution_mode`` ; la
     représentation visuelle (badge emoji) est déléguée au filter
     ``mode_badge`` injecté par ``AlertRenderer``.
+
+    M12_bis : ``paused: bool`` — true quand le runner a bifurqué en
+    mode paused au boot (sentinel ``halt.flag`` détecté). Le template
+    startup ajoute un bloc `{% if paused %}` explicite pour signaler
+    l'état et indiquer la commande ``/resume``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -71,6 +76,7 @@ class StartupContext(BaseModel):
     pinned_wallets: list[PinnedWallet]
     modules: list[ModuleStatus]
     dashboard_url: str | None = None
+    paused: bool = False
 
 
 class ShutdownContext(BaseModel):
@@ -83,7 +89,12 @@ class ShutdownContext(BaseModel):
 
 
 class HeartbeatContext(BaseModel):
-    """Context consommé par ``heartbeat.md.j2`` (M7 §4.3)."""
+    """Context consommé par ``heartbeat.md.j2`` (M7 §4.3, étendu M12_bis §4.2.1).
+
+    M12_bis : ``paused: bool`` — true quand le process tourne en mode
+    paused. Le template heartbeat ajoute un bloc `{% if paused %}`
+    pour rappeler l'état paused et la commande ``/resume``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -92,6 +103,7 @@ class HeartbeatContext(BaseModel):
     watcher_count: int
     positions_open: int
     critical_alerts_in_window: int
+    paused: bool = False
 
 
 class TopWalletEntry(BaseModel):

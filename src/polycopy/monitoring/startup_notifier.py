@@ -38,11 +38,14 @@ class StartupNotifier:
         telegram_client: TelegramClient,
         renderer: AlertRenderer,
         settings: Settings,
+        *,
+        paused: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._telegram = telegram_client
         self._renderer = renderer
         self._settings = settings
+        self._paused = paused
 
     async def send_once(self, stop_event: asyncio.Event) -> None:
         """Envoie le startup message une seule fois, puis retourne.
@@ -81,6 +84,7 @@ class StartupNotifier:
             pinned_wallets=pinned,
             modules=modules,
             dashboard_url=dashboard_url,
+            paused=self._paused,
         )
 
     async def _load_pinned_wallets(self) -> list[PinnedWallet]:

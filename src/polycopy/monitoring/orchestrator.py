@@ -145,6 +145,7 @@ class MonitoringOrchestrator:
                             telegram,
                             renderer,
                             self._settings,
+                            paused=self._paused,
                         )
                         tg.create_task(startup.send_once(stop_event))
                     if self._settings.telegram_heartbeat_enabled:
@@ -154,6 +155,7 @@ class MonitoringOrchestrator:
                             renderer,
                             self._settings,
                             dispatcher,
+                            paused=self._paused,
                         )
                         tg.create_task(heartbeat.run(stop_event))
                     if self._settings.telegram_daily_summary and not self._paused:

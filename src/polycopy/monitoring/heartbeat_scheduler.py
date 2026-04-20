@@ -39,6 +39,8 @@ class HeartbeatScheduler:
         renderer: AlertRenderer,
         settings: Settings,
         dispatcher: AlertDispatcher,
+        *,
+        paused: bool = False,
     ) -> None:
         self._sf = session_factory
         self._telegram = telegram_client
@@ -48,6 +50,7 @@ class HeartbeatScheduler:
         self._interval_seconds: int = settings.telegram_heartbeat_interval_hours * 3600
         self._boot_at: datetime = datetime.now(tz=UTC)
         self._count: int = 0
+        self._paused = paused
 
     async def run(self, stop_event: asyncio.Event) -> None:
         if not self._telegram.enabled:
@@ -105,6 +108,7 @@ class HeartbeatScheduler:
             watcher_count=watcher_count,
             positions_open=positions_open,
             critical_alerts_in_window=recent_critical,
+            paused=self._paused,
         )
 
     async def _count_active_wallets(self) -> int:
