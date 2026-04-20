@@ -22,11 +22,14 @@ from typing import TYPE_CHECKING
 import structlog
 import uvicorn
 
+from polycopy.remote_control.auth import AutoLockdown, RateLimiter, TOTPGuard
+from polycopy.remote_control.sentinel import SentinelFile
 from polycopy.remote_control.server import build_app
 from polycopy.remote_control.tailscale import resolve_tailscale_ipv4
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
 
 log = structlog.get_logger(__name__)
 
@@ -49,21 +52,54 @@ class RemoteControlOrchestrator:
     clair si Tailscale est down — pas silencieusement dans le TaskGroup.
     """
 
-    def __init__(self, settings: Settings, boot_at: datetime | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        alerts_queue: asyncio.Queue[Alert] | None = None,
+        boot_at: datetime | None = None,
+    ) -> None:
         self._settings = settings
+        self._alerts_queue: asyncio.Queue[Alert] | None = alerts_queue
         self._boot_at = boot_at if boot_at is not None else datetime.now(tz=UTC)
         self._host = resolve_tailscale_ipv4(settings)
         self._port = settings.remote_control_port
+        self._sentinel: SentinelFile = SentinelFile(settings.remote_control_sentinel_path)
+        # Phase C : TOTPGuard + RateLimiter + AutoLockdown requis côté enabled.
+        # Le validator Pydantic garantit que le secret est non-None ici.
+        secret = settings.remote_control_totp_secret
+        if not secret:
+            # Défense en profondeur : ne devrait pas arriver (model_validator
+            # `_validate_remote_control_requires_totp`).
+            raise RuntimeError(
+                "REMOTE_CONTROL_ENABLED=true but REMOTE_CONTROL_TOTP_SECRET absent — "
+                "config validator broken?",
+            )
+        self._totp_guard: TOTPGuard = TOTPGuard(secret)
+        self._rate_limiter: RateLimiter = RateLimiter()
+        self._lockdown: AutoLockdown = AutoLockdown(
+            sentinel=self._sentinel,
+            alerts_queue=self._alerts_queue,
+        )
         log.info(
             "remote_control_init",
             host=self._host,
             port=self._port,
             machine_id=(settings.machine_id or "UNKNOWN").upper(),
+            preexisting_lockdown=self._lockdown.is_locked,
         )
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale : démarre uvicorn jusqu'à ``stop_event.set()``."""
-        app = build_app(self._settings, self._boot_at)
+        app = build_app(
+            self._settings,
+            self._boot_at,
+            stop_event=stop_event,
+            sentinel=self._sentinel,
+            totp_guard=self._totp_guard,
+            rate_limiter=self._rate_limiter,
+            lockdown=self._lockdown,
+        )
         config = uvicorn.Config(
             app,
             host=self._host,
