@@ -15,6 +15,7 @@ import sys
 
 import structlog
 
+from polycopy.cli.boot import build_orchestrators
 from polycopy.cli.logging_config import configure_logging
 from polycopy.cli.status_screen import (
     build_initial_module_status,
@@ -24,20 +25,12 @@ from polycopy.cli.status_screen import (
 )
 from polycopy.cli.version import get_version
 from polycopy.config import legacy_dry_run_detected, settings
-from polycopy.dashboard.orchestrator import DashboardOrchestrator
-from polycopy.discovery.orchestrator import DiscoveryOrchestrator
-from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.monitoring.dtos import Alert
-from polycopy.monitoring.orchestrator import MonitoringOrchestrator
-from polycopy.remote_control.orchestrator import RemoteControlOrchestrator
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
-from polycopy.storage.latency_purge_scheduler import LatencyPurgeScheduler
 from polycopy.storage.repositories import TradeLatencyRepository
 from polycopy.strategy.dtos import OrderApproved
-from polycopy.strategy.orchestrator import StrategyOrchestrator
-from polycopy.watcher.orchestrator import WatcherOrchestrator
 
 _QUEUE_MAXSIZE = 1000
 _ALERTS_QUEUE_MAXSIZE = 100
@@ -145,67 +138,21 @@ async def _async_main() -> None:
         stop_event = asyncio.Event()
         _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
-        watcher = WatcherOrchestrator(
-            session_factory,
-            settings,
-            detected_trades_queue=detected_trades_queue,
-            alerts_queue=alerts_queue,
-        )
-        strategy = StrategyOrchestrator(
-            session_factory,
-            settings,
+        # M12_bis Phase D (refactor) : construction des orchestrateurs
+        # déplacée dans `cli/boot.py::build_orchestrators` — testable
+        # unitairement sans `asyncio.run`. Comportement identique M12.
+        orchestrators = build_orchestrators(
+            session_factory=session_factory,
+            settings=settings,
             detected_trades_queue=detected_trades_queue,
             approved_orders_queue=approved_orders_queue,
             alerts_queue=alerts_queue,
         )
-        # ExecutorOrchestrator lève RuntimeError si DRY_RUN=false sans clés
-        # (instancié AVANT le TaskGroup pour propager l'erreur clairement).
-        executor = ExecutorOrchestrator(
-            session_factory,
-            settings,
-            approved_orders_queue=approved_orders_queue,
-            alerts_queue=alerts_queue,
-        )
-        monitoring = MonitoringOrchestrator(session_factory, settings, alerts_queue)
-
-        dashboard: DashboardOrchestrator | None = None
-        if settings.dashboard_enabled:
-            dashboard = DashboardOrchestrator(session_factory, settings)
-
-        discovery: DiscoveryOrchestrator | None = None
-        if settings.discovery_enabled:
-            discovery = DiscoveryOrchestrator(session_factory, settings, alerts_queue)
-
-        latency_purge: LatencyPurgeScheduler | None = None
-        if settings.latency_instrumentation_enabled:
-            latency_purge = LatencyPurgeScheduler(
-                TradeLatencyRepository(session_factory),
-                settings,
-            )
-
-        # M12_bis Phase B/C : RemoteControlOrchestrator instancié AVANT le
-        # TaskGroup. Si Tailscale down / absent, `RemoteControlBootError`
-        # remonte ici et crashe le process clair (pas silencieusement).
-        # Phase C : `alerts_queue` transmis pour que AutoLockdown pousse les
-        # alertes `remote_control_brute_force_detected` via le dispatcher M4.
-        remote_control: RemoteControlOrchestrator | None = None
-        if settings.remote_control_enabled:
-            remote_control = RemoteControlOrchestrator(settings, alerts_queue=alerts_queue)
 
         try:
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(watcher.run_forever(stop_event))
-                tg.create_task(strategy.run_forever(stop_event))
-                tg.create_task(executor.run_forever(stop_event))
-                tg.create_task(monitoring.run_forever(stop_event))
-                if dashboard is not None:
-                    tg.create_task(dashboard.run_forever(stop_event))
-                if discovery is not None:
-                    tg.create_task(discovery.run_forever(stop_event))
-                if latency_purge is not None:
-                    tg.create_task(latency_purge.run_forever(stop_event))
-                if remote_control is not None:
-                    tg.create_task(remote_control.run_forever(stop_event))
+                for orch in orchestrators:
+                    tg.create_task(orch.run_forever(stop_event))
         except* asyncio.CancelledError:
             pass
     finally:
