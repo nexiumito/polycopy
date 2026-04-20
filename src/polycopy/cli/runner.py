@@ -183,12 +183,14 @@ async def _async_main() -> None:
                 settings,
             )
 
-        # M12_bis Phase B : RemoteControlOrchestrator instancié AVANT le
+        # M12_bis Phase B/C : RemoteControlOrchestrator instancié AVANT le
         # TaskGroup. Si Tailscale down / absent, `RemoteControlBootError`
         # remonte ici et crashe le process clair (pas silencieusement).
+        # Phase C : `alerts_queue` transmis pour que AutoLockdown pousse les
+        # alertes `remote_control_brute_force_detected` via le dispatcher M4.
         remote_control: RemoteControlOrchestrator | None = None
         if settings.remote_control_enabled:
-            remote_control = RemoteControlOrchestrator(settings)
+            remote_control = RemoteControlOrchestrator(settings, alerts_queue=alerts_queue)
 
         try:
             async with asyncio.TaskGroup() as tg:

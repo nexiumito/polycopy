@@ -47,3 +47,37 @@ class StatusResponse(BaseModel):
     pnl_today_usdc: float | None = None
     halt_reason: str | None = None
     halted_since: str | None = None
+
+
+class CommandBody(BaseModel):
+    """Body JSON des routes destructives ``/restart`` ``/stop`` ``/resume``.
+
+    M12_bis §4.3 : TOTP 1-call dans le body (pas de challenge-response
+    2-call). Le pattern ``^\\d{6}$`` est vérifié côté ``TOTPGuard`` ; on
+    laisse Pydantic accepter tout ``str`` et on rejette proprement via
+    HTTP 401.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    totp: str
+
+
+class CommandResponse(BaseModel):
+    """Réponse 202 Accepted des routes destructives (§4.3.3-5)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ok: Literal[True]
+    action: Literal["restart", "stop", "resume"]
+    respawn_eta_seconds: int
+    respawn_mode: Literal["running", "paused"]
+
+
+class ErrorResponse(BaseModel):
+    """Réponse 4xx/5xx uniformes (§4.3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ok: Literal[False] = False
+    error: str

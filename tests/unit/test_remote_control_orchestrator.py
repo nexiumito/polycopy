@@ -24,6 +24,8 @@ from polycopy.remote_control import (
     RemoteControlOrchestrator,
 )
 
+_TOTP_SECRET = "JBSWY3DPEHPK3PXP"  # Phase C requirement
+
 
 def _settings(**kwargs: object) -> Settings:
     return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg]
@@ -43,6 +45,7 @@ def test_init_with_override_uses_provided_ip(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("subprocess.run", _should_not_run)
     settings = _settings(
         remote_control_enabled=True,
+        remote_control_totp_secret=_TOTP_SECRET,
         remote_control_tailscale_ip_override="100.64.0.1",
         remote_control_port=8765,
         machine_id="PC-FIXE",
@@ -65,7 +68,11 @@ def test_init_fails_when_tailscale_not_installed(monkeypatch: pytest.MonkeyPatch
         raise FileNotFoundError("tailscale")
 
     monkeypatch.setattr("subprocess.run", _raise_not_found)
-    settings = _settings(remote_control_enabled=True, machine_id="PC-FIXE")
+    settings = _settings(
+        remote_control_enabled=True,
+        remote_control_totp_secret=_TOTP_SECRET,
+        machine_id="PC-FIXE",
+    )
     with pytest.raises(RemoteControlBootError) as exc:
         RemoteControlOrchestrator(settings)
     assert "tailscale_not_installed" in str(exc.value)
@@ -83,7 +90,11 @@ def test_init_fails_when_tailscale_returns_no_ip(monkeypatch: pytest.MonkeyPatch
         )
 
     monkeypatch.setattr("subprocess.run", _fake_run)
-    settings = _settings(remote_control_enabled=True, machine_id="PC-FIXE")
+    settings = _settings(
+        remote_control_enabled=True,
+        remote_control_totp_secret=_TOTP_SECRET,
+        machine_id="PC-FIXE",
+    )
     with pytest.raises(RemoteControlBootError) as exc:
         RemoteControlOrchestrator(settings)
     assert "tailscale_no_ipv4" in str(exc.value)
@@ -112,7 +123,11 @@ def test_runner_with_flag_on_requires_tailscale(monkeypatch: pytest.MonkeyPatch)
         raise FileNotFoundError("tailscale")
 
     monkeypatch.setattr("subprocess.run", _raise_not_found)
-    settings = _settings(remote_control_enabled=True, machine_id="PC-FIXE")
+    settings = _settings(
+        remote_control_enabled=True,
+        remote_control_totp_secret=_TOTP_SECRET,
+        machine_id="PC-FIXE",
+    )
     # Simule le code runner.py:
     with pytest.raises(RemoteControlBootError):
         _ = RemoteControlOrchestrator(settings)
