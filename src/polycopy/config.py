@@ -134,6 +134,38 @@ class Settings(BaseSettings):
             "IPv4 non-loopback et non-unspecified. Crash boot sinon."
         ),
     )
+    remote_control_totp_secret: str | None = Field(
+        None,
+        description=(
+            "Secret TOTP RFC 6238 en base32 (≥16 chars). Requis si "
+            "REMOTE_CONTROL_ENABLED=true (crash boot sinon). Générer via "
+            '`python -c "import pyotp; print(pyotp.random_base32())"`. '
+            "⚠️ Discipline secret identique TELEGRAM_BOT_TOKEN : jamais "
+            "loggé ni committé. Rotation trimestrielle."
+        ),
+    )
+
+    @field_validator("remote_control_totp_secret")
+    @classmethod
+    def _validate_remote_control_totp_secret(cls, v: str | None) -> str | None:
+        """Refuse tout ce qui n'est pas base32 ≥16 chars (M12_bis §4.4.3)."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        if len(stripped) < 16:
+            raise ValueError(
+                "REMOTE_CONTROL_TOTP_SECRET doit faire ≥16 caractères "
+                '(base32). Régénérer via `python -c "import pyotp; '
+                'print(pyotp.random_base32())"`.',
+            )
+        if not re.fullmatch(r"[A-Z2-7]+=*", stripped):
+            raise ValueError(
+                "REMOTE_CONTROL_TOTP_SECRET doit être en base32 valide "
+                "(caractères A-Z et 2-7 uniquement, padding `=` optionnel).",
+            )
+        return stripped
 
     @field_validator("remote_control_tailscale_ip_override")
     @classmethod
@@ -812,6 +844,17 @@ class Settings(BaseSettings):
             normalized = "UNKNOWN"
         object.__setattr__(self, "machine_id", normalized)
         _MACHINE_ID_SOURCE = source
+        return self
+
+    @model_validator(mode="after")
+    def _validate_remote_control_requires_totp(self) -> "Settings":
+        """Cross-field : REMOTE_CONTROL_ENABLED=true ⇒ TOTP_SECRET requis (§4.4.3)."""
+        if self.remote_control_enabled and not self.remote_control_totp_secret:
+            raise ValueError(
+                "REMOTE_CONTROL_ENABLED=true requires REMOTE_CONTROL_TOTP_SECRET. "
+                'Générer via : python -c "import pyotp; print(pyotp.random_base32())" '
+                "puis coller la valeur dans `.env`.",
+            )
         return self
 
     @model_validator(mode="after")
