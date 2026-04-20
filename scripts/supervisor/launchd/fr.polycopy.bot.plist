@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+launchd LaunchAgent — polycopy bot (M12_bis Phase F §4.8.2).
+À installer dans ~/Library/LaunchAgents/fr.polycopy.bot.plist + launchctl load.
+Placeholders {{POLYCOPY_PATH}} et {{VENV_PATH}} à substituer via `sed`.
+Cf. docs/specs/M12_bis_remote_control_setup_guide.md §7.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>fr.polycopy.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{VENV_PATH}}/bin/python</string>
+        <string>-m</string>
+        <string>polycopy</string>
+        <string>--no-cli</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{POLYCOPY_PATH}}</string>
+
+    <!-- EnvironmentVariables : PATH uniquement (pour que `tailscale`
+         en subprocess soit trouvable). Les secrets (.env) restent lus
+         par Pydantic Settings au boot Python. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- KeepAlive=true équivalent de `Restart=always` systemd :
+         respawn quel que soit l'exit code (/restart & /resume exit 0). -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Démarrer au login utilisateur. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Anti-thrashing : 5s entre respawns si crash loop. -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Logs lancés par launchd (séparés des logs applicatifs M9
+         qui vont dans ~/.polycopy/logs/polycopy.log). -->
+    <key>StandardOutPath</key>
+    <string>{{POLYCOPY_PATH}}/logs/launchd_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{POLYCOPY_PATH}}/logs/launchd_stderr.log</string>
+</dict>
+</plist>
