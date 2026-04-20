@@ -416,6 +416,18 @@ class Settings(BaseSettings):
         le=65535,
         description="Port TCP local du dashboard.",
     )
+    dashboard_bind_tailscale: bool = Field(
+        False,
+        description=(
+            "M12_bis §4.7 : opt-in strict. Si true, le dashboard bind "
+            "sur l'IP Tailscale (résolue via `tailscale ip -4`, même "
+            "logique que remote_control §4.4.1) au lieu de "
+            "DASHBOARD_HOST. Crash boot si Tailscale absent. Cohabite "
+            "avec DASHBOARD_HOST : warning si les deux sont settés, "
+            "priorité au binding Tailscale. Invariant M4.5/M6 "
+            "préservé : aucun secret, routes GET only."
+        ),
+    )
 
     # --- Dashboard M6 (UX cosmétique, opt-in) ----------------------------
     dashboard_theme: Literal["dark", "light"] = Field(
