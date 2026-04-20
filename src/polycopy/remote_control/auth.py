@@ -15,13 +15,20 @@ Discipline sécurité (CLAUDE.md) :
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections import deque
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pyotp
 import structlog
+
+from polycopy.monitoring.dtos import Alert
+
+if TYPE_CHECKING:
+    from polycopy.remote_control.sentinel import SentinelFile
 
 log = structlog.get_logger(__name__)
 
@@ -30,6 +37,9 @@ _TOTP_VALID_WINDOW: int = 1  # ±30s = 1 step de 30s avant/après
 
 _DEFAULT_RATE_LIMIT_MAX_ATTEMPTS: int = 5
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS: float = 60.0
+
+_DEFAULT_LOCKDOWN_MAX_FAILURES: int = 3
+_DEFAULT_LOCKDOWN_WINDOW_SECONDS: float = 60.0
 
 
 class TOTPGuard:
@@ -120,3 +130,89 @@ class RateLimiter:
             self._history.clear()
         else:
             self._history.pop(ip, None)
+
+
+class AutoLockdown:
+    """Bloque la machine après ``N`` échecs TOTP consécutifs (M12_bis §4.4.5).
+
+    Trois comportements chaînés sur le 3e échec TOTP dans la fenêtre de 60s :
+    1. ``SentinelFile.touch(reason="auto_lockdown_brute_force")`` — pose
+       le halt.flag pour que le respawn superviseur entre en mode paused.
+    2. ``alerts_queue.put_nowait`` d'une ``Alert`` CRITICAL
+       ``remote_control_brute_force_detected`` → Telegram via M4 dispatcher.
+    3. Flag ``is_locked`` positionné → toutes les routes destructives
+       subséquentes renvoient HTTP 423 Locked (implémenté Phase C commit #5).
+
+    La récupération n'est PAS automatique : un opérateur humain doit
+    supprimer le sentinel + redémarrer le process (cf. ``--force-resume``
+    Phase D). Coupler avec ``RateLimiter`` côté appelant évite le
+    lockdown déclenché trop vite par un attaquant spam.
+    """
+
+    def __init__(
+        self,
+        *,
+        sentinel: SentinelFile,
+        alerts_queue: asyncio.Queue[Alert] | None = None,
+        max_failures: int = _DEFAULT_LOCKDOWN_MAX_FAILURES,
+        window_seconds: float = _DEFAULT_LOCKDOWN_WINDOW_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_failures < 1:
+            raise ValueError("max_failures must be >= 1")
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be > 0")
+        self._sentinel: SentinelFile = sentinel
+        self._alerts_queue: asyncio.Queue[Alert] | None = alerts_queue
+        self._max: int = max_failures
+        self._window: float = window_seconds
+        self._clock: Callable[[], float] = clock
+        self._failures: dict[str, deque[float]] = {}
+        self._locked: bool = False
+
+    @property
+    def is_locked(self) -> bool:
+        """True si lockdown déjà déclenché OU sentinel préexistant."""
+        return self._locked or self._sentinel.exists()
+
+    def record_failure(self, ip: str) -> bool:
+        """Enregistre un échec TOTP pour ``ip``. Retourne True si lockdown s'active."""
+        now = self._clock()
+        failures = self._failures.setdefault(ip, deque())
+        cutoff = now - self._window
+        while failures and failures[0] < cutoff:
+            failures.popleft()
+        failures.append(now)
+        if len(failures) >= self._max:
+            self._trigger_lockdown(ip, len(failures))
+            return True
+        return False
+
+    def record_success(self, ip: str) -> None:
+        """Reset le compteur d'échecs pour ``ip`` après un TOTP valide."""
+        self._failures.pop(ip, None)
+
+    def _trigger_lockdown(self, ip: str, failure_count: int) -> None:
+        self._sentinel.touch(reason="auto_lockdown_brute_force")
+        self._locked = True
+        log.critical(
+            "remote_control_auto_lockdown",
+            peer_ip=ip,
+            failure_count=failure_count,
+        )
+        if self._alerts_queue is None:
+            return
+        alert = Alert(
+            level="CRITICAL",
+            event="remote_control_brute_force_detected",
+            body=(
+                f"{failure_count} TOTP failures consécutifs depuis {ip} en moins "
+                f"de {int(self._window)}s. Machine en auto-lockdown : "
+                "rm ~/.polycopy/halt.flag + relance manuelle requise."
+            ),
+            cooldown_key="remote_control_brute_force",
+        )
+        try:
+            self._alerts_queue.put_nowait(alert)
+        except asyncio.QueueFull:
+            log.warning("alerts_queue_full_brute_force_alert_dropped")

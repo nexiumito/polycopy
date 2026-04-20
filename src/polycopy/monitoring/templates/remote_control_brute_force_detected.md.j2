@@ -1,0 +1,8 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🚨 *\[remote\_control\_brute\_force\_detected\]* CRITICAL
+
+{{ body | telegram_md_escape }}
+
+_Action requise :_ machine en *auto\-lockdown*\.
+`rm ~/.polycopy/halt.flag` \+ relancer le process pour restaurer\.

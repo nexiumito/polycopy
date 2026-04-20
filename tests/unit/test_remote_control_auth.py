@@ -1,13 +1,17 @@
-"""Tests ``TOTPGuard`` + ``RateLimiter`` (M12_bis §4.4.3-4.4.4 Phase C)."""
+"""Tests ``TOTPGuard`` + ``RateLimiter`` + ``AutoLockdown`` (M12_bis §4.4 Phase C)."""
 
 from __future__ import annotations
 
+import asyncio
 import time
+from pathlib import Path
 
 import pyotp
 import pytest
 
-from polycopy.remote_control.auth import RateLimiter, TOTPGuard
+from polycopy.monitoring.dtos import Alert
+from polycopy.remote_control import SentinelFile
+from polycopy.remote_control.auth import AutoLockdown, RateLimiter, TOTPGuard
 
 _SECRET = "JBSWY3DPEHPK3PXP"  # base32 16-chars
 
@@ -273,3 +277,176 @@ def test_rate_limiter_uses_monotonic_by_default() -> None:
     assert limiter.allow(ip) is False
     # Pas de sleep → le 3e reste refusé (la fenêtre 60s est toujours ouverte).
     _ = time  # silence unused import — time est utilisé indirectement via monotonic
+
+
+# ===========================================================================
+# AutoLockdown (§4.4.5)
+# ===========================================================================
+
+
+def _lockdown(
+    tmp_path: Path,
+    *,
+    alerts_queue: asyncio.Queue[Alert] | None = None,
+    max_failures: int = 3,
+    clock_start: float = 0.0,
+) -> tuple[AutoLockdown, SentinelFile, _FakeClock]:
+    sentinel = SentinelFile(tmp_path / "halt.flag")
+    clock = _FakeClock(start=clock_start)
+    lockdown = AutoLockdown(
+        sentinel=sentinel,
+        alerts_queue=alerts_queue,
+        max_failures=max_failures,
+        window_seconds=60.0,
+        clock=clock.now,
+    )
+    return lockdown, sentinel, clock
+
+
+# ---------------------------------------------------------------------------
+# Construction invalide
+# ---------------------------------------------------------------------------
+
+
+def test_autolockdown_rejects_invalid_max_failures(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_failures"):
+        AutoLockdown(sentinel=SentinelFile(tmp_path / "h.flag"), max_failures=0)
+
+
+def test_autolockdown_rejects_invalid_window(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="window_seconds"):
+        AutoLockdown(sentinel=SentinelFile(tmp_path / "h.flag"), window_seconds=0.0)
+
+
+# ---------------------------------------------------------------------------
+# is_locked
+# ---------------------------------------------------------------------------
+
+
+def test_is_locked_false_initially(tmp_path: Path) -> None:
+    lockdown, _, _ = _lockdown(tmp_path)
+    assert lockdown.is_locked is False
+
+
+def test_is_locked_true_if_preexisting_sentinel(tmp_path: Path) -> None:
+    """Si le sentinel existe déjà au boot → ``is_locked`` lu depuis le FS."""
+    sentinel = SentinelFile(tmp_path / "halt.flag")
+    sentinel.touch(reason="previous_run_kill_switch")
+    lockdown = AutoLockdown(sentinel=sentinel)
+    assert lockdown.is_locked is True
+
+
+# ---------------------------------------------------------------------------
+# 3-strikes triggering
+# ---------------------------------------------------------------------------
+
+
+def test_record_failure_below_threshold_returns_false(tmp_path: Path) -> None:
+    lockdown, sentinel, _ = _lockdown(tmp_path, max_failures=3)
+    assert lockdown.record_failure("100.64.0.10") is False
+    assert lockdown.record_failure("100.64.0.10") is False
+    assert sentinel.exists() is False
+    assert lockdown.is_locked is False
+
+
+def test_third_failure_triggers_lockdown(tmp_path: Path) -> None:
+    lockdown, sentinel, _ = _lockdown(tmp_path, max_failures=3)
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.10")
+    assert lockdown.record_failure("100.64.0.10") is True  # 3e = lockdown
+    assert sentinel.exists() is True
+    assert sentinel.reason() == "auto_lockdown_brute_force"
+    assert lockdown.is_locked is True
+
+
+def test_failures_outside_window_dont_trigger(tmp_path: Path) -> None:
+    """Échecs >60s avant n'accumulent pas — fenêtre glissante correcte."""
+    lockdown, sentinel, clock = _lockdown(tmp_path, max_failures=3)
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.10")
+    clock.tick(61.0)  # les 2 entries précédentes sortent de la fenêtre
+    assert lockdown.record_failure("100.64.0.10") is False  # compteur effectif = 1
+    assert sentinel.exists() is False
+
+
+def test_failures_from_different_ips_both_count(tmp_path: Path) -> None:
+    """Lockdown est par-IP, mais 3 IPs différentes N'ACCUMULENT PAS
+    un failure count global — chaque IP a son propre compteur.
+    """
+    lockdown, sentinel, _ = _lockdown(tmp_path, max_failures=3)
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.20")
+    lockdown.record_failure("100.64.0.30")
+    # Chaque IP a seulement 1 failure, aucune atteint le seuil.
+    assert sentinel.exists() is False
+
+
+# ---------------------------------------------------------------------------
+# record_success → reset du compteur
+# ---------------------------------------------------------------------------
+
+
+def test_success_resets_failure_count(tmp_path: Path) -> None:
+    lockdown, sentinel, _ = _lockdown(tmp_path, max_failures=3)
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_success("100.64.0.10")
+    # Le compteur est reset → 3 nouveaux échecs nécessaires.
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.10")
+    assert sentinel.exists() is False
+    assert lockdown.record_failure("100.64.0.10") is True  # 3e après reset
+
+
+# ---------------------------------------------------------------------------
+# Alert Telegram émise sur lockdown
+# ---------------------------------------------------------------------------
+
+
+def test_lockdown_emits_telegram_alert(tmp_path: Path) -> None:
+    queue: asyncio.Queue[Alert] = asyncio.Queue(maxsize=10)
+    lockdown, _, _ = _lockdown(tmp_path, alerts_queue=queue, max_failures=2)
+    lockdown.record_failure("100.64.0.10")
+    lockdown.record_failure("100.64.0.10")
+    assert queue.qsize() == 1
+    alert = queue.get_nowait()
+    assert alert.event == "remote_control_brute_force_detected"
+    assert alert.level == "CRITICAL"
+    assert "100.64.0.10" in alert.body
+    assert alert.cooldown_key == "remote_control_brute_force"
+
+
+def test_lockdown_works_without_alerts_queue(tmp_path: Path) -> None:
+    """``alerts_queue=None`` : lockdown se déclenche mais sans alerte Telegram."""
+    lockdown, sentinel, _ = _lockdown(tmp_path, alerts_queue=None, max_failures=1)
+    lockdown.record_failure("100.64.0.10")
+    assert sentinel.exists() is True
+
+
+def test_lockdown_alert_queue_full_does_not_crash(tmp_path: Path) -> None:
+    """Queue pleine → `put_nowait` raise `QueueFull` → loggé mais le
+    lockdown reste effectif (sentinel posé)."""
+    queue: asyncio.Queue[Alert] = asyncio.Queue(maxsize=1)
+    queue.put_nowait(Alert(level="INFO", event="filler", body="x"))
+    lockdown, sentinel, _ = _lockdown(tmp_path, alerts_queue=queue, max_failures=1)
+    # Ne doit PAS raise.
+    lockdown.record_failure("100.64.0.10")
+    assert sentinel.exists() is True
+
+
+# ---------------------------------------------------------------------------
+# Secret TOTP ne fuite PAS dans les alertes / logs
+# ---------------------------------------------------------------------------
+
+
+def test_lockdown_alert_body_contains_no_secret(tmp_path: Path) -> None:
+    """Règle CLAUDE.md : le secret TOTP ne doit JAMAIS apparaître dans
+    les alertes (même pas le hash, même pas tronqué)."""
+    queue: asyncio.Queue[Alert] = asyncio.Queue(maxsize=10)
+    lockdown, _, _ = _lockdown(tmp_path, alerts_queue=queue, max_failures=1)
+    lockdown.record_failure("100.64.0.10")
+    alert = queue.get_nowait()
+    # Aucune des 3 séquences suivantes ne doit apparaître dans l'alerte :
+    assert "JBSWY3DPEHPK3PXP" not in alert.body
+    assert "secret" not in alert.body.lower()
+    assert "base32" not in alert.body.lower()

@@ -144,6 +144,16 @@ class Settings(BaseSettings):
             "loggé ni committé. Rotation trimestrielle."
         ),
     )
+    remote_control_sentinel_path: str = Field(
+        "~/.polycopy/halt.flag",
+        description=(
+            "Chemin du sentinel file M12_bis (§5.2). Touché par "
+            "AutoLockdown + PnlSnapshotWriter (Phase D) + `/stop`. "
+            "Expansion `~` → home dir utilisateur au boot. Permissions "
+            "strict 0o600 (fichier) + 0o700 (parent). Override utile "
+            "pour tests intégration."
+        ),
+    )
 
     @field_validator("remote_control_totp_secret")
     @classmethod
