@@ -18,7 +18,7 @@ est construite dans le même ordre, avec les mêmes opt-ins
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from polycopy.dashboard.orchestrator import DashboardOrchestrator
 from polycopy.discovery.orchestrator import DiscoveryOrchestrator
@@ -45,6 +45,9 @@ class HasRunForever(Protocol):
     async def run_forever(self, stop_event: asyncio.Event) -> None: ...
 
 
+BootMode = Literal["normal", "paused"]
+
+
 def build_orchestrators(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -52,10 +55,11 @@ def build_orchestrators(
     detected_trades_queue: asyncio.Queue[DetectedTradeDTO],
     approved_orders_queue: asyncio.Queue[OrderApproved],
     alerts_queue: asyncio.Queue[Alert],
+    mode: BootMode = "normal",
 ) -> list[HasRunForever]:
-    """Construit la liste ordonnée des orchestrateurs (mode normal).
+    """Construit la liste ordonnée des orchestrateurs selon ``mode``.
 
-    Ordre retenu (cohérent M9..M12) :
+    **Mode ``normal``** (spec §4.2) — stack complet :
     1. ``WatcherOrchestrator`` — détection trades on-chain.
     2. ``StrategyOrchestrator`` — filtres + sizing + risk.
     3. ``ExecutorOrchestrator`` — peut ``RuntimeError`` au __init__ si
@@ -67,7 +71,29 @@ def build_orchestrators(
     8. ``RemoteControlOrchestrator`` (opt-in ``REMOTE_CONTROL_ENABLED``) —
        instancié en dernier mais **avant** le TaskGroup pour que
        ``RemoteControlBootError`` (Tailscale absent, etc.) remonte clair.
+
+    **Mode ``paused``** (M12_bis Phase D §4.2) — stack réduit :
+    - ``MonitoringOrchestrator`` avec ``paused=True`` (PnlSnapshotWriter
+      + DailySummaryScheduler désactivés, heartbeat conservé).
+    - ``DashboardOrchestrator`` (si enabled) — utile pour inspecter PnL
+      + traders avant ``/resume``.
+    - ``RemoteControlOrchestrator`` (si enabled) — **mandatory** pour
+      pouvoir servir ``/resume`` depuis le téléphone.
+    - Watcher/Strategy/Executor/Discovery/LatencyPurge **exclus** (pas
+      de trading en paused, pas de re-trigger kill switch).
     """
+    if mode == "paused":
+        paused_list: list[HasRunForever] = [
+            MonitoringOrchestrator(session_factory, settings, alerts_queue, paused=True),
+        ]
+        if settings.dashboard_enabled:
+            paused_list.append(DashboardOrchestrator(session_factory, settings))
+        if settings.remote_control_enabled:
+            paused_list.append(
+                RemoteControlOrchestrator(settings, alerts_queue=alerts_queue),
+            )
+        return paused_list
+
     orchestrators: list[HasRunForever] = [
         WatcherOrchestrator(
             session_factory,

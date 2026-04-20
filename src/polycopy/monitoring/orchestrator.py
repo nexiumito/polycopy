@@ -44,17 +44,31 @@ _SHUTDOWN_SEND_TIMEOUT_SECONDS: float = 3.0
 
 
 class MonitoringOrchestrator:
-    """Co-lance writer + dispatcher + (startup, heartbeat, daily) selon settings."""
+    """Co-lance writer + dispatcher + (startup, heartbeat, daily) selon settings.
+
+    M12_bis Phase D : flag ``paused`` (opt-in au __init__) — quand le runner
+    a détecté ``~/.polycopy/halt.flag`` au boot, l'orchestrateur réduit
+    son périmètre :
+    - ``PnlSnapshotWriter`` : **OFF** (pas de re-trigger kill switch, le
+      sentinel est déjà posé).
+    - ``DailySummaryScheduler`` : **OFF** (pas de trades ni décisions à
+      résumer en paused).
+    - ``AlertDispatcher``, ``StartupNotifier``, ``HeartbeatScheduler`` :
+      **ON** (nécessaires pour alerter l'utilisateur de l'état paused).
+    """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
         alerts_queue: asyncio.Queue[Alert],
+        *,
+        paused: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._alerts = alerts_queue
+        self._paused = paused
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle principale : tous les schedulers jusqu'à ``stop_event.set()``."""
@@ -109,11 +123,15 @@ class MonitoringOrchestrator:
                 heartbeat=self._settings.telegram_heartbeat_enabled,
                 daily_summary=self._settings.telegram_daily_summary,
                 execution_mode=self._settings.execution_mode,
+                paused=self._paused,
             )
 
             try:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(writer.run(stop_event))
+                    # M12_bis Phase D : en paused, pas de PnlSnapshotWriter
+                    # (évite re-trigger kill switch) ni DailySummaryScheduler.
+                    if not self._paused:
+                        tg.create_task(writer.run(stop_event))
                     tg.create_task(dispatcher.run(stop_event))
                     if self._settings.telegram_startup_message:
                         startup = StartupNotifier(
@@ -132,7 +150,7 @@ class MonitoringOrchestrator:
                             dispatcher,
                         )
                         tg.create_task(heartbeat.run(stop_event))
-                    if self._settings.telegram_daily_summary:
+                    if self._settings.telegram_daily_summary and not self._paused:
                         daily = DailySummaryScheduler(
                             self._session_factory,
                             telegram,

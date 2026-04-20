@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+from typing import Literal
 
 import structlog
 
@@ -26,6 +27,7 @@ from polycopy.cli.status_screen import (
 from polycopy.cli.version import get_version
 from polycopy.config import legacy_dry_run_detected, settings
 from polycopy.monitoring.dtos import Alert
+from polycopy.remote_control.sentinel import SentinelFile
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.engine import create_engine_and_session
 from polycopy.storage.init_db import init_db
@@ -138,15 +140,25 @@ async def _async_main() -> None:
         stop_event = asyncio.Event()
         _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
-        # M12_bis Phase D (refactor) : construction des orchestrateurs
-        # déplacée dans `cli/boot.py::build_orchestrators` — testable
-        # unitairement sans `asyncio.run`. Comportement identique M12.
+        # M12_bis Phase D §4.2 : détection sentinel `~/.polycopy/halt.flag`
+        # au boot → bifurcation running/paused. Le sentinel peut être posé
+        # par `/stop` (Phase C), le kill switch M4 (Phase D commit #4), ou
+        # l'auto-lockdown brute-force (Phase C).
+        sentinel = SentinelFile(settings.remote_control_sentinel_path)
+        boot_mode: Literal["normal", "paused"] = "paused" if sentinel.exists() else "normal"
+        log.info(
+            "polycopy_boot_mode",
+            mode=boot_mode,
+            halt_reason=sentinel.reason() if boot_mode == "paused" else None,
+        )
+
         orchestrators = build_orchestrators(
             session_factory=session_factory,
             settings=settings,
             detected_trades_queue=detected_trades_queue,
             approved_orders_queue=approved_orders_queue,
             alerts_queue=alerts_queue,
+            mode=boot_mode,
         )
 
         try:
