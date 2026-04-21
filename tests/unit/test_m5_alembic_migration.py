@@ -79,7 +79,13 @@ def test_upgrade_head_creates_m5_tables_and_columns(tmp_path: Path) -> None:
 
 
 def test_backfill_pinned_for_existing_active_trader(tmp_path: Path) -> None:
-    """Un trader pré-M5 avec active=1 doit devenir pinned + status='pinned'."""
+    """Un trader pré-M5 avec active=1 doit devenir pinned + status='pinned'.
+
+    Ce test cible explicitement la révision 0003_m5_discovery (pas head),
+    parce que les migrations ultérieures (0007 M5_bis) convertissent les
+    paused en shadow, ce qui invaliderait l'assertion sur 0xinactive.
+    Le comportement M5 de la migration 0003 reste inchangé.
+    """
     project_root = Path(__file__).resolve().parents[2]
     db_path = tmp_path / "backfill.db"
     cfg = _make_config(db_path, project_root)
@@ -108,8 +114,8 @@ def test_backfill_pinned_for_existing_active_trader(tmp_path: Path) -> None:
     finally:
         engine.dispose()
 
-    # 3) Appliquer 0003 → backfill doit courir.
-    command.upgrade(cfg, "head")
+    # 3) Appliquer 0003 (pas head) → backfill M5 doit courir, point.
+    command.upgrade(cfg, "0003_m5_discovery")
 
     engine = create_engine(f"sqlite:///{db_path}")
     try:
