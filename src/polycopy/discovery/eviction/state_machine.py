@@ -103,6 +103,10 @@ def classify_sell_only_transitions(
             )
 
         abort_triggered = False
+        # ``abort_in_progress`` : delta < margin ce cycle, hystérésis pas
+        # encore complète. Empêche T8 de tirer prématurément et de reset
+        # le compteur abort (cf. EC-1 priorité T6 > T8).
+        abort_in_progress = False
         if triggering is not None and triggering_score is not None:
             delta = triggering_score - self_score
             if delta < inputs.score_margin:
@@ -130,6 +134,8 @@ def classify_sell_only_transitions(
                     )
                     tracker.reset(wallet)
                     abort_triggered = True
+                else:
+                    abort_in_progress = True
             else:
                 # Delta ≥ margin : reset compteur abort (la condition
                 # n'est plus remplie ce cycle).
@@ -140,10 +146,12 @@ def classify_sell_only_transitions(
         if abort_triggered:
             continue
 
-        # T8 complete_to_shadow : positions_open == 0 et pas d'abort
-        # déclenché. On ne tick pas d'hystérésis ici — la condition est
-        # atomique (soit 0 positions, soit non).
-        if sell_only.open_positions_count == 0:
+        # T8 complete_to_shadow : positions_open == 0 ET aucune hystérésis
+        # abort en cours. On ne tick pas d'hystérésis pour T8 lui-même
+        # (la condition positions=0 est atomique), mais on respecte la
+        # priorité EC-1 en différant T8 tant qu'un abort est armé
+        # partiellement.
+        if sell_only.open_positions_count == 0 and not abort_in_progress:
             decisions.append(
                 EvictionDecision(
                     wallet_address=wallet,
