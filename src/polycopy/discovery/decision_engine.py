@@ -1,4 +1,4 @@
-"""Decision engine M5.
+"""Decision engine M5 + M5_bis.
 
 Règles déterministes (spec §7.5) sur un wallet × son score × son statut courant :
 
@@ -7,8 +7,10 @@ Règles déterministes (spec §7.5) sur un wallet × son score × son statut cou
   si TRADER_SHADOW_DAYS=0 ET DISCOVERY_SHADOW_BYPASS=true).
 - wallet pinned → TOUJOURS keep (jamais demote).
 - wallet shadow + days écoulés + score OK + cap OK → promote_active.
-- wallet active + score < demote + K cycles → demote_paused (hystérésis).
-- wallet paused + score remonté → revived_shadow (réinjection observation).
+- wallet active + score < demote + K cycles → **demote_shadow** (M5_bis Phase C :
+  ex-``demote_paused`` fusionné avec shadow + flag UX ``previously_demoted_at``).
+- wallet sell_only → keep (transitions T6/T7/T8 pilotées par EvictionScheduler).
+- wallet blacklisted → keep (transitions T11/T12 pilotées par reconcile_blacklist).
 
 Toutes les décisions sont retournées en `DiscoveryDecision` — le caller
 (orchestrator) est responsable de l'insert `trader_events` + émission alerts.
@@ -164,8 +166,54 @@ class DecisionEngine:
         if current.status == "active":
             return await self._decide_active(current, score, version)
 
+        if current.status == "sell_only":
+            # M5_bis : lifecycle sell_only piloté par EvictionScheduler
+            # (T6 abort, T7 rebound, T8 complete). DecisionEngine garde
+            # le wallet tel quel pour le cycle courant ; score est
+            # quand même écrit dans `trader_scores` par l'orchestrator.
+            return DiscoveryDecision(
+                wallet_address=wallet,
+                decision="keep",
+                from_status="sell_only",
+                to_status="sell_only",
+                score_at_event=score,
+                scoring_version=version,
+                reason="sell_only lifecycle managed by EvictionScheduler (M5_bis)",
+            )
+
+        if current.status == "blacklisted":
+            # M5_bis : terminal. Transitions T10/T11/T12 via
+            # reconcile_blacklist, pas via DecisionEngine.
+            return DiscoveryDecision(
+                wallet_address=wallet,
+                decision="keep",
+                from_status="blacklisted",
+                to_status="blacklisted",
+                score_at_event=score,
+                scoring_version=version,
+                reason="blacklisted (managed by reconcile_blacklist)",
+            )
+
         if current.status == "paused":
-            return await self._decide_paused(current, score, version, active_count)
+            # Compat defensive : la migration 0007 M5_bis convertit tous
+            # les paused existants en shadow. Si un wallet se retrouve
+            # en paused (downgrade DB, seed manuel), on le laisse
+            # tranquille ce cycle — le prochain alembic upgrade nettoie.
+            log.warning(
+                "decision_engine_paused_status_defensive_keep",
+                wallet=wallet,
+                score=score,
+                hint="migration 0007 should have converted paused to shadow",
+            )
+            return DiscoveryDecision(
+                wallet_address=wallet,
+                decision="keep",
+                from_status="paused",
+                to_status="paused",
+                score_at_event=score,
+                scoring_version=version,
+                reason="paused (legacy M5, expected to be cleaned by migration 0007)",
+            )
 
         # Fallback défensif : status inconnu
         log.warning("decision_engine_unknown_status", wallet=wallet, status=current.status)
@@ -263,22 +311,27 @@ class DecisionEngine:
         # Sous le seuil : incrément hystérésis
         new_count = await self._target_repo.increment_low_score(wallet)
         if new_count >= cfg.scoring_demotion_hysteresis_cycles:
+            now = datetime.now(tz=UTC)
             await self._target_repo.transition_status(
                 wallet,
-                new_status="paused",
+                new_status="shadow",
                 reset_hysteresis=True,
             )
+            # M5_bis Phase C : flag UX pour distinguer un shadow
+            # "re-observation après demote" d'un shadow "découvert neuf".
+            await self._target_repo.set_previously_demoted_at(wallet, at=now)
             log.warning(
                 "trader_demoted",
                 wallet=wallet,
                 score=score,
                 cycles_under_threshold=new_count,
+                to_status="shadow",
             )
             return DiscoveryDecision(
                 wallet_address=wallet,
-                decision="demote_paused",
+                decision="demote_shadow",
                 from_status="active",
-                to_status="paused",
+                to_status="shadow",
                 score_at_event=score,
                 scoring_version=version,
                 reason=f"{new_count} cycles under {cfg.scoring_demotion_threshold:.2f}",
@@ -296,44 +349,6 @@ class DecisionEngine:
                 f"(score {score:.2f})"
             ),
             event_metadata={"cycles_under_threshold": new_count},
-        )
-
-    async def _decide_paused(
-        self,
-        current: TargetTrader,
-        score: float,
-        version: str,
-        active_count: int,
-    ) -> DiscoveryDecision:
-        cfg = self._settings
-        wallet = current.wallet_address
-        # Revival : si score remonte au-dessus du seuil de promotion, re-inject
-        # en shadow (ré-observation, pas de promotion immédiate).
-        if score >= cfg.scoring_promotion_threshold:
-            await self._target_repo.transition_status(
-                wallet,
-                new_status="shadow",
-                reset_hysteresis=True,
-            )
-            log.info("trader_revived_shadow", wallet=wallet, score=score)
-            return DiscoveryDecision(
-                wallet_address=wallet,
-                decision="revived_shadow",
-                from_status="paused",
-                to_status="shadow",
-                score_at_event=score,
-                scoring_version=version,
-                reason=f"paused → shadow on score {score:.2f}",
-            )
-        del active_count  # non utilisé dans la branche paused
-        return DiscoveryDecision(
-            wallet_address=wallet,
-            decision="keep",
-            from_status="paused",
-            to_status="paused",
-            score_at_event=score,
-            scoring_version=version,
-            reason=f"paused, score {score:.2f} < promotion",
         )
 
     async def _push_cap_alert(self, wallet: str, score: float) -> None:

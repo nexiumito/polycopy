@@ -201,11 +201,13 @@ async def fetch_home_kpis(
         discovery_last_cycle_at=last_cycle,
         discovery_cycles_24h=discovery_cycles_24h,
         discovery_promotions_24h=int(events_24h.get("promoted_active", 0)),
-        discovery_demotions_24h=int(events_24h.get("demoted_paused", 0)),
+        discovery_demotions_24h=int(events_24h.get("demoted_paused", 0))
+        + int(events_24h.get("demoted_to_shadow", 0)),
         discovery_shadow_count=int(status_counts.get("shadow", 0)),
         discovery_active_count=int(status_counts.get("active", 0))
         + int(status_counts.get("pinned", 0)),
-        discovery_paused_count=int(status_counts.get("paused", 0)),
+        discovery_paused_count=int(status_counts.get("paused", 0))
+        + int(status_counts.get("sell_only", 0)),
     )
 
 
@@ -611,7 +613,8 @@ async def get_discovery_status(
         pinned_count=int(counts.get("pinned", 0)),
         last_cycle_at=last_cycle,
         promotions_24h=int(events_24h.get("promoted_active", 0)),
-        demotions_24h=int(events_24h.get("demoted_paused", 0)),
+        demotions_24h=int(events_24h.get("demoted_paused", 0))
+        + int(events_24h.get("demoted_to_shadow", 0)),
     )
 
 

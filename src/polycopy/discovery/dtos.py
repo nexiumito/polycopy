@@ -20,7 +20,8 @@ DiscoverySource = Literal[
 DecisionKind = Literal[
     "discovered_shadow",
     "promote_active",
-    "demote_paused",
+    "demote_paused",  # deprecated M5_bis Phase C : remplacé par demote_shadow
+    "demote_shadow",  # M5_bis : active → shadow (fusion avec previously_demoted_at)
     "keep",
     "skip_blacklist",
     "skip_cap",

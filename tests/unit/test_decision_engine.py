@@ -196,10 +196,11 @@ async def test_active_under_threshold_two_cycles_no_demote(
     assert cur.consecutive_low_score_cycles == 2
 
 
-async def test_active_under_threshold_three_cycles_demotes(
+async def test_active_under_threshold_three_cycles_demotes_to_shadow(
     target_trader_repo: TargetTraderRepository,
     alerts_queue: asyncio.Queue[Alert],
 ) -> None:
+    """M5_bis Phase C : la demote active → shadow (ex-paused) + previously_demoted_at."""
     await target_trader_repo.insert_shadow("0xout")
     await target_trader_repo.transition_status("0xout", new_status="active")
     engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
@@ -211,35 +212,76 @@ async def test_active_under_threshold_three_cycles_demotes(
         )
     assert decisions[0].decision == "keep"
     assert decisions[1].decision == "keep"
-    assert decisions[2].decision == "demote_paused"
+    assert decisions[2].decision == "demote_shadow"
+    assert decisions[2].to_status == "shadow"
     after = await target_trader_repo.get("0xout")
-    assert after is not None and after.status == "paused"
+    assert after is not None
+    assert after.status == "shadow"
     assert after.consecutive_low_score_cycles == 0  # reset après demote
+    assert after.previously_demoted_at is not None  # flag UX M5_bis
 
 
-async def test_paused_with_high_score_revives_shadow(
+async def test_paused_legacy_defensive_keep(
     target_trader_repo: TargetTraderRepository,
     alerts_queue: asyncio.Queue[Alert],
 ) -> None:
-    await target_trader_repo.insert_shadow("0xback")
-    await target_trader_repo.transition_status("0xback", new_status="active")
-    await target_trader_repo.transition_status("0xback", new_status="paused")
-    engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
-    cur = await target_trader_repo.get("0xback")
-    d = await engine.decide(_scoring("0xback", 0.85), cur, active_count=3)
-    assert d.decision == "revived_shadow"
-    assert d.to_status == "shadow"
+    """Compat : un wallet en status='paused' (legacy / downgrade) reste keep.
 
-
-async def test_paused_low_score_stays_paused(
-    target_trader_repo: TargetTraderRepository,
-    alerts_queue: asyncio.Queue[Alert],
-) -> None:
-    await target_trader_repo.insert_shadow("0xstill")
-    await target_trader_repo.transition_status("0xstill", new_status="active")
-    await target_trader_repo.transition_status("0xstill", new_status="paused")
+    La migration 0007 convertit les paused → shadow. Si un wallet se retrouve
+    encore en paused (downgrade DB, seed manuel, race), le DecisionEngine le
+    laisse tranquille avec un log WARNING.
+    """
+    await target_trader_repo.insert_shadow("0xlegacy")
+    await target_trader_repo.transition_status("0xlegacy", new_status="active")
+    await target_trader_repo.transition_status("0xlegacy", new_status="paused")
     engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
-    cur = await target_trader_repo.get("0xstill")
-    d = await engine.decide(_scoring("0xstill", 0.20), cur, active_count=3)
+    cur = await target_trader_repo.get("0xlegacy")
+    d = await engine.decide(_scoring("0xlegacy", 0.85), cur, active_count=3)
     assert d.decision == "keep"
+    assert d.from_status == "paused"
     assert d.to_status == "paused"
+
+
+async def test_sell_only_returns_keep(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """M5_bis Phase C : un wallet sell_only reçoit keep de DecisionEngine.
+
+    Le lifecycle sell_only (T6/T7/T8) est piloté par EvictionScheduler, pas
+    par DecisionEngine. DecisionEngine se contente de keep pour ne pas
+    interférer.
+    """
+    await target_trader_repo.insert_shadow("0xsell")
+    await target_trader_repo.transition_status("0xsell", new_status="active")
+    await target_trader_repo.transition_status("0xsell", new_status="sell_only")
+    engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
+    cur = await target_trader_repo.get("0xsell")
+    d = await engine.decide(_scoring("0xsell", 0.85), cur, active_count=3)
+    assert d.decision == "keep"
+    assert d.from_status == "sell_only"
+    assert d.to_status == "sell_only"
+    # Score quand même écrit (trader_scores par l'orchestrator).
+    assert d.score_at_event == 0.85
+
+
+async def test_blacklisted_status_returns_keep(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """M5_bis Phase C : un wallet déjà blacklisted (status='blacklisted') → keep.
+
+    La transition T10/T11/T12 est pilotée par EvictionScheduler.reconcile_blacklist,
+    pas par DecisionEngine. Distinct de skip_blacklist qui s'applique quand
+    BLACKLISTED_WALLETS contient le wallet mais qu'il n'est pas encore en
+    status='blacklisted'.
+    """
+    await target_trader_repo.insert_shadow("0xbl")
+    await target_trader_repo.transition_status_unsafe(
+        "0xbl", new_status="blacklisted",
+    )
+    engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
+    cur = await target_trader_repo.get("0xbl")
+    d = await engine.decide(_scoring("0xbl", 0.99), cur, active_count=3)
+    assert d.decision == "keep"
+    assert d.to_status == "blacklisted"

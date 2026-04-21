@@ -244,7 +244,11 @@ async def _discovery_stats_since(
         counts = {row[0]: int(row[1]) for row in (await session.execute(stmt)).all()}
     cycles = counts.get("cycle_started", 0)
     promotions = counts.get("promoted_active", 0) + counts.get("promoted", 0)
-    demotions = counts.get("demoted_paused", 0) + counts.get("demoted", 0)
+    demotions = (
+        counts.get("demoted_paused", 0)
+        + counts.get("demoted", 0)
+        + counts.get("demoted_to_shadow", 0)
+    )
     cap_reached = counts.get("skipped_cap", 0)
     return cycles, promotions, demotions, cap_reached
 

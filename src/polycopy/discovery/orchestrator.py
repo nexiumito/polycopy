@@ -70,7 +70,8 @@ log = structlog.get_logger(__name__)
 _DECISION_TO_EVENT_TYPE = {
     "discovered_shadow": "discovered",
     "promote_active": "promoted_active",
-    "demote_paused": "demoted_paused",
+    "demote_paused": "demoted_paused",  # legacy : jamais produit par M5_bis
+    "demote_shadow": "demoted_to_shadow",  # M5_bis : fusion avec shadow + flag UX
     "keep": "kept",
     "skip_blacklist": "skipped_blacklist",
     "skip_cap": "skipped_cap",
@@ -384,7 +385,7 @@ class DiscoveryOrchestrator:
                     promotions += 1
                     active_count += 1
                     await self._push_promoted_alert(wallet, pilot_score)
-                elif decision.decision == "demote_paused":
+                elif decision.decision in ("demote_paused", "demote_shadow"):
                     demotions += 1
                     active_count -= 1
                     await self._push_demoted_alert(wallet, pilot_score)
