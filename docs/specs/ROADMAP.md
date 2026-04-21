@@ -18,6 +18,7 @@ Référence de conception : [`docs/development/M10_synthesis_reference.md`](../d
 | M7 | Telegram enhanced (Jinja2 + scheduler) | ✅ shipped | `11093b1` |
 | M8 | Dry-run realistic fill (FOK orderbook) | ✅ shipped | `e6ce6ac` |
 | M9 | Silent CLI + /logs tab + README | ✅ shipped | `026f61c` |
+| M5_bis | Competitive eviction (shadow/active/sell_only compétitif) | ✅ shipped | `feat/m5bis` |
 
 ## Jalons à venir (M10 → M16)
 
