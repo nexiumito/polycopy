@@ -572,12 +572,12 @@ Concurrents retenus à partir des sources citées dans [docs/development/](docs/
 
 ### Option 1 — Backtest sur seed public
 
-Le fichier [`specs/m5_backtest_seed.txt`](specs/m5_backtest_seed.txt) contient **~50 vraies adresses publiques** documentées, prêtes à passer dans le scoring v1. Génère un rapport HTML classé par corrélation score ↔ ROI observé :
+Le fichier [`docs/specs/m5_backtest_seed.txt`](docs/specs/m5_backtest_seed.txt) contient **~50 vraies adresses publiques** documentées, prêtes à passer dans le scoring v1. Génère un rapport HTML classé par corrélation score ↔ ROI observé :
 
 ```bash
 source .venv/bin/activate
 python scripts/score_backtest.py \
-  --wallets-file specs/m5_backtest_seed.txt \
+  --wallets-file docs/specs/m5_backtest_seed.txt \
   --as-of 2026-01-15 \
   --observe-days 30 \
   --output backtest_v1_report.html
@@ -712,7 +712,7 @@ Pitch & setup utilisateur : section [Pilote tes bots depuis ton téléphone](#pi
 
 Règle de dépendance : `watcher` → `storage`, `strategy` → `storage`, `executor` → `storage`. Aucun module ne dépend d'un autre module fonctionnel directement, tout passe par la DB ou par des events asyncio. Le `__main__` orchestre.
 
-Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [specs/](specs/).
+Détail technique : [docs/architecture.md](docs/architecture.md). Conventions de code : [CLAUDE.md](CLAUDE.md). Specs par milestone : [docs/specs/](docs/specs/).
 
 ---
 
@@ -957,14 +957,14 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 
 ### Suite (idées, pas engagement)
 
-Ordre optimisé pour que chaque milestone débloque ou prépare le terrain du suivant (cf. [`specs/ROADMAP.md`](specs/ROADMAP.md)) :
+Ordre optimisé pour que chaque milestone débloque ou prépare le terrain du suivant (cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) :
 
 - [ ] **M13** — **Taker fees dynamiques** (priorité 🟡, effort S 2-3 j, dépend de M11). Endpoint `GET /fee-rate?tokenID=` intégré au `Sizer.calculate()` EV. Cache TTL 60 s. Protège l'EV face à l'évolution tarifaire Polymarket sur crypto/sports rapides.
 - [ ] **M14** — **Real-time pipeline phase 2** (priorité 🟢 optionnel, effort M 2-4 sem., dépend de M11+M12). Parallélisation strategy pipeline (`asyncio.gather` sur filtres indépendants) + WebSocket `user` channel pour détection on-chain quasi-instantanée. Cible 2-3 s → < 1 s. Déclenche seulement si post-M11 on rate > 10 % d'opportunités.
 - [ ] **M15** — **Goldsky Turbo / Bitquery streaming** (priorité 🟢 optionnel, effort L, dépend de M11). Webhook direct depuis Polygon RPC (~50 ms). Alternative Bitquery Kafka. Justifier par ROI clair avant d'engager.
 - [ ] **M16+** — **MEV defense + market making Avellaneda-Stoikov** (priorité ⚪ futur, effort XL, dépend de M12 validé). Private transactions Polygon (Flashbots-like) quand position size > $500. Market making algorithmique. Nécessite que le scoring v2 ait démontré un edge robuste.
 
-Prompts mis en suspens (MX_, cf. [`specs/ROADMAP.md`](specs/ROADMAP.md)) : watcher live-reload, backtest scheduler quotidien, discovery auto-lockout après 3 fails backtest consécutifs. Repositionnés pour après M12 en rodage.
+Prompts mis en suspens (MX_, cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) : watcher live-reload, backtest scheduler quotidien, discovery auto-lockout après 3 fails backtest consécutifs. Repositionnés pour après M12 en rodage.
 
 ---
 

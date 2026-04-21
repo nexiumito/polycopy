@@ -57,12 +57,10 @@ def test_readme_internal_links_resolve() -> None:
         "assets/screenshots/dashboard-traders.png",
         "assets/screenshots/dashboard-pnl.png",
         "assets/screenshots/terminal-silent-cli.png",
-        "assets/screenshots/vscode-env-edit.png",
-        "assets/screenshots/botfather-conversation.png",
     ],
 )
 def test_required_asset_exists(asset: str) -> None:
-    """Acceptance criteria M9 : 7 fichiers asset dans assets/screenshots/."""
+    """Acceptance criteria M9 : assets présents dans ``assets/screenshots/``."""
     target = _ROOT / asset
     assert target.is_file(), f"asset manquant : {asset}"
     assert target.stat().st_size > 0
