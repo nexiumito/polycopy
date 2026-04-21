@@ -73,9 +73,7 @@ def classify_sell_only_transitions(
     # T6 + T8). On a quand même besoin du worst pour savoir si la
     # condition d'abort (delta < margin) tient.
     active_non_pinned = [
-        t
-        for t in inputs.traders
-        if t.status == "active" and not t.pinned and t.score is not None
+        t for t in inputs.traders if t.status == "active" and not t.pinned and t.score is not None
     ]
 
     for sell_only in [t for t in inputs.traders if t.status == "sell_only"]:
@@ -125,7 +123,8 @@ def classify_sell_only_transitions(
                             to_status="active",
                             score_at_event=self_score,
                             delta_vs_worst_active=_delta_vs_worst(
-                                self_score, active_non_pinned,
+                                self_score,
+                                active_non_pinned,
                             ),
                             triggering_wallet=triggering,
                             cycles_observed=cycles,

@@ -278,7 +278,8 @@ async def test_blacklisted_status_returns_keep(
     """
     await target_trader_repo.insert_shadow("0xbl")
     await target_trader_repo.transition_status_unsafe(
-        "0xbl", new_status="blacklisted",
+        "0xbl",
+        new_status="blacklisted",
     )
     engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
     cur = await target_trader_repo.get("0xbl")

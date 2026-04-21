@@ -451,12 +451,16 @@ class DiscoveryOrchestrator:
                 reconcile_decisions = await eviction_scheduler.reconcile_blacklist()
                 for ev_decision in reconcile_decisions:
                     await self._persist_eviction_event(
-                        event_repo, ev_decision, self._settings,
+                        event_repo,
+                        ev_decision,
+                        self._settings,
                     )
                 cycle_decisions = await eviction_scheduler.run_cycle(scores_by_wallet)
                 for ev_decision in cycle_decisions:
                     await self._persist_eviction_event(
-                        event_repo, ev_decision, self._settings,
+                        event_repo,
+                        ev_decision,
+                        self._settings,
                     )
                 eviction_applied = len(reconcile_decisions) + len(cycle_decisions)
             except Exception:

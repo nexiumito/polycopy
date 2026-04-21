@@ -172,8 +172,7 @@ async def test_partial_failure_middle_batch_414(
             side_effect=lambda request: httpx.Response(
                 200,
                 json=[
-                    _market_row(c, "Sports")
-                    for c in request.url.params["condition_ids"].split(",")
+                    _market_row(c, "Sports") for c in request.url.params["condition_ids"].split(",")
                 ],
             ),
         )

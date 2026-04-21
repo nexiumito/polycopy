@@ -108,7 +108,9 @@ class EvictionScheduler:
 
         # Étape 1 : classifier les sell_only (T6 / T8).
         sell_only_decisions = classify_sell_only_transitions(
-            inputs, self._hysteresis, blacklist=blacklist_lc,
+            inputs,
+            self._hysteresis,
+            blacklist=blacklist_lc,
         )
         decisions.extend(sell_only_decisions)
 
@@ -309,10 +311,14 @@ class EvictionScheduler:
 
         if decision.transition == "demote_to_sell_only":
             await self._target_repo.transition_status(
-                wallet, new_status="sell_only", reset_hysteresis=True,
+                wallet,
+                new_status="sell_only",
+                reset_hysteresis=True,
             )
             await self._target_repo.set_eviction_state(
-                wallet, entered_at=now, triggering_wallet=decision.triggering_wallet,
+                wallet,
+                entered_at=now,
+                triggering_wallet=decision.triggering_wallet,
             )
             return
 
@@ -326,19 +332,26 @@ class EvictionScheduler:
                 "shadow" if decision.transition == "complete_to_shadow" else "active"
             )
             await self._target_repo.transition_status(
-                wallet, new_status=target_status, reset_hysteresis=True,
+                wallet,
+                new_status=target_status,
+                reset_hysteresis=True,
             )
             await self._target_repo.set_eviction_state(
-                wallet, entered_at=None, triggering_wallet=None,
+                wallet,
+                entered_at=None,
+                triggering_wallet=None,
             )
             return
 
         if decision.transition == "blacklist":
             await self._target_repo.transition_status_unsafe(
-                wallet, new_status="blacklisted",
+                wallet,
+                new_status="blacklisted",
             )
             await self._target_repo.set_eviction_state(
-                wallet, entered_at=None, triggering_wallet=None,
+                wallet,
+                entered_at=None,
+                triggering_wallet=None,
             )
             return
 
@@ -452,5 +465,3 @@ def _short_body_for(decision: EvictionDecision) -> str:
 # --- Re-exports pour le package __init__ --------------------------------------
 
 __all__ = ["EvictionScheduler"]
-
-

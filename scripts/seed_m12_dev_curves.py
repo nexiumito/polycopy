@@ -66,6 +66,7 @@ def _ensure_migrations_applied(database_url: str) -> None:
     cfg.set_main_option("sqlalchemy.url", sync_url)
     command.upgrade(cfg, "head")
 
+
 _CurvePattern = Literal["growing", "volatile", "mixed"]
 
 

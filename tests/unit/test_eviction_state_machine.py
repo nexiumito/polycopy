@@ -69,7 +69,9 @@ def test_t8_complete_to_shadow_when_positions_zero() -> None:
     scores = {"0xsell": 0.40, "0xcand": 0.80}
     tracker = HysteresisTracker()
     decisions = classify_sell_only_transitions(
-        _inputs(traders, scores), tracker, blacklist=set(),
+        _inputs(traders, scores),
+        tracker,
+        blacklist=set(),
     )
     assert len(decisions) == 1
     d = decisions[0]
@@ -88,7 +90,9 @@ def test_t8_skipped_when_positions_open() -> None:
     scores = {"0xsell": 0.40, "0xcand": 0.80}
     tracker = HysteresisTracker()
     decisions = classify_sell_only_transitions(
-        _inputs(traders, scores), tracker, blacklist=set(),
+        _inputs(traders, scores),
+        tracker,
+        blacklist=set(),
     )
     assert decisions == []
 
@@ -106,12 +110,16 @@ def test_t6_abort_armed_on_delta_below_margin() -> None:
     tracker = HysteresisTracker()
     for _ in range(2):
         decisions = classify_sell_only_transitions(
-            _inputs(traders, scores), tracker, blacklist=set(),
+            _inputs(traders, scores),
+            tracker,
+            blacklist=set(),
         )
         assert decisions == []
     # 3e cycle déclenche.
     decisions = classify_sell_only_transitions(
-        _inputs(traders, scores), tracker, blacklist=set(),
+        _inputs(traders, scores),
+        tracker,
+        blacklist=set(),
     )
     assert len(decisions) == 1
     d = decisions[0]
@@ -130,15 +138,21 @@ def test_t6_abort_reset_when_delta_above_margin() -> None:
     tracker = HysteresisTracker()
     # 2 cycles under
     classify_sell_only_transitions(
-        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.55}), tracker, blacklist=set(),
+        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.55}),
+        tracker,
+        blacklist=set(),
     )
     classify_sell_only_transitions(
-        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.55}), tracker, blacklist=set(),
+        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.55}),
+        tracker,
+        blacklist=set(),
     )
     assert tracker.count("0xsell") == 2
     # Cycle 3 : delta repasse au-dessus margin → reset.
     decisions = classify_sell_only_transitions(
-        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.80}), tracker, blacklist=set(),
+        _inputs(traders, {"0xsell": 0.50, "0xcand": 0.80}),
+        tracker,
+        blacklist=set(),
     )
     assert decisions == []
     assert tracker.count("0xsell") == 0
@@ -158,10 +172,14 @@ def test_ec1_priority_abort_over_complete() -> None:
     tracker = HysteresisTracker()
     for _ in range(2):
         classify_sell_only_transitions(
-            _inputs(traders, scores), tracker, blacklist=set(),
+            _inputs(traders, scores),
+            tracker,
+            blacklist=set(),
         )
     decisions = classify_sell_only_transitions(
-        _inputs(traders, scores), tracker, blacklist=set(),
+        _inputs(traders, scores),
+        tracker,
+        blacklist=set(),
     )
     # Une seule décision — l'abort. Pas de complete en doublon.
     assert len(decisions) == 1
@@ -176,7 +194,9 @@ def test_sell_only_without_triggering_only_t8_path() -> None:
     traders = [_snap("0xsell", "sell_only", 0.40, triggering=None, open_positions=0)]
     tracker = HysteresisTracker()
     decisions = classify_sell_only_transitions(
-        _inputs(traders, {"0xsell": 0.40}), tracker, blacklist=set(),
+        _inputs(traders, {"0xsell": 0.40}),
+        tracker,
+        blacklist=set(),
     )
     # T8 déclenche quand même (positions=0).
     assert len(decisions) == 1
@@ -193,7 +213,9 @@ def test_sell_only_in_blacklist_is_skipped() -> None:
     ]
     tracker = HysteresisTracker()
     decisions = classify_sell_only_transitions(
-        _inputs(traders, {"0xsell": 0.40}), tracker, blacklist={"0xsell"},
+        _inputs(traders, {"0xsell": 0.40}),
+        tracker,
+        blacklist={"0xsell"},
     )
     assert decisions == []
 
@@ -211,7 +233,9 @@ def test_t10_blacklist_transitions_all_statuses() -> None:
         _snap("0xe", "blacklisted", None),  # déjà blacklisted, skip.
     ]
     decisions = reconcile_blacklist_decisions(
-        traders, blacklist={"0xa", "0xb", "0xc", "0xd", "0xe"}, target_wallets=set(),
+        traders,
+        blacklist={"0xa", "0xb", "0xc", "0xd", "0xe"},
+        target_wallets=set(),
     )
     # 4 nouvelles transitions (pas 0xe qui est déjà blacklisted).
     assert len(decisions) == 4
@@ -224,7 +248,9 @@ def test_t11_unblacklist_to_shadow_when_not_in_target_wallets() -> None:
     """SM-15 — wallet retiré de blacklist ET ∉ target_wallets → shadow."""
     traders = [_snap("0xback", "blacklisted", None)]
     decisions = reconcile_blacklist_decisions(
-        traders, blacklist=set(), target_wallets=set(),
+        traders,
+        blacklist=set(),
+        target_wallets=set(),
     )
     assert len(decisions) == 1
     d = decisions[0]
@@ -237,7 +263,9 @@ def test_t12_unblacklist_to_pinned_when_in_target_wallets() -> None:
     """SM-14 — wallet retiré de blacklist ET ∈ target_wallets → pinned."""
     traders = [_snap("0xback", "blacklisted", None)]
     decisions = reconcile_blacklist_decisions(
-        traders, blacklist=set(), target_wallets={"0xBACK"},  # case-insensitive
+        traders,
+        blacklist=set(),
+        target_wallets={"0xBACK"},  # case-insensitive
     )
     assert len(decisions) == 1
     d = decisions[0]
@@ -249,11 +277,15 @@ def test_reconcile_blacklist_idempotent() -> None:
     """2e appel sans changement blacklist → liste vide."""
     traders = [_snap("0xa", "blacklisted", None)]
     decisions_1 = reconcile_blacklist_decisions(
-        traders, blacklist={"0xa"}, target_wallets=set(),
+        traders,
+        blacklist={"0xa"},
+        target_wallets=set(),
     )
     assert decisions_1 == []  # déjà blacklisted, rien à faire.
     decisions_2 = reconcile_blacklist_decisions(
-        traders, blacklist={"0xa"}, target_wallets=set(),
+        traders,
+        blacklist={"0xa"},
+        target_wallets=set(),
     )
     assert decisions_2 == []
 
@@ -265,7 +297,9 @@ def test_blacklist_case_insensitive_lookup() -> None:
     """Wallet dans blacklist en UPPERCASE → transition déclenchée."""
     traders = [_snap("0xa", "active", 0.70)]
     decisions = reconcile_blacklist_decisions(
-        traders, blacklist={"0xA"}, target_wallets=set(),
+        traders,
+        blacklist={"0xA"},
+        target_wallets=set(),
     )
     assert len(decisions) == 1
     assert decisions[0].transition == "blacklist"
@@ -300,14 +334,18 @@ def test_no_sell_only_in_pool_returns_empty() -> None:
     ]
     tracker = HysteresisTracker()
     decisions = classify_sell_only_transitions(
-        _inputs(traders, {"0xa": 0.70, "0xb": 0.50}), tracker, blacklist=set(),
+        _inputs(traders, {"0xa": 0.70, "0xb": 0.50}),
+        tracker,
+        blacklist=set(),
     )
     assert decisions == []
 
 
 def test_reconcile_empty_pool() -> None:
     decisions = reconcile_blacklist_decisions(
-        [], blacklist={"0xa"}, target_wallets=set(),
+        [],
+        blacklist={"0xa"},
+        target_wallets=set(),
     )
     assert decisions == []
 
@@ -350,7 +388,9 @@ def test_abort_threshold_boundary(
     # Tick 3 fois — si under, abort; sinon rien.
     for _ in range(3):
         decisions = classify_sell_only_transitions(
-            _inputs(traders, scores, margin=margin), tracker, blacklist=set(),
+            _inputs(traders, scores, margin=margin),
+            tracker,
+            blacklist=set(),
         )
     if expected_under:
         assert any(d.transition == "abort_to_active" for d in decisions)

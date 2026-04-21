@@ -102,9 +102,7 @@ class CascadePlanner:
         traders: list[TraderSnapshot],
     ) -> CascadePlan:
         active_non_pinned = [
-            t
-            for t in traders
-            if t.status == "active" and not t.pinned and t.score is not None
+            t for t in traders if t.status == "active" and not t.pinned and t.score is not None
         ]
         if not active_non_pinned:
             return CascadePlan(promote_candidate=None, demote_worst=None)

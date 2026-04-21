@@ -11,7 +11,10 @@ from polycopy.discovery.eviction import HysteresisTracker
 def test_tick_starts_at_one() -> None:
     tracker = HysteresisTracker()
     n = tracker.tick(
-        "0xa", direction="eviction", target_wallet="0xworst", current_delta=0.20,
+        "0xa",
+        direction="eviction",
+        target_wallet="0xworst",
+        current_delta=0.20,
     )
     assert n == 1
     assert tracker.count("0xa") == 1

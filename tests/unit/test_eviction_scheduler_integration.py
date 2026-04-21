@@ -83,7 +83,8 @@ async def _seed_pool(
         # les shadow qui ne sont pas promotables via M5 — l'eviction passe
         # outre les shadow_days).
         await target_repo.insert_shadow(
-            wallet, discovered_at=datetime.now(tz=UTC) - timedelta(days=30),
+            wallet,
+            discovered_at=datetime.now(tz=UTC) - timedelta(days=30),
         )
         await target_repo.update_score(wallet, score=score, scoring_version="v1")
 
@@ -271,8 +272,9 @@ async def test_sell_only_cap_defers_cascade(
     # Le cycle ne déclenche pas de cascade (cap atteint), même à 3 cycles.
     for _ in range(3):
         decisions = await scheduler.run_cycle(scores)
-        cascade = [d for d in decisions if d.transition in
-                   ("promote_via_eviction", "demote_to_sell_only")]
+        cascade = [
+            d for d in decisions if d.transition in ("promote_via_eviction", "demote_to_sell_only")
+        ]
         assert cascade == []
 
     # Les statuts n'ont pas bougé.

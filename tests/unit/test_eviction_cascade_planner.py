@@ -16,7 +16,10 @@ def _snap(
     pinned: bool = False,
 ) -> TraderSnapshot:
     return TraderSnapshot(
-        wallet_address=wallet, status=status, score=score, pinned=pinned,
+        wallet_address=wallet,
+        status=status,
+        score=score,
+        pinned=pinned,
     )
 
 

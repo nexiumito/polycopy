@@ -19,11 +19,7 @@ from polycopy.monitoring.alert_renderer import AlertRenderer
 from polycopy.monitoring.dtos import Alert
 
 _TEMPLATES_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "src"
-    / "polycopy"
-    / "monitoring"
-    / "templates"
+    Path(__file__).resolve().parents[2] / "src" / "polycopy" / "monitoring" / "templates"
 )
 
 _M5_BIS_TEMPLATES = [
@@ -85,8 +81,7 @@ def test_alert_renderer_renders_eviction_started() -> None:
         level="INFO",
         event="trader_eviction_started",
         body=(
-            "Candidat : 0x1234…abcd (score 0.91, shadow)\n"
-            "Évincé : 0x5678…cdef (active → sell_only)"
+            "Candidat : 0x1234…abcd (score 0.91, shadow)\nÉvincé : 0x5678…cdef (active → sell_only)"
         ),
         cooldown_key="trader_eviction_started",
     )
