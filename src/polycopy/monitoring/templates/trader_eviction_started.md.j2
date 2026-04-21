@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🟣 *\[trader\_eviction\_started\]* INFO
+
+{{ body | telegram_md_escape }}
+
+_Discovery M5\_bis — un candidat a évincé un active mal scoré\. L'évincé passe en_ `sell_only` _\(wind\-down réversible, SELL copiés, BUY bloqués\)\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🟣 *\[trader\_eviction\_completed\_to\_shadow\]* INFO
+
+{{ body | telegram_md_escape }}
+
+_Discovery M5\_bis — wind\-down complet, toutes les positions se sont fermées naturellement\. Le wallet retourne en_ `shadow` _\(re\-observation possible\)\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🟢 *\[trader\_blacklist\_removed\]* INFO
+
+{{ body | telegram_md_escape }}
+
+_Discovery M5\_bis — wallet retiré de_ `BLACKLISTED_WALLETS` _par l'utilisateur\. Retour en_ `shadow` _\(ou_ `pinned` _s'il est aussi dans_ `TARGET_WALLETS`_\)\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

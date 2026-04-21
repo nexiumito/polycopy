@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🔴 *\[trader\_blacklisted\]* WARNING
+
+{{ body | telegram_md_escape }}
+
+_Discovery M5\_bis — wallet exclu manuellement via_ `BLACKLISTED_WALLETS` _env\. Status terminal jusqu'à retrait par l'utilisateur\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}
