@@ -28,10 +28,10 @@
 
 - [Quickstart (5 minutes)](#quickstart-5-minutes)
 - [Tutorial pas-à-pas](#tutorial-pas-à-pas)
-- [Pilote tes bots depuis ton téléphone (M12_bis)](#pilote-tes-bots-depuis-ton-téléphone-m12_bis)
+- [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone)
 - [FAQ](#faq)
 - [Comparaison avec d'autres bots Polymarket](#comparaison-avec-dautres-bots-polymarket)
-- [Hall of Fame — wallets publics notables](#hall-of-fame--wallets-publics-notables)
+- [Comment le bot choisit quels wallets copier](#comment-le-bot-choisit-quels-wallets-copier)
 - [Architecture & stack](#architecture--stack)
 - [Variables d'environnement](#variables-denvironnement)
 - [Going live](#going-live-passage-du-dry-run-au-mode-réel)
@@ -329,33 +329,48 @@ Si une clé manque, le bot **refuse de démarrer** avec un `RuntimeError` clair 
 
 ---
 
-## Pilote tes bots depuis ton téléphone (M12_bis)
+## Pilote tes bots depuis ton téléphone
 
-Tu fais tourner polycopy sur 1 ou plusieurs machines (PC fixe, MacBook, serveur fac…), et tu veux pouvoir l'arrêter, le redémarrer ou consulter son statut depuis ton téléphone — depuis n'importe où, même en 4G hors wifi maison, en moins de 10 secondes. C'est ce que résout **M12_bis** (avril 2026, 6 PRs).
+Tu fais tourner polycopy sur 1 ou plusieurs machines (PC fixe, MacBook, serveur fac…), et tu veux pouvoir l'arrêter, le redémarrer ou consulter son statut depuis ton téléphone — depuis n'importe où, même en 4G hors wifi maison, en moins de 10 secondes. C'est ce que résout cette stack.
 
 Trois briques empilées, **toutes opt-in** (`REMOTE_CONTROL_ENABLED=false` par défaut, zéro surface ajoutée si tu ne l'actives pas) :
 
-1. **Identité multi-machine** (Phase A) — chaque alerte Telegram porte un badge `🖥️ PC-FIXE` / `💻 MACBOOK` / `🏫 UNI-DEBIAN` pour que tu saches d'où vient le signal en un coup d'œil. Variable : `MACHINE_ID` (fallback `socket.gethostname()`) + `MACHINE_EMOJI`.
-2. **API HTTP Tailscale-only + TOTP** (Phases B-D) — 4 routes (`GET /v1/status`, `POST /v1/{stop,resume,restart}`) protégées par 2FA RFC 6238, accessibles **uniquement** depuis ton tailnet privé (bind validé strict CGNAT `100.64.0.0/10`). Auto-lockdown 3-strikes après brute force → touch sentinel + alerte Telegram CRITICAL.
-3. **Auto-resurrection sous superviseur** (Phase F) — systemd user unit (Linux/WSL2), launchd LaunchAgent (macOS), Task Scheduler (Windows). Un crash → respawn ≤ 5 s. Un kill switch drawdown -20 % → touch sentinel `halt.flag` → respawn en mode `paused` (Watcher/Strategy/Executor exclus, **zéro nouveau trade**) jusqu'à ce que **tu** valides un `/resume` explicite depuis ton phone.
+1. **Identité multi-machine** — chaque alerte Telegram porte un badge `🖥️ PC-FIXE` / `💻 MACBOOK` / `🏫 UNI-DEBIAN` pour que tu saches d'où vient le signal en un coup d'œil. Tu choisis le nom et l'emoji par machine.
+2. **API HTTP Tailscale-only + 2FA TOTP** — 4 routes (`GET /v1/status`, `POST /v1/{stop,resume,restart}`) protégées par un code à 6 chiffres (authenticator app), accessibles **uniquement** depuis ton tailnet privé. Auto-lockdown 3-strikes après brute force + alerte Telegram CRITICAL.
+3. **Auto-resurrection sous superviseur** — systemd (Linux/WSL2), launchd (macOS), Task Scheduler (Windows). Un crash process → respawn ≤ 5 s automatique. Le bot survit aux coupures, aux redémarrages système, aux mises en veille.
+
+### Mode paused — ton garde-fou automatique
+
+Le bot tourne dans l'un de ces deux modes à tout instant :
+
+| Mode | Comportement | Déclencheurs |
+|---|---|---|
+| `running` | stack complet (Watcher + Strategy + Executor + Monitoring + Dashboard + Remote Control) | démarrage normal, ou après un `/resume` |
+| `paused` | **zéro nouveau trade** (Watcher/Strategy/Executor désactivés) — Dashboard + Remote Control + Monitoring restent actifs pour t'informer et permettre le `/resume` | kill switch drawdown ≥ 20 %, `/stop` depuis téléphone, tentative de brute force TOTP |
+
+Quand un kill switch se déclenche ou quand tu envoies `/stop` depuis ton phone, le bot crée un fichier sentinel `halt.flag`, propre-exit, et **respawne en mode paused**. Il reste joignable (status, dashboard) mais **ne tradera plus une seule transaction** tant que tu n'envoies pas un `/resume` explicite (avec TOTP). C'est ton garde-fou : si tu pars en week-end et qu'un drawdown survient, le bot s'arrête tout seul et t'attend.
 
 ```
    Téléphone (4G ou wifi)
         │
         │  POST /v1/stop/PC-FIXE  {"totp": "927848"}
         ▼
-   Tailscale (CGNAT 100.64.0.0/10, traverse NAT, mesh privé)
+   Tailscale (mesh privé chiffré WireGuard, traverse NAT)
         │
         ▼
-   Bot polycopy sur PC fixe (WSL2)
-        ├─ valide TOTP (±30 s)
-        ├─ touch ~/.polycopy/halt.flag  (sentinel, 0o600)
+   Bot polycopy sur PC fixe
+        ├─ valide TOTP (±30 s de tolérance)
+        ├─ touch ~/.polycopy/halt.flag
         └─ exit 0  →  systemd respawn  →  mode paused (dashboard reste up)
+
+   … plus tard, depuis le téléphone …
+        POST /v1/resume/PC-FIXE  {"totp": "410932"}
+        → rm halt.flag → respawn → mode running, trading reprend
 ```
 
-Setup pas-à-pas : [docs/specs/M12_bis_remote_control_setup_guide.md](docs/specs/M12_bis_remote_control_setup_guide.md) — compte ~30-45 min d'install par machine + 10 min tailnet initial. Spec technique complète : [docs/specs/M12_bis_multi_machine_remote_control_spec.md](docs/specs/M12_bis_multi_machine_remote_control_spec.md). Variables d'environnement : voir bloc dédié dans [Variables d'environnement](#variables-denvironnement).
+Setup pas-à-pas : [docs/specs/M12_bis_remote_control_setup_guide.md](docs/specs/M12_bis_remote_control_setup_guide.md) — compte ~30-45 min d'install par machine + 10 min pour le tailnet initial. Variables d'environnement : voir [bloc dédié](#variables-denvironnement).
 
-**Garantie sécurité M12_bis** : aucun port public ouvert sur Internet (Tailscale est un mesh chiffré WireGuard), pas de SSH à se rappeler, pas de VPN à activer manuellement. `REMOTE_CONTROL_TOTP_SECRET` ne fuite jamais dans les logs / alertes / repr objets (test de non-régression `test_remote_control_no_secret_leak.py`). Le bind est strictement limité à l'IPv4 Tailscale CGNAT — jamais `0.0.0.0` ni `127.0.0.1` (refusé par validator Pydantic + double-check au boot).
+**Garanties sécurité** : aucun port public ouvert sur Internet (Tailscale est un mesh chiffré WireGuard), pas de SSH à configurer, pas de VPN à activer manuellement. Le secret TOTP ne fuite jamais dans les logs / alertes / repr objets (testé automatiquement). Le bind réseau est strictement limité à ton IP Tailscale privée — jamais `0.0.0.0`, jamais `127.0.0.1`, refusé au boot sinon.
 
 ---
 
@@ -537,42 +552,86 @@ GitHub issues sur ce repo. PR welcome après discussion sur l'issue. Conventions
 
 ## Comparaison avec d'autres bots Polymarket
 
-Concurrents retenus à partir des sources citées dans [docs/development/](docs/development/) (synthèse [`M10_synthesis_reference.md`](docs/development/M10_synthesis_reference.md), deep-searches Gemini + Perplexity du 2026-04-18). Trois positionnements très différents : bot SaaS Telegram fermé (KreoPoly), outil smart-money SaaS fermé (PolyHub / Hubble), framework algo trading institutionnel open-source (NautilusTrader).
+Quatre positionnements très différents : bot SaaS Telegram fermé (KreoPoly), outil smart-money SaaS fermé (PolyHub / Hubble), bot de trading temps réel SaaS fermé (PolyGun), framework algo trading institutionnel open-source (NautilusTrader).
 
-| Critère | **polycopy** | [KreoPoly](https://kreopoly.app)<sup>1</sup> | [PolyHub (Hubble)](https://www.mexc.com/news/765626)<sup>2</sup> | [NautilusTrader](https://nautilustrader.io/docs/latest/integrations/polymarket/)<sup>3</sup> |
-|---|---|---|---|---|
-| Open-source | ✅ MIT | ❌ closed source (SaaS Telegram) | ❌ closed source (SaaS) | ✅ LGPL-3.0 |
-| Langage | Python 3.11 | non divulgué | non divulgué | Rust + bindings Python |
-| Self-hosted (tu contrôles tes clés) | ✅ | ❌ bot centralisé | ❌ bot centralisé | ✅ |
-| Copy trading wallets | ✅ M1+M5 (scoring auto) | ✅ mirror top wallets Polymarket + Kalshi | ✅ smart money filter | ⚠️ framework générique, logique à implémenter |
-| Filtrage par catégorie Gamma | ✅ M12 (HHI `specialization`) | ✅ politique / culture / sport / macro | ⚠️ non documenté | — |
-| Scoring anti-zombie + Brier + Sortino | ✅ **M12** (6 facteurs + 6 gates durs + shadow period) | ❌ (win rate + ROI + fréquence) | ❌ (PnL + ROI + fréquence + timing optionnel) | ❌ (à la charge de l'intégrateur) |
-| Dry-run = miroir fidèle live | ✅ **M10** (kill switch + alertes identiques) | ⚠️ non documenté | ⚠️ non documenté | ✅ (backtesting engine natif) |
-| WebSocket CLOB (latence < 5 s p95) | ✅ **M11** (channel `market` + fallback HTTP transparent) | ⚠️ non documenté | ⚠️ non documenté | ✅ (pipelines vectorisés) |
-| Dashboard local | ✅ FastAPI + HTMX read-only (M4.5 + M6) | ❌ (Telegram uniquement) | ⚠️ interface web hébergée | ⚠️ monitoring externe à brancher |
-| Alertes Telegram enrichies | ✅ M7 (15 templates Jinja2, digest, daily, heartbeat, badges mode M10) | ✅ natif Telegram | ❌ | ❌ |
-| CLI silent + log file rotation | ✅ M9 | — | — | ⚠️ logs framework génériques |
-| Coût | gratuit (self-hosted) | freemium + SaaS | freemium + SaaS | gratuit (LGPL) |
-| Dernière maj consultée | 2026-04 | 2026-03 | 2026 | 2026-04 |
+| Critère | **polycopy** | [KreoPoly](https://kreopoly.app)<sup>1</sup> | [PolyHub](https://www.mexc.com/news/765626)<sup>2</sup> | [PolyGun](https://polygun.app)<sup>3</sup> | [NautilusTrader](https://nautilustrader.io/docs/latest/integrations/polymarket/)<sup>4</sup> |
+|---|---|---|---|---|---|
+| Open-source | ✅ MIT | ❌ SaaS | ❌ SaaS | ❌ SaaS | ✅ LGPL-3.0 |
+| Self-hosted (tu contrôles tes clés) | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Copy trading de wallets | ✅ avec scoring auto | ✅ | ✅ smart money filter | ⚠️ non divulgué | ⚠️ à coder toi-même |
+| Scoring avancé (anti-zombie, calibration Brier, Sortino) | ✅ 6 facteurs + 6 gates durs | ❌ win rate + ROI + fréquence | ❌ PnL + ROI + fréquence | ❌ non divulgué | ❌ à ta charge |
+| Compétition adaptative entre wallets (eviction) | ✅ shadow/active/sell_only | ❌ | ❌ | ❌ | — |
+| Dry-run = miroir fidèle live (kill switch + alertes identiques) | ✅ | ⚠️ non documenté | ⚠️ non documenté | ⚠️ non documenté | ✅ backtest natif |
+| Latence < 5 s p95 (WebSocket temps réel) | ✅ avec instrumentation par stage | ⚠️ non documenté | ⚠️ non documenté | ✅ positioning "fast" | ✅ pipelines vectorisés |
+| Dashboard local pour monitoring | ✅ FastAPI + HTMX read-only | ❌ Telegram uniquement | ⚠️ interface web hébergée | ⚠️ dashboard hébergé | ⚠️ externe à brancher |
+| Alertes Telegram enrichies (digest, daily, heartbeat) | ✅ | ✅ natif | ❌ | ⚠️ non documenté | ❌ |
+| **Remote control depuis téléphone** (2FA, depuis 4G hors wifi) | ✅ Tailscale + TOTP + auto-lockdown brute force | ⚠️ commandes Telegram | ❌ | ⚠️ non documenté | ❌ |
+| **Mode paused automatique** (kill switch → bot s'arrête tout seul, attend `/resume` humain) | ✅ sentinel + respawn superviseur | ❌ | ❌ | ❌ | ❌ |
+| **Auto-resurrection** après crash (systemd/launchd/Task Scheduler) | ✅ respawn ≤ 5 s | — (SaaS) | — (SaaS) | — (SaaS) | ⚠️ à configurer |
+| Coût | gratuit | freemium + SaaS | freemium + SaaS | payant | gratuit |
 
-<sup>1</sup> **KreoPoly** — [kreopoly.app](https://kreopoly.app). Sources Medium : [Gaining the Edge: How Kreo is Revolutionizing Prediction Market Trading](https://medium.com/@fxmbrand/gaining-the-edge-how-kreo-is-revolutionizing-prediction-market-trading-96aa3731edb4), [Kreo Polymarket Telegram Bot: Copy Trading Polymarket and Kalshi](https://medium.com/@gemQueenx/kreo-polymarket-telegram-bot-copy-trading-polymarket-and-kalshi-cdde3563307a). Mention MEXC [Smart Money Copy Trading Guide](https://www.mexc.com/news/988541). Synthèse interne [`M10_synthesis_reference.md`](docs/development/M10_synthesis_reference.md) §1.1 + §6.3 : ranking metrics convergents avec v1, pas d'API publique, "ne pas essayer de scraper — fragilité".
+**Lecture express** : si tu veux un truc clé-en-main Telegram, KreoPoly est plus simple. Si tu veux juste une liste de wallets à suivre manuellement, PolyHub fait le job. Si tu veux un framework bas-niveau pour coder ta propre stratégie, NautilusTrader est la référence. **Si tu veux un bot qui tourne 24/7, que tu contrôles depuis ton téléphone, avec des garde-fous automatiques et dont tu vois le code que tu exécutes — polycopy.**
 
-<sup>2</sup> **PolyHub (Hubble)** — présenté dans [Polymarket Advanced: How to Build Your Smart Money Address](https://www.mexc.com/news/765626). Analyse Perplexity DeepResearch §1.1 : filtre les wallets par PnL / ROI / fréquence de trading sur fenêtre 30 j avec timing score optionnel.
+<sup>1</sup> **KreoPoly** — [kreopoly.app](https://kreopoly.app). Sources : [Gaining the Edge: How Kreo is Revolutionizing Prediction Market Trading](https://medium.com/@fxmbrand/gaining-the-edge-how-kreo-is-revolutionizing-prediction-market-trading-96aa3731edb4), [Kreo Polymarket Telegram Bot](https://medium.com/@gemQueenx/kreo-polymarket-telegram-bot-copy-trading-polymarket-and-kalshi-cdde3563307a).
 
-<sup>3</sup> **NautilusTrader** — [nautilustrader.io](https://nautilustrader.io/docs/latest/integrations/polymarket/), intégration Polymarket officielle. Référencé dans la Gemini DeepResearch §4 comme benchmark latence HFT-grade (cf. [gemini_deep_search_v2_and_more.md](docs/development/gemini_deep_search_v2_and_more.md)). Framework institutionnel — positionnement très différent : tu codes ta stratégie par-dessus, il ne vient pas avec un copy-trading clé-en-main.
+<sup>2</sup> **PolyHub (Hubble)** — présenté dans [Polymarket Advanced: Smart Money Address](https://www.mexc.com/news/765626).
 
-**Liste non exhaustive** et datée (2026-04-18). Des outils comme l'[Apify Polymarket Leaderboard Scraper](https://apify.com/saswave/polymarket-leaderboard-scraper) (référencé Gemini §1.1) sont des *data sources*, pas des bots, donc hors comparaison. PR welcome pour corriger / ajouter un concurrent **avec source vérifiable dans `docs/development/`**.
+<sup>3</sup> **PolyGun** — [polygun.app](https://polygun.app). Bot automatisé payant, positionnement "high-speed" Polymarket. Détails techniques (méthode de ranking, latence, API) non publics — les critères "non divulgué" reflètent l'absence de doc technique lisible. Corrections welcome via PR avec source vérifiable.
+
+<sup>4</sup> **NautilusTrader** — [nautilustrader.io](https://nautilustrader.io/docs/latest/integrations/polymarket/), intégration Polymarket officielle. Framework institutionnel (positionnement différent : tu codes ta stratégie par-dessus).
+
+**Liste non exhaustive** et datée (2026-04-21). PR welcome pour corriger / ajouter un concurrent **avec source vérifiable**.
 
 ---
 
-## Hall of Fame — wallets publics notables
+## Comment le bot choisit quels wallets copier
 
-> [!IMPORTANT]
-> **Aucune adresse hardcodée tant qu'elle n'a pas été vérifiée.** Les anciennes versions de ce README listaient des placeholders `0x1111…1111` / `0x2222…2222` qui pouvaient induire en erreur (risque qu'un lecteur copie littéralement une adresse bidon dans `.env`). La bonne approche est data-driven : **génère ton propre Hall of Fame** à partir des données Polymarket publiques.
+Tu as deux leviers pour décider qui le bot suit :
 
-### Option 1 — Backtest sur seed public
+- **Manuel** : tu listes les wallets dans `TARGET_WALLETS=0xabc...,0xdef...`. Ils sont figés (pinned) — jamais retirés automatiquement.
+- **Automatique** (`DISCOVERY_ENABLED=true`) : le bot scan périodiquement les top holders + feed de trades Polymarket, calcule un score par wallet (90 jours d'historique), et fait tourner le pool des wallets copiés en compétition continue.
 
-Le fichier [`docs/specs/m5_backtest_seed.txt`](docs/specs/m5_backtest_seed.txt) contient **~50 vraies adresses publiques** documentées, prêtes à passer dans le scoring v1. Génère un rapport HTML classé par corrélation score ↔ ROI observé :
+### Le cycle de vie d'un wallet
+
+Chaque wallet vu par le bot est dans l'un de ces états :
+
+```
+States :
+  shadow       — score calculé, pas de trading
+  active       — score calculé, trading BUY + SELL
+  sell_only    — score calculé, SELL-only (wind-down, réversible)
+  blacklisted  — exclusion manuelle via BLACKLISTED_WALLETS env, pas de scoring
+
+Transitions :
+  new wallet discovered                            ───► shadow
+
+  shadow      ──► active     [score ≥ 0.65 ET slot free]
+  shadow      ──► active*    [delta(self, worst_active) ≥ 0.15 × 3 cycles]
+
+  active      ──► sell_only  [∃ C avec delta(C, self) ≥ 0.15 × 3 cycles ET self = worst_active]
+  active      ──► shadow     [score < 0.40 × 3 cycles]
+
+  sell_only   ──► active     [abort : delta(triggering_C, self) < 0.15 × N cycles]
+  sell_only   ──► active*    [rebond : delta(self, worst_active) ≥ 0.15 × 3 cycles]
+  sell_only   ──► shadow     [positions ouvertes = 0]
+
+  any state   ──► blacklisted [wallet ajouté à BLACKLISTED_WALLETS par user]
+  blacklisted ──► shadow      [wallet retiré de BLACKLISTED_WALLETS par user]
+
+  (*) cascade : worst_active → sell_only simultanément au même cycle.
+```
+
+**Ce que ça veut dire en français** :
+- Un wallet nouvellement découvert reste en `shadow` (observé, pas tradé) pendant 7 jours minimum — c'est le garde-fou capital : rien n'est copié tant que le wallet n'a pas fait ses preuves sur une fenêtre suffisante.
+- Quand ton cap `MAX_ACTIVE_TRADERS` (10 par défaut) est atteint, un `shadow` significativement meilleur qu'un `active` peut **l'évincer**. L'évincé passe en `sell_only` : **le bot copie encore ses SELL** (pour laisser ses positions se fermer naturellement) mais bloque ses nouveaux BUY. Si son score rebondit, il peut revenir `active`. S'il continue à décrocher, il retourne en `shadow` dès que ses positions sont fermées.
+- **Aucun force-close jamais.** Le bot ne ferme pas de position en dur — il laisse le wallet source les fermer normalement. C'est la sécurité du wind-down réversible.
+- La blacklist (`BLACKLISTED_WALLETS` env var) est absolue : un wallet y apparaissant est exclu quel que soit son score.
+
+Le feature flag `EVICTION_ENABLED=false` par défaut : la compétition adaptative ne tourne que si tu l'actives explicitement. Sans, le lifecycle reste simple : `shadow ↔ active ↔ shadow` via les seuils de promotion/demotion.
+
+### Valider le scoring avant de partir en live
+
+**Backtest sur seed public** — le fichier [`docs/specs/m5_backtest_seed.txt`](docs/specs/m5_backtest_seed.txt) contient ~50 vraies adresses publiques Polymarket. Tu peux générer un rapport HTML qui classe les wallets et montre la corrélation score ↔ ROI observé, sans toucher de capital réel :
 
 ```bash
 source .venv/bin/activate
@@ -583,34 +642,9 @@ python scripts/score_backtest.py \
   --output backtest_v1_report.html
 ```
 
-Ouvre `backtest_v1_report.html`. Si Spearman score ↔ ROI ≥ 0.30 sur ≥ 50 wallets, la formule v1 est validée et tu peux activer M5 en prod (cf. [docs/setup.md §14](docs/setup.md)).
+**Discovery live en dry-run** — active la découverte + `EXECUTION_MODE=dry_run`. Le bot bootstrap un pool de candidats, les score, promeut les meilleurs en `shadow` puis `active` après observation. Tu peux regarder l'évolution dans le dashboard onglet [`/traders`](http://127.0.0.1:8787/traders) sans aucun risque capital.
 
-### Option 2 — Discovery live via `/traders/scoring`
-
-Active la découverte automatique :
-
-```env
-DISCOVERY_ENABLED=true
-SCORING_VERSION=v1
-MAX_ACTIVE_TRADERS=10
-TRADER_SHADOW_DAYS=7
-```
-
-Relance le bot. À chaque cycle (6 h par défaut), M5 bootstrap un pool de 100 candidats via `/holders` top-liquidité + `/trades` filtré. Les meilleurs passent `shadow` → `active` après observation. Consulte l'onglet [`/traders`](http://127.0.0.1:8787/traders) du dashboard (scores v1) ou [`/traders/scoring`](http://127.0.0.1:8787/traders/scoring) (comparaison v1 vs v2 post-M12).
-
-### Option 3 — Validation scoring v2 (post-M12)
-
-Si tu as activé le mode shadow v1/v2 et tu veux voir quels wallets survivent aux 6 gates durs :
-
-```bash
-python scripts/backtest_scoring_v2.py \
-  --label-file assets/scoring_v2_labels.csv \
-  --output backtest_v2_report.html
-```
-
-Tu vérifies que `brier_top10_v2 < brier_top10_v1 - 0.01` avant de flipper `SCORING_VERSION=v2`.
-
-**Aucune recommandation personnelle**. Un wallet qui performe sur 90 j peut perdre son edge au cycle suivant — le scoring v1 (et a fortiori v2) est une heuristique, pas une prédiction.
+**Aucune recommandation personnelle**. Un wallet qui performe sur 90 jours peut perdre son edge au cycle suivant — le scoring est une heuristique, pas une prédiction. Les formules, gates durs et validation post-backtest sont détaillés plus bas dans [Architecture & stack](#architecture--stack) et dans [docs/specs/](docs/specs/) pour les curieux.
 
 ---
 
@@ -698,17 +732,17 @@ Score_v2 = 0.25 · risk_adjusted    (Sortino 90d + Calmar 90d)
 
 Prérequis `TraderDailyPnl` : table append-only (migration 0006) peuplée toutes les 24 h par `TraderDailyPnlWriter` co-lancé dans `DiscoveryOrchestrator`. Source unique Sortino/Calmar/consistency. Contient uniquement `wallet_address` publique + `equity_usdc` + `date` — aucun secret, aucun PII.
 
-### M12_bis — multi-machine + remote control
+### Multi-machine + remote control
 
-Side-car opt-in (`REMOTE_CONTROL_ENABLED=false` par défaut), strictement additif aux 5 couches existantes. Aucune ligne modifiée dans les chemins live M3 / kill switch M4 / dry-run M8.
+Side-car opt-in (`REMOTE_CONTROL_ENABLED=false` par défaut), strictement additif — aucune ligne modifiée dans les chemins live / kill switch / dry-run.
 
-- [`src/polycopy/remote_control/`](src/polycopy/remote_control/) — package isolé : `tailscale.py` (résolution `tailscale ip -4` + validator CGNAT), `auth.py` (`TOTPGuard` pyotp + `RateLimiter` deque + `AutoLockdown` 3-strikes), `sentinel.py` (`SentinelFile` `~/.polycopy/halt.flag` 0o600/0o700), `server.py` (FastAPI 4 routes `GET /v1/health`, `GET /v1/status/<machine>`, `POST /v1/{restart,stop,resume}/<machine>`), `orchestrator.py` (uvicorn bind Tailscale exclusif).
-- **Bifurcation `cli/boot.py::build_orchestrators(mode)`** : au boot, lecture du sentinel `halt.flag`. Si présent → mode `paused` (Monitoring + Dashboard + RemoteControl uniquement, **Watcher/Strategy/Executor exclus** = zéro nouveau trade). Si absent → mode `normal` (stack complet). Seul un `POST /v1/resume` (TOTP humain) clear le sentinel et déclenche un respawn en mode normal.
-- **Ordre sacré du kill switch** : `PnlSnapshotWriter` détecte drawdown ≥ 20 % → `touch sentinel` puis `stop_event.set()` (ordre inverse = respawn unsafe en mode normal malgré drawdown).
-- **Identité multi-machine** : injection `machine_id` + `machine_emoji` en 2ᵉ ligne de chaque alerte Telegram via [alert_renderer.py:146-170](src/polycopy/monitoring/alert_renderer.py#L146-L170) — pattern strict copy-paste du `mode_badge` M10. Public, non-sensible, loggé en clair au boot via event `machine_id_resolved`.
-- **Auto-resurrection** : superviseurs déclaratifs `Restart=always` (systemd) / `KeepAlive=true` (launchd) / Task Scheduler logon trigger (Windows). Tous les artefacts dans [scripts/supervisor/{systemd,launchd,windows}/](scripts/supervisor/).
+- [`src/polycopy/remote_control/`](src/polycopy/remote_control/) — package isolé : résolution IP Tailscale + validator CGNAT, `TOTPGuard` (pyotp) + rate limiter + auto-lockdown 3-strikes, sentinel `~/.polycopy/halt.flag` (0o600/0o700), FastAPI 4 routes (`GET /v1/health`, `GET /v1/status/<machine>`, `POST /v1/{restart,stop,resume}/<machine>`), uvicorn bind Tailscale exclusif.
+- **Bifurcation boot mode** : au démarrage, lecture du sentinel. Si présent → mode `paused` (Watcher/Strategy/Executor exclus = zéro trade). Si absent → mode `running` (stack complet). Seul un `POST /v1/resume` (TOTP humain) clear le sentinel et déclenche un respawn en mode `running`.
+- **Ordre sacré du kill switch** : le snapshot PnL détecte drawdown ≥ 20 % → touch sentinel **puis** set stop_event (ordre inverse = respawn unsafe en mode normal malgré drawdown).
+- **Identité multi-machine** : injection `machine_id` + `machine_emoji` en 2ᵉ ligne de chaque alerte Telegram. Public, non-sensible, loggé en clair au boot.
+- **Auto-resurrection** : superviseurs déclaratifs `Restart=always` (systemd) / `KeepAlive=true` (launchd) / Task Scheduler logon trigger (Windows). Tous les artefacts dans [scripts/supervisor/](scripts/supervisor/).
 
-Pitch & setup utilisateur : section [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone-m12_bis). Spec technique : [docs/specs/M12_bis_multi_machine_remote_control_spec.md](docs/specs/M12_bis_multi_machine_remote_control_spec.md). ADR : [docs/specs/idea2_remote_control_decision.md](docs/specs/idea2_remote_control_decision.md).
+Pitch & setup utilisateur : section [Pilote tes bots depuis ton téléphone](#pilote-tes-bots-depuis-ton-téléphone). Spec technique : [docs/specs/M12_bis_multi_machine_remote_control_spec.md](docs/specs/M12_bis_multi_machine_remote_control_spec.md).
 
 Règle de dépendance : `watcher` → `storage`, `strategy` → `storage`, `executor` → `storage`. Aucun module ne dépend d'un autre module fonctionnel directement, tout passe par la DB ou par des events asyncio. Le `__main__` orchestre.
 
@@ -953,18 +987,20 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 - [x] **M10** : parité dry-run / live (kill switch + alertes identiques, badges de mode) + log hygiene (processor middleware, exclusion `dashboard_request` par défaut)
 - [x] **M11** : pipeline temps réel phase 1 (WS CLOB channel `market` + cache Gamma adaptatif + instrumentation latence 6 stages + onglet `/latency`)
 - [x] **M12** : scoring v2 (formule hybride 6 facteurs + 6 gates durs pré-scoring + shadow period v1/v2 + onglet `/traders/scoring`)
-- [x] **M12_bis** : multi-machine (`MACHINE_ID` dans alertes Telegram) + remote control Tailscale (4 routes HTTP + TOTP + sentinel `halt.flag` + auto-lockdown 3-strikes) + auto-resurrection (systemd / launchd / Task Scheduler) (← *tu es ici*)
+- [x] **M12_bis** : multi-machine (badges `MACHINE_ID` dans alertes Telegram) + remote control Tailscale (4 routes HTTP + TOTP + sentinel `halt.flag` + auto-lockdown 3-strikes) + auto-resurrection (systemd / launchd / Task Scheduler)
+- [x] **M5_bis** : compétition adaptative entre wallets (`shadow`/`active`/`sell_only`/`blacklisted` + cascade eviction + wind-down réversible) (← *tu es ici*)
 
 ### Suite (idées, pas engagement)
 
 Ordre optimisé pour que chaque milestone débloque ou prépare le terrain du suivant (cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) :
 
-- [ ] **M13** — **Taker fees dynamiques** (priorité 🟡, effort S 2-3 j, dépend de M11). Endpoint `GET /fee-rate?tokenID=` intégré au `Sizer.calculate()` EV. Cache TTL 60 s. Protège l'EV face à l'évolution tarifaire Polymarket sur crypto/sports rapides.
-- [ ] **M14** — **Real-time pipeline phase 2** (priorité 🟢 optionnel, effort M 2-4 sem., dépend de M11+M12). Parallélisation strategy pipeline (`asyncio.gather` sur filtres indépendants) + WebSocket `user` channel pour détection on-chain quasi-instantanée. Cible 2-3 s → < 1 s. Déclenche seulement si post-M11 on rate > 10 % d'opportunités.
+- [ ] **M5_ter** — **Watcher live-reload** (priorité 🔥, effort XS 1 j, dépend de M5_bis). Le watcher re-fetch périodiquement la liste des wallets à poller depuis la DB (toutes les 5 min par défaut) — les mutations lifecycle (promotions Discovery, cascades eviction, demotes) sont prises en compte sans restart. Spec complète : [`docs/specs/M5_ter_watcher_live_reload_spec.md`](docs/specs/M5_ter_watcher_live_reload_spec.md).
+- [ ] **M13** — **Taker fees dynamiques** (priorité 🟡, effort S 2-3 j, dépend de M11). Endpoint `GET /fee-rate?tokenID=` intégré au sizing EV. Cache TTL 60 s. Protège l'EV face à l'évolution tarifaire Polymarket sur crypto/sports rapides.
+- [ ] **M14** — **Real-time pipeline phase 2** (priorité 🟢 optionnel, effort M 2-4 sem., dépend de M11+M12). Parallélisation strategy pipeline + WebSocket `user` channel pour détection on-chain quasi-instantanée. Cible 2-3 s → < 1 s. Déclenche seulement si post-M11 on rate > 10 % d'opportunités.
 - [ ] **M15** — **Goldsky Turbo / Bitquery streaming** (priorité 🟢 optionnel, effort L, dépend de M11). Webhook direct depuis Polygon RPC (~50 ms). Alternative Bitquery Kafka. Justifier par ROI clair avant d'engager.
 - [ ] **M16+** — **MEV defense + market making Avellaneda-Stoikov** (priorité ⚪ futur, effort XL, dépend de M12 validé). Private transactions Polygon (Flashbots-like) quand position size > $500. Market making algorithmique. Nécessite que le scoring v2 ait démontré un edge robuste.
 
-Prompts mis en suspens (MX_, cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) : watcher live-reload, backtest scheduler quotidien, discovery auto-lockout après 3 fails backtest consécutifs. Repositionnés pour après M12 en rodage.
+Prompts mis en suspens (MX_, cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) : backtest scheduler quotidien, discovery auto-lockout après 3 fails backtest consécutifs. Repositionnés pour après validation scoring v2 en rodage.
 
 ---
 
@@ -978,4 +1014,4 @@ Ce code est fourni à titre éducatif. **Aucune garantie sur le fonctionnement, 
 
 Aucun support garanti. Issues GitHub welcome mais réponses best-effort.
 
-_Last reviewed : 2026-04-20 (M12_bis)._
+_Last reviewed : 2026-04-21 (M5_bis)._

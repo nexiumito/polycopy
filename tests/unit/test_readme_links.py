@@ -89,9 +89,10 @@ def test_readme_has_comparison_table() -> None:
     assert "## Comparaison" in text or "Comparaison avec" in text
 
 
-def test_readme_has_hall_of_fame() -> None:
+def test_readme_has_wallets_selection_section() -> None:
+    """Renommé M5_bis : 'Hall of Fame' → 'Comment le bot choisit quels wallets copier'."""
     text = _README.read_text(encoding="utf-8")
-    assert "Hall of Fame" in text
+    assert "Comment le bot choisit quels wallets copier" in text
 
 
 def test_readme_mentions_juriste_for_legal_question() -> None:
