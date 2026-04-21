@@ -34,6 +34,11 @@ from polycopy.discovery.candidate_pool import CandidatePool
 from polycopy.discovery.data_api_client import DiscoveryDataApiClient
 from polycopy.discovery.decision_engine import DecisionEngine
 from polycopy.discovery.dtos import DiscoveryDecision, ScoringResult
+from polycopy.discovery.eviction import (
+    TRANSITION_TO_EVENT_TYPE,
+    EvictionDecision,
+    EvictionScheduler,
+)
 from polycopy.discovery.goldsky_client import GoldskyClient
 from polycopy.discovery.metrics_collector import MetricsCollector
 from polycopy.discovery.metrics_collector_v2 import MetricsCollectorV2
@@ -131,6 +136,29 @@ class DiscoveryOrchestrator:
             daily_pnl_repo = TraderDailyPnlRepository(self._sf)
             decision_engine = DecisionEngine(target_repo, cfg, self._alerts)
 
+            # M5_bis Phase C : EvictionScheduler opt-in strict.
+            eviction_scheduler: EvictionScheduler | None = None
+            if cfg.eviction_enabled:
+                eviction_scheduler = EvictionScheduler(
+                    target_repo=target_repo,
+                    session_factory=self._sf,
+                    settings=cfg,
+                    alerts_queue=self._alerts,
+                )
+                # Reconcile blacklist au boot (idempotent, applique T10 aux
+                # wallets déjà en DB qui sont maintenant dans
+                # BLACKLISTED_WALLETS, et T11/T12 pour ceux qui en sortent).
+                boot_decisions = await eviction_scheduler.reconcile_blacklist()
+                for decision in boot_decisions:
+                    await self._persist_eviction_event(event_repo, decision, cfg)
+                log.info(
+                    "eviction_scheduler_started",
+                    boot_reconcile_decisions=len(boot_decisions),
+                    score_margin=cfg.eviction_score_margin,
+                    hysteresis_cycles=cfg.eviction_hysteresis_cycles,
+                    max_sell_only=cfg.max_sell_only_wallets,
+                )
+
             # M12 : sur-composants scoring v2 (créés inconditionnellement,
             # utilisés seulement si v2 pilote OU shadow_days > 0 — cf.
             # _should_compute_v2 ci-dessous).
@@ -171,6 +199,7 @@ class DiscoveryOrchestrator:
                             event_repo,
                             target_repo,
                             decision_engine,
+                            eviction_scheduler,
                         )
                     except asyncio.CancelledError:
                         raise
@@ -204,6 +233,7 @@ class DiscoveryOrchestrator:
         event_repo: TraderEventRepository,
         target_repo: TargetTraderRepository,
         decision_engine: DecisionEngine,
+        eviction_scheduler: EvictionScheduler | None = None,
     ) -> None:
         cycle_at = datetime.now(tz=UTC)
         log.info("discovery_cycle_started", cycle_at=cycle_at.isoformat())
@@ -234,6 +264,9 @@ class DiscoveryOrchestrator:
         gate_rejected_count = 0
         v2_scored_count = 0
         active_count = active_count_start
+
+        # M5_bis Phase C : scores par wallet passés à EvictionScheduler en aval.
+        scores_by_wallet: dict[str, float] = {}
 
         # M12 — décide si v2 doit être calculé (pilote OU shadow actif).
         compute_v2 = await self._should_compute_v2()
@@ -367,6 +400,7 @@ class DiscoveryOrchestrator:
                     metrics=metrics,
                     cycle_at=cycle_at,
                 )
+                scores_by_wallet[wallet.lower()] = pilot_score
 
                 decision = await decision_engine.decide(
                     scoring,
@@ -406,6 +440,30 @@ class DiscoveryOrchestrator:
                     decision=decision.decision,
                 )
 
+        # M5_bis Phase C : hook EvictionScheduler après la boucle M5.
+        # Idempotent + flag off = no-op (scheduler non-instancié).
+        eviction_applied = 0
+        if eviction_scheduler is not None:
+            try:
+                # reconcile_blacklist en premier : si l'user a flippé un wallet
+                # dans BLACKLISTED_WALLETS en warm reload, on l'aligne avant de
+                # laisser le scheduler appliquer des transitions sur ce wallet.
+                reconcile_decisions = await eviction_scheduler.reconcile_blacklist()
+                for ev_decision in reconcile_decisions:
+                    await self._persist_eviction_event(
+                        event_repo, ev_decision, self._settings,
+                    )
+                cycle_decisions = await eviction_scheduler.run_cycle(scores_by_wallet)
+                for ev_decision in cycle_decisions:
+                    await self._persist_eviction_event(
+                        event_repo, ev_decision, self._settings,
+                    )
+                eviction_applied = len(reconcile_decisions) + len(cycle_decisions)
+            except Exception:
+                # Isolation : un crash du scheduler eviction ne doit jamais
+                # planter le cycle Discovery M5 principal (non-régression).
+                log.exception("eviction_cycle_failed")
+
         duration_ms = int((time.monotonic() - t0) * 1000)
         log.info(
             "discovery_cycle_completed",
@@ -419,8 +477,46 @@ class DiscoveryOrchestrator:
             gate_rejected=gate_rejected_count,
             v2_scored=v2_scored_count,
             active_count=active_count,
+            eviction_applied=eviction_applied,
             duration_ms=duration_ms,
             scoring_version=self._settings.scoring_version,
+        )
+
+    async def _persist_eviction_event(
+        self,
+        event_repo: TraderEventRepository,
+        decision: EvictionDecision,
+        settings: Settings,
+    ) -> None:
+        """Persiste un EvictionDecision dans trader_events (audit trail).
+
+        Mapping transition → event_type via TRANSITION_TO_EVENT_TYPE. Les
+        defer_* sont persistés tels quels (audit only, pas de transition
+        DB). Le champ ``event_metadata`` porte le payload riche M5_bis
+        (delta, cycles_observed, triggering_wallet, reason_code).
+        """
+        event_type = TRANSITION_TO_EVENT_TYPE.get(decision.transition, "kept")
+        metadata: dict[str, object] = {
+            "transition": decision.transition,
+            "reason_code": decision.reason_code,
+        }
+        if decision.delta_vs_worst_active is not None:
+            metadata["delta_vs_worst_active"] = round(decision.delta_vs_worst_active, 4)
+        if decision.triggering_wallet is not None:
+            metadata["triggering_wallet"] = decision.triggering_wallet
+        if decision.cycles_observed is not None:
+            metadata["cycles_observed"] = decision.cycles_observed
+        await event_repo.insert(
+            TraderEventDTO(
+                wallet_address=decision.wallet_address,
+                event_type=event_type,
+                from_status=decision.from_status,
+                to_status=decision.to_status,
+                score_at_event=decision.score_at_event,
+                scoring_version=settings.scoring_version,
+                reason=decision.reason_code,
+                event_metadata=metadata,
+            ),
         )
 
     async def _persist_event(
