@@ -156,19 +156,19 @@ def side_icon(side: str | None) -> str:
 
 
 def status_badge_class(status: str | None) -> str:
-    """Renvoie la classe CSS du badge selon le ``status`` (M3/M5)."""
+    """Renvoie la classe CSS du badge selon le ``status`` (M3/M5/M5_bis)."""
     if not status:
         return "badge badge-neutral"
     upper = status.upper()
     if upper in {"FILLED", "APPROVED", "ACTIVE"}:
         return "badge badge-ok"
-    if upper in {"REJECTED", "FAILED"}:
+    if upper in {"REJECTED", "FAILED", "BLACKLISTED"}:
         return "badge badge-error"
     if upper in {"SIMULATED"}:
         return "badge badge-info"
     if upper in {"SHADOW"}:
         return "badge badge-info"
-    if upper in {"PAUSED", "PARTIALLY_FILLED", "SENT"}:
+    if upper in {"PAUSED", "PARTIALLY_FILLED", "SENT", "SELL_ONLY"}:
         return "badge badge-warning"
     if upper in {"PINNED"}:
         return "badge badge-pinned"

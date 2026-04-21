@@ -84,7 +84,10 @@ def test_alert_renderer_renders_eviction_started() -> None:
     alert = Alert(
         level="INFO",
         event="trader_eviction_started",
-        body="Candidat : 0x1234…abcd (score 0.91, shadow)\nÉvincé : 0x5678…cdef (active → sell_only)",
+        body=(
+            "Candidat : 0x1234…abcd (score 0.91, shadow)\n"
+            "Évincé : 0x5678…cdef (active → sell_only)"
+        ),
         cooldown_key="trader_eviction_started",
     )
     rendered = renderer.render_alert(alert)

@@ -43,6 +43,27 @@
           <dd>{{ r.consecutive_low_score_cycles }}</dd>
         </div>
       </dl>
+      {% if r.status == "sell_only" and r.eviction_state_entered_at %}
+        <dl class="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4 pt-4 border-t"
+            style="border-color: var(--color-border);">
+          <div>
+            <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Wind-down depuis</dt>
+            <dd>{{ r.eviction_state_entered_at | humanize_dt }}</dd>
+          </div>
+          {% if r.eviction_triggering_wallet %}
+          <div>
+            <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Évincé par</dt>
+            <dd class="font-mono text-xs">{{ r.eviction_triggering_wallet | short_hash }}</dd>
+          </div>
+          {% endif %}
+        </dl>
+      {% endif %}
+      {% if r.previously_demoted_at %}
+        <p class="mt-3 text-xs" style="color: var(--color-muted);">
+          <i data-lucide="history" class="w-3.5 h-3.5 inline" style="margin-bottom: 2px;"></i>
+          Re-observation depuis demote : {{ r.previously_demoted_at | humanize_dt }}
+        </p>
+      {% endif %}
     </div>
   </details>
   {% endfor %}

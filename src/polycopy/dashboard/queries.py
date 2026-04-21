@@ -89,7 +89,12 @@ class HomeKpis:
 
 @dataclass(frozen=True)
 class TraderRow:
-    """Ligne pour la page `/traders` (1 ligne = 1 wallet + latest score)."""
+    """Ligne pour la page `/traders` (1 ligne = 1 wallet + latest score).
+
+    M5_bis Phase D.2 : ajout de ``previously_demoted_at`` (flag UX
+    "re-observation après demote"), ``eviction_state_entered_at``
+    (timer wind-down), ``eviction_triggering_wallet`` (audit cascade).
+    """
 
     wallet_address: str
     label: str | None
@@ -100,6 +105,9 @@ class TraderRow:
     last_scored_at: datetime | None
     discovered_at: datetime | None
     consecutive_low_score_cycles: int
+    previously_demoted_at: datetime | None = None
+    eviction_state_entered_at: datetime | None = None
+    eviction_triggering_wallet: str | None = None
 
 
 @dataclass(frozen=True)
@@ -415,6 +423,9 @@ async def list_traders(
             last_scored_at=t.last_scored_at,
             discovered_at=t.discovered_at,
             consecutive_low_score_cycles=int(t.consecutive_low_score_cycles),
+            previously_demoted_at=t.previously_demoted_at,
+            eviction_state_entered_at=t.eviction_state_entered_at,
+            eviction_triggering_wallet=t.eviction_triggering_wallet,
         )
         for t in traders
     ]

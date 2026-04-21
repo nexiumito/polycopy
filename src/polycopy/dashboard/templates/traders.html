@@ -7,7 +7,8 @@
   Cibles observées par le bot, avec leur score M5 le plus récent.
   Statuts : <strong>pinned</strong> = fixé via <code>TARGET_WALLETS</code> (jamais retiré) ·
   <strong>active</strong> = copié · <strong>shadow</strong> = observation ·
-  <strong>paused</strong> = retiré (sous seuil K cycles).
+  <strong>sell-only</strong> = wind-down M5_bis (SELL copiés, BUY bloqués) ·
+  <strong>blacklisted</strong> = exclu via <code>BLACKLISTED_WALLETS</code>.
 </p>
 
 <nav class="flex flex-wrap gap-2 mb-4 text-sm">
@@ -15,7 +16,8 @@
   <a href="/traders?status=pinned" class="filter-chip {% if status_filter == 'pinned' %}filter-chip-active{% endif %}">Pinned</a>
   <a href="/traders?status=active" class="filter-chip {% if status_filter == 'active' %}filter-chip-active{% endif %}">Active</a>
   <a href="/traders?status=shadow" class="filter-chip {% if status_filter == 'shadow' %}filter-chip-active{% endif %}">Shadow</a>
-  <a href="/traders?status=paused" class="filter-chip {% if status_filter == 'paused' %}filter-chip-active{% endif %}">Paused</a>
+  <a href="/traders?status=sell_only" class="filter-chip {% if status_filter == 'sell_only' %}filter-chip-active{% endif %}">Sell-only</a>
+  <a href="/traders?status=blacklisted" class="filter-chip {% if status_filter == 'blacklisted' %}filter-chip-active{% endif %}">Blacklisted</a>
 </nav>
 
 <section id="traders"
