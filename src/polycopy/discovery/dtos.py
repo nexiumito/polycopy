@@ -27,7 +27,15 @@ DecisionKind = Literal[
     "revived_shadow",
 ]
 
-TraderStatus = Literal["shadow", "active", "paused", "pinned", "absent"]
+TraderStatus = Literal[
+    "shadow",
+    "active",
+    "paused",  # deprecated M5_bis Phase A, retiré par DecisionEngine Phase C
+    "pinned",
+    "absent",
+    "sell_only",  # M5_bis : wind-down réversible
+    "blacklisted",  # M5_bis : terminal, piloté par BLACKLISTED_WALLETS env
+]
 
 
 class CandidateWallet(BaseModel):

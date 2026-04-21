@@ -361,7 +361,16 @@ def aggregate_orders_by_status(orders: list[MyOrder]) -> dict[str, int]:
 # --- M5 discovery queries ---------------------------------------------------
 
 
-_VALID_TRADER_STATUSES = frozenset({"shadow", "active", "paused", "pinned"})
+_VALID_TRADER_STATUSES = frozenset(
+    {
+        "shadow",
+        "active",
+        "paused",  # deprecated M5_bis Phase A, retiré runtime Phase C
+        "pinned",
+        "sell_only",  # M5_bis : filtre dashboard wind-down
+        "blacklisted",  # M5_bis : filtre dashboard exclusions
+    },
+)
 
 
 async def list_traders(

@@ -34,8 +34,20 @@ from polycopy.storage.models import (
 log = structlog.get_logger(__name__)
 
 
-_TraderStatus = Literal["shadow", "active", "paused", "pinned"]
-_StatusTransition = Literal["shadow", "active", "paused"]
+_TraderStatus = Literal[
+    "shadow",
+    "active",
+    "paused",  # deprecated M5_bis Phase A, retiré par DecisionEngine Phase C
+    "pinned",
+    "sell_only",  # M5_bis : wind-down réversible (BUY bloqué, SELL copié)
+    "blacklisted",  # M5_bis : terminal, piloté par BLACKLISTED_WALLETS env
+]
+_StatusTransition = Literal[
+    "shadow",
+    "active",
+    "paused",  # deprecated M5_bis Phase A, retiré par DecisionEngine Phase C
+    "sell_only",
+]
 
 
 class TargetTraderRepository:

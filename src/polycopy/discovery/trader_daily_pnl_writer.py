@@ -32,12 +32,19 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_ScannableStatus = Literal["shadow", "active", "paused", "pinned"]
+_ScannableStatus = Literal[
+    "shadow",
+    "active",
+    "paused",  # deprecated M5_bis Phase A, retiré runtime Phase C
+    "pinned",
+    "sell_only",  # M5_bis : wallet en wind-down, toujours scoré
+]
 _SCANNABLE_STATUSES: tuple[_ScannableStatus, ...] = (
     "shadow",
     "active",
     "paused",
     "pinned",
+    "sell_only",
 )
 
 
