@@ -16,7 +16,7 @@ Audit manuel requis : SQLite ne supporte pas ALTER COLUMN TYPE, donc
 ``batch_alter_table(recreate="always")`` copie la table. Pattern
 cohérent avec migration 0003 M5.
 
-Cf. spec [docs/specs/M5_bis_competitive_eviction_spec.md §6](../../docs/specs/M5_bis_competitive_eviction_spec.md).
+Cf. spec `docs/specs/M5_bis_competitive_eviction_spec.md` §6.
 
 Revision ID: 0007_m5_bis_eviction
 Revises: 0006_m12_trader_daily_pnl
