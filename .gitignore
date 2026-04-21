@@ -30,6 +30,7 @@ htmlcov/
 # DB
 *.db
 *.db-journal
+*.db.bak-*
 *.sqlite
 *.sqlite3
 
