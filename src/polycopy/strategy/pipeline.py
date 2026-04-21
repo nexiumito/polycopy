@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.storage.dtos import DetectedTradeDTO
-from polycopy.storage.models import MyPosition
+from polycopy.storage.models import MyPosition, TargetTrader
 from polycopy.strategy.clob_read_client import ClobReadClient
 from polycopy.strategy.dtos import FilterResult, PipelineContext
 from polycopy.strategy.gamma_client import GammaApiClient
@@ -34,6 +34,49 @@ if TYPE_CHECKING:
     from polycopy.strategy.clob_ws_client import ClobMarketWSClient
 
 log = structlog.get_logger(__name__)
+
+
+class TraderLifecycleFilter:
+    """Bloque les BUY pour les wallets en ``sell_only`` (M5_bis Phase C.4).
+
+    Les SELL passent toujours — c'est le contrat wind-down : le bot
+    continue à copier les SELL du wallet source pour fermer naturellement
+    les positions ouvertes (pas de force-close, spec §9).
+
+    Fast path : si ``EVICTION_ENABLED=false``, le filtre retourne
+    instantanément ``passed=True`` sans query DB — zéro coût runtime en
+    configuration M5 stricte.
+
+    Placement pipeline : **premier** filtre (avant MarketFilter), car un
+    BUY rejeté côté lifecycle n'a pas besoin d'appeler Gamma ni le
+    midpoint CLOB. Coût nominal = 1 query indexée sur
+    ``target_traders.wallet_address`` (index unique M1).
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+    ) -> None:
+        self._sf = session_factory
+        self._settings = settings
+
+    async def check(self, ctx: PipelineContext) -> FilterResult:
+        if not self._settings.eviction_enabled:
+            return FilterResult(passed=True)
+        if ctx.trade.side == "SELL":
+            return FilterResult(passed=True)
+        # BUY : lookup wallet status (normalisation lowercase cohérente).
+        async with self._sf() as session:
+            stmt = select(TargetTrader.status).where(
+                TargetTrader.wallet_address == ctx.trade.target_wallet.lower(),
+            )
+            status = (await session.execute(stmt)).scalar_one_or_none()
+        if status == "sell_only":
+            return FilterResult(passed=False, reason="wallet_sell_only")
+        if status == "blacklisted":
+            return FilterResult(passed=False, reason="wallet_blacklisted")
+        return FilterResult(passed=True)
 
 
 class MarketFilter:
@@ -208,6 +251,7 @@ async def run_pipeline(
     """
     ctx = PipelineContext(trade=trade)
     filters = (
+        ("TraderLifecycleFilter", TraderLifecycleFilter(session_factory, settings)),
         ("MarketFilter", MarketFilter(gamma_client, settings)),
         ("PositionSizer", PositionSizer(session_factory, settings)),
         ("SlippageChecker", SlippageChecker(clob_client, settings, ws_client)),

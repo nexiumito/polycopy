@@ -258,7 +258,8 @@ async def test_full_pipeline_approved(
     assert ctx.market is not None
     assert ctx.my_size is not None and ctx.my_size > 0
     assert ctx.midpoint == 0.0805
-    assert len(ctx.filter_trace) == 4
+    # M5_bis Phase C.4 : 5 filtres désormais (ajout TraderLifecycleFilter en tête).
+    assert len(ctx.filter_trace) == 5
     assert all(step["passed"] for step in ctx.filter_trace)
 
 
@@ -278,6 +279,12 @@ async def test_full_pipeline_rejects_first_failing_filter(
     )
     assert decision == "REJECTED"
     assert reason == "market_not_found"
-    # Pipeline arrêté au 1er filtre — clob.get_midpoint jamais appelé.
+    # Pipeline arrêté au MarketFilter — clob.get_midpoint jamais appelé.
     clob.get_midpoint.assert_not_called()
-    assert len(ctx.filter_trace) == 1
+    # M5_bis Phase C.4 : TraderLifecycleFilter passe (EVICTION_ENABLED=false
+    # fast path), MarketFilter rejette → 2 traces.
+    assert len(ctx.filter_trace) == 2
+    assert ctx.filter_trace[0]["filter"] == "TraderLifecycleFilter"
+    assert ctx.filter_trace[0]["passed"] is True
+    assert ctx.filter_trace[1]["filter"] == "MarketFilter"
+    assert ctx.filter_trace[1]["passed"] is False
