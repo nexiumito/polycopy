@@ -60,13 +60,23 @@ class TargetTraderRepository:
         """Retourne les traders actuellement suivis par le Watcher.
 
         Defense in depth M5 : filtre sur ``active=True`` **ET**
-        ``status IN ('active', 'pinned')``. Si l'invariante glisse (bug M5),
-        on protège le watcher d'aller poller un wallet en `shadow` ou `paused`.
+        ``status IN ('active', 'pinned', 'sell_only')``.
+
+        M5_bis Phase C : ``sell_only`` est inclus car le watcher doit
+        continuer à poller ces wallets pour détecter leurs SELL (que le
+        bot copie — les BUY sont bloqués en aval par
+        :class:`~polycopy.strategy.pipeline.TraderLifecycleFilter`).
+        C'est la différence fondamentale avec ``shadow`` : un shadow
+        n'est pas polled, un sell_only l'est.
+
+        Si l'invariante glisse (bug M5/M5_bis), on protège quand même le
+        watcher d'aller poller un wallet en ``shadow``, ``paused``
+        (legacy), ou ``blacklisted``.
         """
         async with self._session_factory() as session:
             stmt = select(TargetTrader).where(
                 TargetTrader.active.is_(True),
-                TargetTrader.status.in_(("active", "pinned")),
+                TargetTrader.status.in_(("active", "pinned", "sell_only")),
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
