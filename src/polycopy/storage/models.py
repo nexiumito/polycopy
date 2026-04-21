@@ -36,6 +36,13 @@ class TargetTrader(Base):
     M5 étend ce modèle avec le lifecycle ``status``, le flag ``pinned`` (seed
     `TARGET_WALLETS`, jamais retiré par M5), le compteur d'hystérésis demote,
     et des timestamps d'audit (`discovered_at`, `promoted_at`, `last_scored_at`).
+
+    M5_bis étend le lifecycle avec deux nouveaux états — ``sell_only``
+    (wind-down réversible, watcher continue à copier les SELL, BUY bloqués
+    par ``TraderLifecycleFilter``) et ``blacklisted`` (terminal, piloté par
+    ``BLACKLISTED_WALLETS`` env). Le status ``paused`` est retiré : la
+    migration 0007 convertit les rows existantes en ``shadow`` avec
+    ``previously_demoted_at`` posé comme flag UX.
     """
 
     __tablename__ = "target_traders"
@@ -50,18 +57,23 @@ class TargetTrader(Base):
         default=_now_utc,
         nullable=False,
     )
-    # --- M5 extensions (0003 migration) ----------------------------------
-    # status ∈ {'shadow', 'active', 'paused', 'pinned'}. Dérivé en sync avec `active`
-    # (active=True ⟺ status ∈ {'active', 'pinned'}). Indexé pour les queries
-    # par status dans le dashboard + pipeline discovery.
+    # --- M5 + M5_bis extensions -----------------------------------------
+    # status ∈ {'shadow', 'active', 'sell_only', 'pinned', 'blacklisted'}.
+    # Invariants :
+    #   - active=True ⟺ status ∈ {'active', 'pinned', 'sell_only'} (watcher
+    #     poll les trois pour copier SELL).
+    #   - pinned=True ⟺ status='pinned'.
+    # Width=16 : 'blacklisted'=11 chars, 'sell_only'=9 chars. M5 initial
+    # était String(8) — migration 0007 widen.
     status: Mapped[str] = mapped_column(
-        String(8),
+        String(16),
         nullable=False,
         default="active",
         server_default="active",
         index=True,
     )
-    # True ⟺ wallet vient de TARGET_WALLETS env. Jamais demote-able par M5.
+    # True ⟺ wallet vient de TARGET_WALLETS env. Jamais demote-able ni
+    # évinçable par M5/M5_bis.
     pinned: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -88,6 +100,28 @@ class TargetTrader(Base):
         nullable=True,
     )
     scoring_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # M5_bis : flag UX posé quand un wallet repasse `active → shadow` via
+    # demote hystérésis M5 (ex-`paused`) OU via migration 0007. Permet au
+    # dashboard d'afficher "re-observation" plutôt qu'un shadow neuf.
+    previously_demoted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # M5_bis : timestamp d'entrée dans le status courant quand celui-ci est
+    # `sell_only`. Sert au dashboard (durée wind-down) et au debug audit.
+    # Clear quand le wallet quitte `sell_only` (T6/T7/T8).
+    eviction_state_entered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # M5_bis : wallet candidat qui a causé la transition `active → sell_only`.
+    # Nullable. FK logique (pas de contrainte SQLite) vers wallet_address.
+    # Clé pour évaluer la condition d'abort T6 (delta candidat↔self repasse
+    # sous EVICTION_SCORE_MARGIN × N cycles).
+    eviction_triggering_wallet: Mapped[str | None] = mapped_column(
+        String(42),
+        nullable=True,
+    )
 
 
 class DetectedTrade(Base):
@@ -296,11 +330,18 @@ class TraderScore(Base):
 
 
 class TraderEvent(Base):
-    """Audit trail append-only : chaque décision M5 sur un wallet.
+    """Audit trail append-only : chaque décision M5/M5_bis sur un wallet.
 
     Écrit avec un event_type descriptif (`discovered`, `promoted_active`,
-    `demoted_paused`, `kept`, `skipped_blacklist`, `skipped_cap`,
-    `manual_override`) + snapshot du score à l'instant et `scoring_version`.
+    `demoted_to_shadow`, `kept`, `skipped_blacklist`, `skipped_cap`,
+    `manual_override` pour M5 ; `promoted_active_via_eviction`,
+    `demoted_to_sell_only`, `eviction_aborted`, `promoted_active_via_rebound`,
+    `eviction_completed_to_shadow`, `blacklisted`, `blacklist_removed`
+    pour M5_bis) + snapshot du score à l'instant et `scoring_version`.
+
+    ``from_status`` / ``to_status`` sont élargis à ``String(16)`` par la
+    migration 0007 pour accueillir ``sell_only`` (9 chars) et
+    ``blacklisted`` (11 chars).
     """
 
     __tablename__ = "trader_events"
@@ -314,8 +355,8 @@ class TraderEvent(Base):
         index=True,
         nullable=False,
     )
-    from_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    to_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    from_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     score_at_event: Mapped[float | None] = mapped_column(Float, nullable=True)
     scoring_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
