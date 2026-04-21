@@ -740,6 +740,46 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- M5_bis — compétition adaptative entre wallets (eviction) -------------
+    # Opt-in strict. Off par défaut = zéro diff lifecycle M5 (cf. spec §13).
+    eviction_enabled: bool = Field(
+        False,
+        description=(
+            "Active la compétition adaptative M5_bis : un shadow/sell_only "
+            "significativement meilleur qu'un active peut l'évincer (cascade "
+            "active → sell_only). Off = lifecycle M5 strict."
+        ),
+    )
+    eviction_score_margin: float = Field(
+        0.15,
+        ge=0.05,
+        le=0.50,
+        description=(
+            "Delta minimum score(candidat) - score(worst_active) requis pour "
+            "déclencher une eviction. Applique aussi à l'abort (T6) et au "
+            "rebond (T7) — même valeur pour les 3 directions."
+        ),
+    )
+    eviction_hysteresis_cycles: int = Field(
+        3,
+        ge=1,
+        le=10,
+        description=(
+            "Cycles consécutifs où la condition d'eviction/abort/rebond doit "
+            "tenir avant déclenchement (anti-whipsaw, cf. spec §4.3)."
+        ),
+    )
+    max_sell_only_wallets: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description=(
+            "Cap dur sur le pool sell_only. Évite la cascade pathologique si "
+            "les scores sont très volatils. Par défaut égal à MAX_ACTIVE_TRADERS "
+            "(le validator cross-field aligne les deux si non set explicitement)."
+        ),
+    )
+
     # --- Scoring v2 — shadow period + backtest + cutover (M12 §6.1) ----------
     # Tant que SCORING_VERSION=v1 (default), v2 ne pilote rien. SHADOW_DAYS>0
     # active le dual-compute en parallèle (observation) — seule v1 reste
@@ -930,6 +970,31 @@ class Settings(BaseSettings):
                 "SCORING_DEMOTION_THRESHOLD "
                 f"({self.scoring_demotion_threshold}) must be strictly less than "
                 f"SCORING_PROMOTION_THRESHOLD ({self.scoring_promotion_threshold}).",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_m5_bis_eviction(self) -> "Settings":
+        """Cross-field M5_bis : TARGET_WALLETS ∩ BLACKLISTED_WALLETS impossible.
+
+        Si l'utilisateur ajoute un wallet à la fois dans ``TARGET_WALLETS`` et
+        ``BLACKLISTED_WALLETS``, l'intention est ambiguë (whitelist vs
+        exclusion). Crash boot clair plutôt que comportement surprise.
+
+        N'exécute la vérification que si ``EVICTION_ENABLED=true`` — en off,
+        ``BLACKLISTED_WALLETS`` garde sa sémantique M5 (skip silent) et le
+        conflit reste cosmétique.
+        """
+        if not self.eviction_enabled:
+            return self
+        target_lc = {w.lower() for w in self.target_wallets}
+        blacklist_lc = {w.lower() for w in self.blacklisted_wallets}
+        overlap = sorted(target_lc & blacklist_lc)
+        if overlap:
+            raise ValueError(
+                "Conflict: wallets "
+                f"{overlap} are in both TARGET_WALLETS and BLACKLISTED_WALLETS. "
+                "Pick one (EVICTION_ENABLED=true forbids this overlap).",
             )
         return self
 

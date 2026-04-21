@@ -18,16 +18,40 @@ Cf. ``docs/specs/M5_bis_competitive_eviction_spec.md`` §4 (state machine)
 et §7 (architecture).
 """
 
+from polycopy.discovery.eviction.cascade_planner import (
+    CascadePlan,
+    CascadePlanner,
+    EvictionCandidate,
+    TraderSnapshot,
+)
 from polycopy.discovery.eviction.dtos import (
+    TRANSITION_TO_EVENT_TYPE,
     EvictionDecision,
     EvictionTransition,
     HysteresisDirection,
     HysteresisState,
 )
+from polycopy.discovery.eviction.hysteresis_tracker import HysteresisTracker
+from polycopy.discovery.eviction.scheduler import EvictionScheduler
+from polycopy.discovery.eviction.state_machine import (
+    StateMachineInputs,
+    classify_sell_only_transitions,
+    reconcile_blacklist_decisions,
+)
 
 __all__ = [
+    "TRANSITION_TO_EVENT_TYPE",
+    "CascadePlan",
+    "CascadePlanner",
+    "EvictionCandidate",
     "EvictionDecision",
+    "EvictionScheduler",
     "EvictionTransition",
     "HysteresisDirection",
     "HysteresisState",
+    "HysteresisTracker",
+    "StateMachineInputs",
+    "TraderSnapshot",
+    "classify_sell_only_transitions",
+    "reconcile_blacklist_decisions",
 ]

@@ -196,7 +196,10 @@ class TargetTraderRepository:
     ) -> TargetTrader:
         """Change atomiquement le statut d'un trader.
 
-        - Met ``active=True`` si ``new_status='active'``, sinon ``active=False``.
+        - Met ``active=True`` pour ``'active'`` et ``'sell_only'`` (le
+          watcher doit continuer à poller les sell_only pour copier les
+          SELL du wallet source, cf. spec M5_bis §4.1). Sinon
+          ``active=False``.
         - Set ``promoted_at`` à l'instant si transition vers ``'active'``.
         - Reset ``consecutive_low_score_cycles=0`` si ``reset_hysteresis=True``.
         - **Raise ValueError** si le wallet est ``pinned`` — les pinned sont
@@ -214,7 +217,7 @@ class TargetTraderRepository:
                     f"(from={trader.status!r} to={new_status!r})",
                 )
             trader.status = new_status
-            trader.active = new_status == "active"
+            trader.active = new_status in ("active", "sell_only")
             if new_status == "active":
                 trader.promoted_at = datetime.now(tz=UTC)
             if reset_hysteresis:
@@ -222,6 +225,90 @@ class TargetTraderRepository:
             await session.commit()
             await session.refresh(trader)
             return trader
+
+    async def transition_status_unsafe(
+        self,
+        wallet_address: str,
+        *,
+        new_status: Literal["blacklisted", "shadow", "pinned"],
+    ) -> TargetTrader:
+        """Force une transition incluant depuis/vers ``pinned`` — M5_bis uniquement.
+
+        Utilisé exclusivement par
+        :class:`~polycopy.discovery.eviction.scheduler.EvictionScheduler.
+        reconcile_blacklist` pour T10/T11/T12 : l'utilisateur peut
+        blacklist même un wallet ``pinned`` via ``BLACKLISTED_WALLETS``
+        env (sa whitelist TARGET_WALLETS est alors surclassée par son
+        action explicite d'exclusion). Symétriquement, un wallet retiré
+        de la blacklist ET présent dans ``TARGET_WALLETS`` est restauré
+        en ``pinned``.
+
+        ``active`` est dérivé : ``blacklisted`` → False, ``shadow`` →
+        False, ``pinned`` → True. ``consecutive_low_score_cycles``
+        inchangé (la blacklist est orthogonale à l'hystérésis M5).
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                raise ValueError(f"TargetTrader not found for wallet {wallet_lower}")
+            trader.status = new_status
+            trader.active = new_status == "pinned"
+            trader.pinned = new_status == "pinned"
+            await session.commit()
+            await session.refresh(trader)
+            return trader
+
+    async def set_eviction_state(
+        self,
+        wallet_address: str,
+        *,
+        entered_at: datetime | None,
+        triggering_wallet: str | None,
+    ) -> None:
+        """Écrit ou clear les 2 colonnes M5_bis liées au sell_only.
+
+        - Entrée ``sell_only`` : ``entered_at=now``, ``triggering_wallet=<candidat>``.
+        - Sortie ``sell_only`` (T6/T7/T8) : ``entered_at=None``, ``triggering_wallet=None``.
+
+        ``triggering_wallet`` est normalisé lowercase comme toutes les
+        adresses wallet du projet.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                return
+            trader.eviction_state_entered_at = entered_at
+            trader.eviction_triggering_wallet = (
+                triggering_wallet.lower() if triggering_wallet is not None else None
+            )
+            await session.commit()
+
+    async def set_previously_demoted_at(
+        self,
+        wallet_address: str,
+        *,
+        at: datetime,
+    ) -> None:
+        """Pose le flag UX ``previously_demoted_at`` sur un wallet.
+
+        Appelé quand un wallet passe ``active → shadow`` via demote
+        hystérésis M5 (futur Phase C remplace l'ancien ``paused``) OU au
+        moment de la migration 0007 (déjà fait par SQL direct, pas par
+        ce helper). Ce helper existe pour Phase C quand DecisionEngine
+        réécrit la branche demote.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                return
+            trader.previously_demoted_at = at
+            await session.commit()
 
     async def increment_low_score(self, wallet_address: str) -> int:
         """Incrémente `consecutive_low_score_cycles`, retourne la nouvelle valeur."""

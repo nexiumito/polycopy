@@ -126,6 +126,18 @@ TraderEventType = Literal[
     "revived_shadow",
     # M12 — scoring v2 gates (cf. spec M12 §4.3) : wallet rejeté avant scoring.
     "gate_rejected",
+    # M5_bis — competitive eviction (cf. spec §11).
+    "promoted_active_via_eviction",
+    "demoted_to_sell_only",
+    "eviction_aborted",
+    "promoted_active_via_rebound",
+    "eviction_completed_to_shadow",
+    "eviction_deferred_one_per_cycle",
+    "eviction_deferred_sell_only_cap",
+    "blacklisted",
+    "blacklist_removed",
+    # M5_bis Phase C (prépare le rewrite DecisionEngine demote) :
+    "demoted_to_shadow",
 ]
 
 
