@@ -3,7 +3,7 @@
   <p class="text-sm py-4" style="color: var(--color-muted);">Aucun log trouvé pour ces filtres.</p>
 {% else %}
   <p class="text-xs mb-2" style="color: var(--color-muted);">
-    {{ entries|length }} entrée(s) — du plus ancien au plus récent.
+    {{ entries|length }} entrée(s) — du plus récent au plus ancien.
   </p>
   {% for entry in entries %}
     {% set lvl = (entry.level or "info")|lower %}

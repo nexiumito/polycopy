@@ -176,6 +176,23 @@ async def test_partials_logs_tail_returns_fragment(
 
 
 @pytest.mark.asyncio
+async def test_partials_logs_tail_order_label_matches_rendering(
+    client_with_logs: tuple[AsyncClient, Path],
+) -> None:
+    """Le libellé doit refléter l'ordre de rendu : récent → ancien.
+
+    Le reader lit le fichier en ordre chronologique (asc), puis routes.py
+    applique list(reversed(filtered)) avant rendu → UI desc. Le libellé doit
+    être cohérent (sinon l'utilisateur lit l'inverse de ce qui est affiché).
+    """
+    client, _ = client_with_logs
+    res = await client.get("/partials/logs-tail")
+    assert res.status_code == 200
+    assert "du plus récent au plus ancien" in res.text
+    assert "du plus ancien au plus récent" not in res.text
+
+
+@pytest.mark.asyncio
 async def test_partials_logs_tail_disabled_returns_empty_fragment(
     client_logs_disabled: AsyncClient,
 ) -> None:
