@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -199,3 +200,77 @@ async def test_startup_no_pinned_but_discovery_enabled_shows_friendly_message(
     # L'ancienne suggestion ambiguë n'est plus affichée.
     assert "activer `DISCOVERY_ENABLED`" not in body
     assert "activer \\`DISCOVERY\\_ENABLED\\`" not in body
+
+
+def _telegram_text(body: str) -> str:
+    """Extrait le champ ``text`` du payload JSON envoyé à Telegram.
+
+    Le body est du JSON, donc les ``\\`` de l'échappement MarkdownV2 sont
+    doublés dans la sérialisation. En désérialisant, on obtient la chaîne
+    MarkdownV2 brute ("127\\.0\\.0\\.1:8787"), plus facile à asserter.
+    """
+    return str(json.loads(body)["text"])
+
+
+@pytest.mark.asyncio
+async def test_startup_dashboard_line_shows_localhost_when_tailscale_off(
+    session_factory: async_sessionmaker[AsyncSession],
+    http_client: httpx.AsyncClient,
+    sample_telegram_response: dict[str, Any],
+) -> None:
+    """``DASHBOARD_BIND_TAILSCALE=false`` → la ligne Dashboard affiche
+    ``127.0.0.1:8787`` (fallback classique)."""
+    settings = _settings(
+        dashboard_enabled=True,
+        dashboard_bind_tailscale=False,
+        dashboard_host="127.0.0.1",
+        dashboard_port=8787,
+    )
+    tg = TelegramClient(http_client, settings)
+    notifier = StartupNotifier(session_factory, tg, AlertRenderer(), settings)
+    with respx.mock() as mock:
+        route = mock.post(f"https://api.telegram.org/bot{_TOKEN}/sendMessage").mock(
+            return_value=httpx.Response(200, json=sample_telegram_response),
+        )
+        await notifier.send_once(asyncio.Event())
+    text = _telegram_text(route.calls[0].request.content.decode())
+    # Points échappés par telegram_md_escape dans MarkdownV2.
+    assert r"127\.0\.0\.1:8787" in text
+
+
+@pytest.mark.asyncio
+async def test_startup_dashboard_line_reflects_tailscale_bind_when_enabled(
+    session_factory: async_sessionmaker[AsyncSession],
+    http_client: httpx.AsyncClient,
+    sample_telegram_response: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Régression : ``DASHBOARD_BIND_TAILSCALE=true`` + tailnet résolu →
+    la ligne Dashboard affiche l'URL Tailscale (``machine.tailnet:port``) au
+    lieu de ``127.0.0.1:8787`` — cohérent avec le bind effectif d'uvicorn
+    et le lien cliquable ``[📊 Dashboard]`` en bas du message."""
+    # Tailnet résolu via monkeypatch (évite shell out vers ``tailscale``).
+    monkeypatch.setattr(
+        "polycopy.monitoring.dashboard_url.resolve_tailnet_name",
+        lambda _settings: "tail-abc.ts.net",
+    )
+    settings = _settings(
+        dashboard_enabled=True,
+        dashboard_bind_tailscale=True,
+        dashboard_host="127.0.0.1",
+        dashboard_port=8787,
+        machine_id="PC-ELIE",
+    )
+    tg = TelegramClient(http_client, settings)
+    notifier = StartupNotifier(session_factory, tg, AlertRenderer(), settings)
+    with respx.mock() as mock:
+        route = mock.post(f"https://api.telegram.org/bot{_TOKEN}/sendMessage").mock(
+            return_value=httpx.Response(200, json=sample_telegram_response),
+        )
+        await notifier.send_once(asyncio.Event())
+    text = _telegram_text(route.calls[0].request.content.decode())
+    # URL Tailscale présente (points + tirets échappés par telegram_md_escape).
+    assert r"pc\-elie\.tail\-abc\.ts\.net:8787" in text
+    # Pas de ``127.0.0.1:8787`` dans la ligne Dashboard : on asserte
+    # l'absence sur la forme escaped pour éviter les faux positifs.
+    assert r"127\.0\.0\.1:8787" not in text

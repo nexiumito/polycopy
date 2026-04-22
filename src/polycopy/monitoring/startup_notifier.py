@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.monitoring.alert_renderer import AlertRenderer
+from polycopy.monitoring.dashboard_url import compute_dashboard_url
 from polycopy.monitoring.dtos import ModuleStatus, PinnedWallet, StartupContext
 from polycopy.monitoring.md_escape import wallet_short
 from polycopy.monitoring.telegram_client import TelegramClient
@@ -140,11 +141,7 @@ class StartupNotifier:
             ModuleStatus(
                 name="Dashboard",
                 enabled=self._settings.dashboard_enabled,
-                detail=(
-                    f"{self._settings.dashboard_host}:{self._settings.dashboard_port}"
-                    if self._settings.dashboard_enabled
-                    else "désactivé"
-                ),
+                detail=_dashboard_detail(self._settings),
             ),
             ModuleStatus(
                 name="Discovery",
@@ -169,6 +166,28 @@ def _executor_detail(execution_mode: str) -> str:
     if execution_mode == "simulation":
         return "simulation"
     return "simulé"
+
+
+def _dashboard_detail(settings: Settings) -> str:
+    """Texte ``host:port`` pour la ligne Dashboard du startup message.
+
+    Reflète le **bind effectif** : si ``DASHBOARD_BIND_TAILSCALE=true`` avec
+    tailnet et ``MACHINE_ID`` résolus, affiche ``{machine_id}.{tailnet}:{port}``
+    (cohérent avec le lien cliquable ``[📊 Dashboard]`` en bas du message).
+    Sinon fallback sur ``{DASHBOARD_HOST}:{DASHBOARD_PORT}``. Évite le piège
+    "127.0.0.1:8787 affiché alors que uvicorn bind sur l'IP Tailscale".
+    """
+    if not settings.dashboard_enabled:
+        return "désactivé"
+    url = compute_dashboard_url(settings)
+    if url is None:
+        # Ne devrait pas arriver (dashboard_enabled=True implique une URL)
+        # mais on reste défensif.
+        return f"{settings.dashboard_host}:{settings.dashboard_port}"
+    # Extrait ``host:port`` de ``http://host:port/``. Pas d'urlparse : on veut
+    # un format compact et stable, peu importe le scheme ou le path.
+    stripped = url.removeprefix("http://").removeprefix("https://").rstrip("/")
+    return stripped or f"{settings.dashboard_host}:{settings.dashboard_port}"
 
 
 def _resolve_version() -> str:
