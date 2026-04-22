@@ -21,7 +21,7 @@
          hx-get="/partials/performance-rows{% if status_filter %}?status={{ status_filter | urlencode }}{% endif %}"
          hx-trigger="load, every {{ poll_interval * 4 }}s[document.visibilityState==='visible']"
          hx-swap="innerHTML"
-         class="rounded-xl border overflow-hidden"
+         class="rounded-xl border overflow-x-auto"
          style="border-color: var(--color-border); background: var(--color-surface);">
   <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
 </section>

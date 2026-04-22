@@ -94,7 +94,9 @@
   <div class="hidden text-polycopy-profit text-polycopy-loss text-polycopy-warning text-polycopy-neutral text-polycopy-critical bg-polycopy-surface bg-polycopy-bg border-polycopy-border"></div>
 </head>
 <body class="min-h-screen">
-  <div class="flex min-h-screen">
+  {# Mobile : stack vertical (nav <details> en haut, main en-dessous).
+     ≥ md : row classique (sidebar gauche + main droit). #}
+  <div class="flex flex-col md:flex-row min-h-screen">
     {# --- Sidebar : visible desktop, réduite tablet, hamburger mobile --- #}
     <aside id="sidebar"
            class="hidden md:flex md:flex-col md:w-16 lg:w-60 shrink-0 border-r"
