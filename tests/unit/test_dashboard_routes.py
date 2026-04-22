@@ -224,6 +224,68 @@ async def test_each_page_returns_200(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_partials_positions_rows_renders_outcome_and_invested(
+    dashboard_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    detected_trade_repo: DetectedTradeRepository,
+    my_position_repo,  # type: ignore[no-untyped-def]
+) -> None:
+    """Commit 4 : rows enrichis affichent outcome pill + USDC misé + payoff max."""
+    await detected_trade_repo.insert_if_new(
+        DetectedTradeDTO(
+            tx_hash="0xsrcbuy",
+            target_wallet="0xwallet",
+            condition_id="0xcond",
+            asset_id="123",
+            side="BUY",
+            size=3.0,
+            usdc_size=1.2,
+            price=0.4,
+            timestamp=datetime.now(tz=UTC),
+            outcome="Yes",
+            slug="market-slug",
+            raw_json={"tx_hash": "0xsrcbuy"},
+        ),
+    )
+    await my_position_repo.upsert_on_fill("0xcond", "123", "BUY", 3.0, 0.4)
+
+    res = await dashboard_client.get("/partials/positions-rows?state=open")
+    assert res.status_code == 200
+    body = res.text
+    # Badge outcome + termes humains explicites.
+    assert "badge-ok" in body  # "Yes" → badge profit (vert).
+    assert "Yes" in body
+    assert "misé" in body
+    assert "payoff max" in body
+    # USDC invested = 3.0 * 0.4 = 1.20 → format_usd "$1.20".
+    assert "$1.20" in body
+    # Payoff max = 3.0 * 1.0 = 3.0 → format_usd "$3.00".
+    assert "$3.00" in body
+
+
+@pytest.mark.asyncio
+async def test_partials_positions_rows_empty_closed_shows_diagnostic(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Commit 4 : état vide sur state=closed affiche un message diagnostique."""
+    res = await dashboard_client.get("/partials/positions-rows?state=closed")
+    assert res.status_code == 200
+    assert "Aucune position fermée pour le moment" in res.text
+    assert "DryRunResolutionWatcher" in res.text
+
+
+@pytest.mark.asyncio
+async def test_partials_positions_rows_empty_default_shows_generic(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Le message diagnostique ne pollue pas les autres états vides."""
+    res = await dashboard_client.get("/partials/positions-rows")
+    assert res.status_code == 200
+    assert "Aucune position pour ce filtre" in res.text
+    assert "DryRunResolutionWatcher" not in res.text
+
+
+@pytest.mark.asyncio
 async def test_traders_page_filter_querystring(
     dashboard_client: AsyncClient,
 ) -> None:

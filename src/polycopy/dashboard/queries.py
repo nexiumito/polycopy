@@ -119,6 +119,30 @@ class PnlSeries:
     drawdown_pct: list[float]
 
 
+@dataclass(frozen=True)
+class PositionRow:
+    """Ligne enrichie pour la page ``/positions`` (commit 4).
+
+    ``usdc_invested = size * avg_price`` ; ``payoff_max = size * 1.0``
+    (outcome tokens CLOB paient $1 au gagnant). ``outcome_label`` est joint
+    depuis ``DetectedTrade.outcome`` sur ``(condition_id, asset_id)``, ``None``
+    si aucun trade source n'a persisté un outcome lisible.
+    """
+
+    id: int
+    condition_id: str
+    asset_id: str
+    size: float
+    avg_price: float
+    usdc_invested: float
+    payoff_max: float
+    outcome_label: str | None
+    opened_at: datetime
+    closed_at: datetime | None
+    simulated: bool
+    realized_pnl: float | None
+
+
 async def fetch_home_kpis(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> HomeKpis:
@@ -305,8 +329,13 @@ async def list_positions(
     state: Literal["open", "closed"] | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> list[MyPosition]:
-    """Liste les positions (``opened_at`` desc). Filtre state optionnel."""
+) -> list[PositionRow]:
+    """Liste les positions enrichies (``opened_at`` desc) + ``outcome_label``.
+
+    ``outcome_label`` vient du premier ``DetectedTrade`` joignable sur
+    ``(condition_id, asset_id)`` avec ``outcome IS NOT NULL``. Résultat
+    stable en ordonnant par ``tx_hash`` croissant côté sous-requête.
+    """
     limit = _clamp_limit(limit)
     offset = _clamp_offset(offset)
     async with session_factory() as session:
@@ -316,8 +345,48 @@ async def list_positions(
         elif state == "closed":
             stmt = stmt.where(MyPosition.closed_at.is_not(None))
         stmt = stmt.limit(limit).offset(offset)
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+        positions = list((await session.execute(stmt)).scalars().all())
+
+        # Résout ``outcome`` via une sous-requête minimale (plutôt qu'une
+        # jointure : la cardinalité 1-N côté DetectedTrade varie beaucoup par
+        # position, un lookup ciblé par (condition_id, asset_id) est plus
+        # prévisible côté SQLite).
+        outcome_by_key: dict[tuple[str, str], str] = {}
+        if positions:
+            keys = {(p.condition_id, p.asset_id) for p in positions}
+            for cond_id, asset_id in keys:
+                outcome = (
+                    await session.execute(
+                        select(DetectedTrade.outcome)
+                        .where(
+                            DetectedTrade.condition_id == cond_id,
+                            DetectedTrade.asset_id == asset_id,
+                            DetectedTrade.outcome.is_not(None),
+                        )
+                        .order_by(DetectedTrade.tx_hash.asc())
+                        .limit(1),
+                    )
+                ).scalar_one_or_none()
+                if outcome is not None:
+                    outcome_by_key[(cond_id, asset_id)] = outcome
+
+    return [
+        PositionRow(
+            id=p.id,
+            condition_id=p.condition_id,
+            asset_id=p.asset_id,
+            size=float(p.size),
+            avg_price=float(p.avg_price),
+            usdc_invested=float(p.size) * float(p.avg_price),
+            payoff_max=float(p.size) * 1.0,
+            outcome_label=outcome_by_key.get((p.condition_id, p.asset_id)),
+            opened_at=p.opened_at,
+            closed_at=p.closed_at,
+            simulated=bool(p.simulated),
+            realized_pnl=(float(p.realized_pnl) if p.realized_pnl is not None else None),
+        )
+        for p in positions
+    ]
 
 
 _VALID_PNL_MODES = frozenset({"real", "dry_run", "both"})

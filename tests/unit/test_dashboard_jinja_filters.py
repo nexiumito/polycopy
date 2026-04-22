@@ -219,6 +219,36 @@ class TestSparklineSvg:
         assert "<polyline" in out
 
 
+class TestOutcomePill:
+    def test_none_returns_placeholder(self) -> None:
+        out = f.outcome_pill(None)
+        assert "—" in out
+        assert "badge" not in out
+
+    def test_empty_returns_placeholder(self) -> None:
+        assert "—" in f.outcome_pill("")
+
+    def test_yes_is_profit_badge(self) -> None:
+        out = f.outcome_pill("Yes")
+        assert "badge-ok" in out
+        assert "Yes" in out
+
+    def test_no_is_loss_badge(self) -> None:
+        out = f.outcome_pill("No")
+        assert "badge-error" in out
+
+    def test_other_is_neutral(self) -> None:
+        out = f.outcome_pill("Trump 2028")
+        assert "badge-neutral" in out
+        assert "Trump 2028" in out
+
+    def test_html_is_escaped(self) -> None:
+        """Outcome user-controlled ne doit jamais injecter d'HTML."""
+        out = f.outcome_pill("<script>alert(1)</script>")
+        assert "<script>" not in out
+        assert "&lt;script&gt;" in out
+
+
 class TestAllFilters:
     def test_returns_full_dict(self) -> None:
         d = f.all_filters()
@@ -233,6 +263,7 @@ class TestAllFilters:
             "side_icon",
             "status_badge_class",
             "sparkline_svg",
+            "outcome_pill",
         ):
             assert name in d
             assert callable(d[name])

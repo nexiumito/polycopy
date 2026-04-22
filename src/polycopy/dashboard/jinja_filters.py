@@ -7,6 +7,7 @@ métier. Ils sont enregistrés au boot par ``routes.build_app`` via
 
 from __future__ import annotations
 
+import html as _html
 import math
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -175,6 +176,26 @@ def status_badge_class(status: str | None) -> str:
     return "badge badge-neutral"
 
 
+def outcome_pill(outcome_label: str | None) -> str:
+    """Rend un badge coloré pour l'outcome d'une position Polymarket.
+
+    Heuristique : "yes" → profit (vert), "no" → loss (rouge), autre → neutre.
+    Le label est **échappé HTML** pour éviter toute injection (un outcome
+    récupéré d'une API externe pourrait contenir du HTML malicieux).
+    ``None`` ou vide → ``"—"`` discret.
+    """
+    if not outcome_label:
+        return '<span class="text-xs" style="color: var(--color-muted);">—</span>'
+    normalized = outcome_label.strip().lower()
+    if normalized == "yes":
+        cls = "badge badge-ok"
+    elif normalized == "no":
+        cls = "badge badge-error"
+    else:
+        cls = "badge badge-neutral"
+    return f'<span class="{cls}">{_html.escape(outcome_label)}</span>'
+
+
 def sparkline_svg(
     points: list[tuple[datetime, float]] | None,
     width: int = 240,
@@ -230,6 +251,7 @@ def all_filters() -> dict[str, Any]:
         "side_icon": side_icon,
         "status_badge_class": status_badge_class,
         "sparkline_svg": sparkline_svg,
+        "outcome_pill": outcome_pill,
     }
 
 
@@ -239,6 +261,7 @@ __all__ = [
     "format_size",
     "format_usd",
     "humanize_dt",
+    "outcome_pill",
     "score_to_dasharray",
     "short_hash",
     "side_icon",

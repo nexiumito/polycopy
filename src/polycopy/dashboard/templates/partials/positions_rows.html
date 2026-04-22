@@ -4,15 +4,28 @@
   {% for p in rows %}
   <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
     <i data-lucide="{% if p.closed_at %}check{% else %}circle-dot{% endif %}"
-       class="w-5 h-5"
+       class="w-5 h-5 shrink-0"
        style="color: {% if p.closed_at %}var(--color-muted){% else %}var(--color-profit){% endif %};"></i>
     <div class="flex-1 min-w-0">
-      <p class="text-sm font-medium">{{ p.condition_id | short_hash }} · asset {{ p.asset_id | short_hash }}</p>
-      <p class="text-xs" style="color: var(--color-muted);">
-        {{ p.size | format_size }} @ {{ p.avg_price | format_usd }} (avg)
+      <p class="text-sm font-medium flex items-center gap-2 flex-wrap">
+        <span>{{ p.condition_id | short_hash }}</span>
+        <span style="color: var(--color-muted);">·</span>
+        {{ p.outcome_label | outcome_pill | safe }}
+      </p>
+      <p class="text-xs mt-0.5" style="color: var(--color-muted);">
+        {{ p.size | format_size }} outcomes ·
+        <span style="color: var(--color-text);">{{ p.usdc_invested | format_usd }}</span> misé ·
+        cote {{ "%.2f" | format(p.avg_price) }} →
+        payoff max <span style="color: var(--color-profit);">{{ p.payoff_max | format_usd }}</span>
+        {% if p.realized_pnl is not none %}
+          · réalisé
+          <span style="color: {% if p.realized_pnl >= 0 %}var(--color-profit){% else %}var(--color-loss){% endif %};">
+            {{ p.realized_pnl | format_usd }}
+          </span>
+        {% endif %}
       </p>
     </div>
-    <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">
+    <span class="text-xs whitespace-nowrap text-right" style="color: var(--color-muted);">
       ouvert {{ p.opened_at | humanize_dt }}
       {% if p.closed_at %}<br>fermé {{ p.closed_at | humanize_dt }}{% endif %}
     </span>
@@ -24,6 +37,12 @@
        "/partials/positions-rows?state=" ~ (state | urlencode),
        offset + limit, limit, offset + (rows | length)) }}
 {% endif %}
+{% elif state == "closed" %}
+<p class="p-4 text-sm" style="color: var(--color-muted);">
+  Aucune position fermée pour le moment — aucun SELL encore copié ni marché résolu
+  (cf. <code class="font-mono">DryRunResolutionWatcher</code> M8 pour la résolution
+  automatique des marchés binaires).
+</p>
 {% else %}
 <p class="p-4 text-sm" style="color: var(--color-muted);">Aucune position pour ce filtre.</p>
 {% endif %}

@@ -246,6 +246,41 @@ async def test_list_positions_filter_state(
 
 
 @pytest.mark.asyncio
+async def test_list_positions_enriches_rows_with_invested_payoff_and_outcome(
+    session_factory: async_sessionmaker[AsyncSession],
+    detected_trade_repo: DetectedTradeRepository,
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """PositionRow porte usdc_invested, payoff_max et outcome_label joint."""
+    # Seed un trade détecté qui fournit l'outcome "Yes" sur (cond, asset).
+    await detected_trade_repo.insert_if_new(_trade("0xsrc1"))
+    # Crée la position correspondante (mêmes condition_id + asset_id).
+    await my_position_repo.upsert_on_fill("0xcond", "123", "BUY", 3.0, 0.4)
+
+    rows = await queries.list_positions(session_factory, state="open")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.size == pytest.approx(3.0)
+    assert row.avg_price == pytest.approx(0.4)
+    assert row.usdc_invested == pytest.approx(1.2)
+    assert row.payoff_max == pytest.approx(3.0)
+    assert row.outcome_label == "Yes"
+    assert row.closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_list_positions_outcome_label_none_when_no_detected_trade(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Sans DetectedTrade joignable, outcome_label reste None (pas un crash)."""
+    await my_position_repo.upsert_on_fill("0xorphan", "42", "BUY", 1.0, 0.5)
+    rows = await queries.list_positions(session_factory)
+    assert len(rows) == 1
+    assert rows[0].outcome_label is None
+
+
+@pytest.mark.asyncio
 async def test_fetch_pnl_series_excludes_dry_run_by_default(
     session_factory: async_sessionmaker[AsyncSession],
     pnl_snapshot_repo: PnlSnapshotRepository,
