@@ -1014,9 +1014,20 @@ async def scoring_comparison_aggregates(
                 else (deltas[mid - 1] + deltas[mid]) / 2.0
             )
     if len(with_both) >= 3:
+        # Spearman calculé sur les ranks **locaux à l'intersection v1∩v2**, pas
+        # sur les ranks pool-wide affichés dans le tableau. Sans ça, un pool v1
+        # beaucoup plus large que v2 biaise mécaniquement la corrélation : un
+        # wallet 29e sur 34 en v1 vs 1er sur 10 en v2 donne d²=784 alors qu'il
+        # serait peut-être 8e sur 10 vs 1er sur 10 (d²=49) sur l'intersection.
+        # Les rank_v1/rank_v2 des ``ScoringComparisonRow`` restent pool-wide
+        # côté UI — seul le calcul de ρ utilise les ranks locaux.
+        v1_sorted = sorted(with_both, key=lambda r: r.score_v1 or 0.0, reverse=True)
+        local_rank_v1 = {r.wallet_address: i + 1 for i, r in enumerate(v1_sorted)}
+        v2_sorted = sorted(with_both, key=lambda r: r.score_v2 or 0.0, reverse=True)
+        local_rank_v2 = {r.wallet_address: i + 1 for i, r in enumerate(v2_sorted)}
         spearman = _spearman_rank(
-            [float(r.rank_v1) for r in with_both if r.rank_v1 is not None],
-            [float(r.rank_v2) for r in with_both if r.rank_v2 is not None],
+            [float(local_rank_v1[r.wallet_address]) for r in with_both],
+            [float(local_rank_v2[r.wallet_address]) for r in with_both],
         )
 
     top10_v1 = {r.wallet_address for r in rows if r.rank_v1 is not None and r.rank_v1 <= 10}

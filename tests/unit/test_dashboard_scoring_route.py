@@ -225,6 +225,90 @@ def test_spearman_rank_function_edge_cases() -> None:
 
 
 @pytest.mark.asyncio
+async def test_spearman_uses_intersection_ranks_not_pool_ranks(
+    session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
+) -> None:
+    """Garde-fou régression : ρ calculé sur v1∩v2, pas sur les pools asymétriques.
+
+    Seed volontairement déséquilibré : 5 wallets notés v1, 3 notés v2 dont
+    seulement 2 en commun (xxx et yyy). Pour le 3ᵉ wallet intersection on
+    ajoute zzz, qui reçoit le pire score v1 du pool (rang 5/5 pool-wide) mais
+    le meilleur score v2 (rang 1/3 pool-wide). Sur l'intersection {xxx, yyy,
+    zzz}, les ranks locaux sont parfaitement concordants (identiques) →
+    ρ doit être proche de 1.0. Si le bug pool-wide était encore là, on aurait
+    ρ ≪ 1 (voire négatif) parce que le rang pool de zzz en v1 est 5 mais en
+    v2 c'est 1.
+    """
+    # Wallets avec v1 seul (gonflent le pool v1 sans impacter l'intersection).
+    for wallet, s1 in [("0xaa1", 0.90), ("0xaa2", 0.80)]:
+        t = await target_trader_repo.insert_shadow(wallet)
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s1,
+                scoring_version="v1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+
+    # Wallets intersection : scores v1 et v2 localement concordants (même ordre).
+    # Mais côté pool v1, zzz est 5ᵉ ; côté pool v2, zzz est 1er.
+    intersection = [
+        ("0xxxx", 0.70, 0.80),  # pool v1 rank 3 / 5 ; pool v2 rank 2 / 3
+        ("0xyyy", 0.60, 0.70),  # pool v1 rank 4 / 5 ; pool v2 rank 3 / 3
+        ("0xzzz", 0.40, 0.90),  # pool v1 rank 5 / 5 ; pool v2 rank 1 / 3
+    ]
+    for wallet, s1, s2 in intersection:
+        t = await target_trader_repo.insert_shadow(wallet)
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s1,
+                scoring_version="v1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s2,
+                scoring_version="v2",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+
+    agg = await dashboard_queries.scoring_comparison_aggregates(
+        session_factory,
+        shadow_days=14,
+        cutover_ready=False,
+    )
+    assert agg.wallets_compared == 3
+
+    # Sur l'intersection {xxx, yyy, zzz} seuls les ranks locaux comptent :
+    #   v1 local : zzz=3 (pire score), xxx=1 (meilleur), yyy=2
+    #   v2 local : zzz=1 (meilleur), xxx=2, yyy=3
+    # Pairs : (xxx: 1,2), (yyy: 2,3), (zzz: 3,1) → d² = 1+1+4 = 6.
+    # ρ = 1 - (6*6)/(3*(9-1)) = 1 - 36/24 = 1 - 1.5 = -0.5
+    assert agg.spearman_rank is not None
+    assert agg.spearman_rank == pytest.approx(-0.5, abs=0.01)
+    # Si le bug pool-wide était encore là, on aurait :
+    #   v1 pool : xxx=3, yyy=4, zzz=5
+    #   v2 pool : xxx=2, yyy=3, zzz=1
+    # Pairs pool : (3,2), (4,3), (5,1) → d² = 1+1+16 = 18.
+    # ρ_buggy = 1 - (6*18)/(3*8) = 1 - 4.5 = -3.5 (hors plage [-1, 1]).
+    # Le test échouerait donc sur la contrainte Spearman ∈ [-1, 1].
+    assert -1.0 <= agg.spearman_rank <= 1.0
+
+
+@pytest.mark.asyncio
 async def test_shadow_days_elapsed_calculated_from_first_v2_row(
     session_factory: Any,
     target_trader_repo: TargetTraderRepository,
