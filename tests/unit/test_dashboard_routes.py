@@ -312,10 +312,16 @@ async def test_partials_positions_rows_renders_outcome_and_invested(
     assert "Yes" in body
     assert "misé" in body
     assert "payoff max" in body
+    # Gain potentiel visible à droite de payoff max (évite le trompe-l'œil
+    # "payoff $50 impressionnant mais gain réel de 20 centimes sur une cote
+    # 0.99").
+    assert "gain max" in body
     # USDC invested = 3.0 * 0.4 = 1.20 → format_usd "$1.20".
     assert "$1.20" in body
     # Payoff max = 3.0 * 1.0 = 3.0 → format_usd "$3.00".
     assert "$3.00" in body
+    # Potential profit = payoff − invested = 3.0 − 1.2 = 1.80.
+    assert "+$1.80" in body
 
 
 @pytest.mark.asyncio

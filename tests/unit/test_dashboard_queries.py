@@ -265,6 +265,8 @@ async def test_list_positions_enriches_rows_with_invested_payoff_and_outcome(
     assert row.avg_price == pytest.approx(0.4)
     assert row.usdc_invested == pytest.approx(1.2)
     assert row.payoff_max == pytest.approx(3.0)
+    # Gain potentiel = payoff_max − mise = 3.0 − 1.2 = 1.8.
+    assert row.potential_profit == pytest.approx(1.8)
     assert row.outcome_label == "Yes"
     assert row.closed_at is None
 

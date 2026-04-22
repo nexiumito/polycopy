@@ -195,9 +195,12 @@ class PositionRow:
     """Ligne enrichie pour la page ``/positions`` (commit 4).
 
     ``usdc_invested = size * avg_price`` ; ``payoff_max = size * 1.0``
-    (outcome tokens CLOB paient $1 au gagnant). ``outcome_label`` est joint
-    depuis ``DetectedTrade.outcome`` sur ``(condition_id, asset_id)``, ``None``
-    si aucun trade source n'a persisté un outcome lisible.
+    (outcome tokens CLOB paient $1 au gagnant) ; ``potential_profit =
+    payoff_max - usdc_invested`` (gain net si l'outcome gagne). Sur une
+    position proche du bord (ex. cote 0.99), le payoff brut est trompeur
+    — le gain net peut être minuscule. ``outcome_label`` est joint depuis
+    ``DetectedTrade.outcome`` sur ``(condition_id, asset_id)``, ``None`` si
+    aucun trade source n'a persisté un outcome lisible.
     """
 
     id: int
@@ -207,6 +210,7 @@ class PositionRow:
     avg_price: float
     usdc_invested: float
     payoff_max: float
+    potential_profit: float
     outcome_label: str | None
     opened_at: datetime
     closed_at: datetime | None
@@ -441,23 +445,29 @@ async def list_positions(
                 if outcome is not None:
                     outcome_by_key[(cond_id, asset_id)] = outcome
 
-    return [
-        PositionRow(
-            id=p.id,
-            condition_id=p.condition_id,
-            asset_id=p.asset_id,
-            size=float(p.size),
-            avg_price=float(p.avg_price),
-            usdc_invested=float(p.size) * float(p.avg_price),
-            payoff_max=float(p.size) * 1.0,
-            outcome_label=outcome_by_key.get((p.condition_id, p.asset_id)),
-            opened_at=p.opened_at,
-            closed_at=p.closed_at,
-            simulated=bool(p.simulated),
-            realized_pnl=(float(p.realized_pnl) if p.realized_pnl is not None else None),
+    rows_out: list[PositionRow] = []
+    for p in positions:
+        size_f = float(p.size)
+        invested = size_f * float(p.avg_price)
+        payoff = size_f * 1.0
+        rows_out.append(
+            PositionRow(
+                id=p.id,
+                condition_id=p.condition_id,
+                asset_id=p.asset_id,
+                size=size_f,
+                avg_price=float(p.avg_price),
+                usdc_invested=invested,
+                payoff_max=payoff,
+                potential_profit=payoff - invested,
+                outcome_label=outcome_by_key.get((p.condition_id, p.asset_id)),
+                opened_at=p.opened_at,
+                closed_at=p.closed_at,
+                simulated=bool(p.simulated),
+                realized_pnl=(float(p.realized_pnl) if p.realized_pnl is not None else None),
+            ),
         )
-        for p in positions
-    ]
+    return rows_out
 
 
 _VALID_PNL_MODES = frozenset({"real", "dry_run", "both"})

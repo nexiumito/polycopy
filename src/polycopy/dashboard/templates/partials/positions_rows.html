@@ -17,6 +17,9 @@
         <span style="color: var(--color-text);">{{ p.usdc_invested | format_usd }}</span> misé ·
         cote {{ "%.2f" | format(p.avg_price) }} →
         payoff max <span style="color: var(--color-profit);">{{ p.payoff_max | format_usd }}</span>
+        <span title="payoff max − mise">→ gain max
+          <span style="color: var(--color-profit);">+{{ p.potential_profit | format_usd }}</span>
+        </span>
         {% if p.realized_pnl is not none %}
           · réalisé
           <span style="color: {% if p.realized_pnl >= 0 %}var(--color-profit){% else %}var(--color-loss){% endif %};">
