@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html as _html
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 # Empty placeholder — utilisé partout pour les valeurs ``None``.
@@ -176,6 +176,29 @@ def status_badge_class(status: str | None) -> str:
     return "badge badge-neutral"
 
 
+def format_duration(td: timedelta | None) -> str:
+    """Formate une durée en notation compacte (``"3j 4h"``, ``"2h 15min"``, ``"45min"``).
+
+    - ``None`` → ``"—"``.
+    - ≥ 1 jour → ``"Xj Yh"``.
+    - ≥ 1 heure → ``"Xh Ymin"``.
+    - sinon → ``"Xmin"`` (arrondi plancher).
+    """
+    if td is None:
+        return _EMPTY
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 0:
+        return _EMPTY
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days}j {hours}h"
+    if hours > 0:
+        return f"{hours}h {minutes}min"
+    return f"{minutes}min"
+
+
 def outcome_pill(outcome_label: str | None) -> str:
     """Rend un badge coloré pour l'outcome d'une position Polymarket.
 
@@ -244,6 +267,7 @@ def all_filters() -> dict[str, Any]:
         "format_usd": format_usd,
         "format_size": format_size,
         "format_pct": format_pct,
+        "format_duration": format_duration,
         "humanize_dt": humanize_dt,
         "short_hash": short_hash,
         "wallet_label": wallet_label,
@@ -257,6 +281,7 @@ def all_filters() -> dict[str, Any]:
 
 __all__ = [
     "all_filters",
+    "format_duration",
     "format_pct",
     "format_size",
     "format_usd",

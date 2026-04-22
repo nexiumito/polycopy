@@ -219,6 +219,28 @@ class TestSparklineSvg:
         assert "<polyline" in out
 
 
+class TestFormatDuration:
+    def test_none(self) -> None:
+        assert f.format_duration(None) == "—"
+
+    def test_negative_treated_as_unknown(self) -> None:
+        assert f.format_duration(timedelta(seconds=-1)) == "—"
+
+    @pytest.mark.parametrize(
+        ("td", "expected"),
+        [
+            (timedelta(minutes=5), "5min"),
+            (timedelta(minutes=45), "45min"),
+            (timedelta(hours=2, minutes=15), "2h 15min"),
+            (timedelta(hours=3), "3h 0min"),
+            (timedelta(days=3, hours=4, minutes=30), "3j 4h"),
+            (timedelta(days=1), "1j 0h"),
+        ],
+    )
+    def test_values(self, td: timedelta, expected: str) -> None:
+        assert f.format_duration(td) == expected
+
+
 class TestOutcomePill:
     def test_none_returns_placeholder(self) -> None:
         out = f.outcome_pill(None)
@@ -256,6 +278,7 @@ class TestAllFilters:
             "format_usd",
             "format_size",
             "format_pct",
+            "format_duration",
             "humanize_dt",
             "short_hash",
             "wallet_label",

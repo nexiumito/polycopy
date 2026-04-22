@@ -104,6 +104,7 @@ def build_pages_router() -> APIRouter:
     @router.get("/home", response_class=HTMLResponse)
     async def home(request: Request, sf: SFDep, settings: STDep) -> HTMLResponse:
         cards = await queries.get_home_kpi_cards(sf)
+        alltime = await queries.get_home_alltime_stats(sf)
         discovery = await queries.get_discovery_status(sf, enabled=settings.discovery_enabled)
         recent_trades = await queries.list_detected_trades(sf, limit=8)
         return _render(
@@ -111,6 +112,7 @@ def build_pages_router() -> APIRouter:
             "home.html",
             {
                 "cards": cards,
+                "alltime": alltime,
                 "discovery": discovery,
                 "recent_trades": recent_trades,
             },

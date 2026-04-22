@@ -120,6 +120,27 @@ class PnlSeries:
 
 
 @dataclass(frozen=True)
+class HomeAllTimeStats:
+    """Stats cumulatives all-time pour la section Home (commit 5).
+
+    Ségrégation explicite dry-run vs live dans ``realized_pnl_total`` :
+    - dry-run : ``Σ MyPosition.realized_pnl`` où ``simulated=True`` et
+      ``closed_at IS NOT NULL`` (écrit par ``DryRunResolutionWatcher`` M8).
+    - live : pour chaque position ``simulated=False, closed_at NOT NULL``,
+      somme ``Σ(SELL.size*SELL.price) - Σ(BUY.size*BUY.price)`` sur les
+      ``MyOrder FILLED`` du couple ``(condition_id, asset_id)``.
+    """
+
+    realized_pnl_total: float
+    volume_usd_total: float
+    fills_count: int
+    fills_rate_pct: float | None
+    strategy_approve_rate_pct: float | None
+    top_trader: dict[str, float | str | None] | None
+    uptime: timedelta | None
+
+
+@dataclass(frozen=True)
 class PositionRow:
     """Ligne enrichie pour la page ``/positions`` (commit 4).
 
@@ -650,6 +671,153 @@ async def get_home_kpi_cards(
             icon="activity",
         ),
     ]
+
+
+async def get_home_alltime_stats(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> HomeAllTimeStats:
+    """Agrège 6 stats all-time pour la section Home (commit 5).
+
+    Une seule session courte, requêtes en cascade. Le PnL réalisé live est
+    calculé via un LEFT JOIN entre les positions closed ``simulated=False`` et
+    les fills ``MyOrder FILLED`` de même ``(condition_id, asset_id)``. Le
+    dry-run lit directement ``MyPosition.realized_pnl`` (écrit par
+    ``DryRunResolutionWatcher``).
+    """
+    async with session_factory() as session:
+        # --- PnL réalisé dry-run : somme simple de la colonne dénormalisée.
+        dry_run_pnl_raw = (
+            await session.execute(
+                select(func.coalesce(func.sum(MyPosition.realized_pnl), 0.0)).where(
+                    MyPosition.simulated.is_(True),
+                    MyPosition.closed_at.is_not(None),
+                ),
+            )
+        ).scalar_one()
+        dry_run_pnl = float(dry_run_pnl_raw) if dry_run_pnl_raw is not None else 0.0
+
+        # --- PnL réalisé live : Σ(SELL fills) - Σ(BUY fills) sur positions
+        # fermées non-simulées. Calcul en mémoire (volume typique < quelques
+        # centaines de positions, SQLite aurait besoin de plusieurs CTE sinon).
+        live_closed = list(
+            (
+                await session.execute(
+                    select(MyPosition.condition_id, MyPosition.asset_id).where(
+                        MyPosition.simulated.is_(False),
+                        MyPosition.closed_at.is_not(None),
+                    ),
+                )
+            ).all(),
+        )
+        live_pnl = 0.0
+        for cond_id, asset_id in live_closed:
+            fills = list(
+                (
+                    await session.execute(
+                        select(MyOrder.side, MyOrder.size, MyOrder.price).where(
+                            MyOrder.condition_id == cond_id,
+                            MyOrder.asset_id == asset_id,
+                            MyOrder.status == "FILLED",
+                        ),
+                    )
+                ).all(),
+            )
+            for side, size, price in fills:
+                signed = float(size) * float(price)
+                live_pnl += signed if side == "SELL" else -signed
+
+        realized_pnl_total = dry_run_pnl + live_pnl
+
+        # --- Volume USD total : Σ size*price sur MyOrder FILLED.
+        volume_usd_total = float(
+            (
+                await session.execute(
+                    select(
+                        func.coalesce(func.sum(MyOrder.size * MyOrder.price), 0.0),
+                    ).where(MyOrder.status == "FILLED"),
+                )
+            ).scalar_one(),
+        )
+
+        # --- Comptes FILLED / REJECTED / FAILED.
+        order_status_rows = list(
+            (
+                await session.execute(
+                    select(MyOrder.status, func.count(MyOrder.id)).group_by(MyOrder.status),
+                )
+            ).all(),
+        )
+        order_counts = {str(s): int(n) for s, n in order_status_rows}
+        fills_count = order_counts.get("FILLED", 0)
+        exec_total = (
+            order_counts.get("FILLED", 0)
+            + order_counts.get("REJECTED", 0)
+            + order_counts.get("FAILED", 0)
+        )
+        fills_rate_pct: float | None = (
+            (fills_count / exec_total * 100.0) if exec_total > 0 else None
+        )
+
+        # --- Ratio approve/reject strategy.
+        decision_rows = list(
+            (
+                await session.execute(
+                    select(StrategyDecision.decision, func.count(StrategyDecision.id)).group_by(
+                        StrategyDecision.decision,
+                    ),
+                )
+            ).all(),
+        )
+        decision_counts = {str(d): int(n) for d, n in decision_rows}
+        total_decisions = sum(decision_counts.values())
+        strategy_approve_rate_pct: float | None = (
+            (decision_counts.get("APPROVED", 0) / total_decisions * 100.0)
+            if total_decisions > 0
+            else None
+        )
+
+        # --- Meilleur trader actif (par score DESC).
+        top_trader_row = (
+            await session.execute(
+                select(TargetTrader)
+                .where(
+                    TargetTrader.status == "active",
+                    TargetTrader.score.is_not(None),
+                )
+                .order_by(TargetTrader.score.desc())
+                .limit(1),
+            )
+        ).scalar_one_or_none()
+        top_trader: dict[str, float | str | None] | None = None
+        if top_trader_row is not None:
+            top_trader = {
+                "wallet_address": top_trader_row.wallet_address,
+                "label": top_trader_row.label,
+                "score": (
+                    float(top_trader_row.score) if top_trader_row.score is not None else None
+                ),
+            }
+
+        # --- Uptime approximé = now - timestamp min de PnlSnapshot.
+        first_snapshot_ts = (
+            await session.execute(select(func.min(PnlSnapshot.timestamp)))
+        ).scalar_one_or_none()
+
+    uptime: timedelta | None = None
+    if first_snapshot_ts is not None:
+        if first_snapshot_ts.tzinfo is None:
+            first_snapshot_ts = first_snapshot_ts.replace(tzinfo=UTC)
+        uptime = datetime.now(tz=UTC) - first_snapshot_ts
+
+    return HomeAllTimeStats(
+        realized_pnl_total=realized_pnl_total,
+        volume_usd_total=volume_usd_total,
+        fills_count=fills_count,
+        fills_rate_pct=fills_rate_pct,
+        strategy_approve_rate_pct=strategy_approve_rate_pct,
+        top_trader=top_trader,
+        uptime=uptime,
+    )
 
 
 async def get_discovery_status(

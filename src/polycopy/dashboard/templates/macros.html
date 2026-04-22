@@ -20,6 +20,23 @@
 </article>
 {%- endmacro %}
 
+{% macro stat_card(title, value, icon, subtext=None, value_color=None) -%}
+<article class="rounded-xl border p-4 flex flex-col gap-1"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <header class="flex items-center justify-between">
+    <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">{{ title }}</span>
+    <i data-lucide="{{ icon }}" class="w-4 h-4" style="color: var(--color-muted);"></i>
+  </header>
+  <p class="text-2xl font-semibold"
+     {% if value_color %}style="color: {{ value_color }};"{% else %}style="color: var(--color-text);"{% endif %}>
+    {{ value }}
+  </p>
+  {% if subtext %}
+    <p class="text-xs" style="color: var(--color-muted);">{{ subtext }}</p>
+  {% endif %}
+</article>
+{%- endmacro %}
+
 {% macro badge(label, status) -%}
 <span class="{{ status | status_badge_class }}">{{ label or status }}</span>
 {%- endmacro %}

@@ -13,12 +13,13 @@ from polycopy.storage.dtos import (
     PnlSnapshotDTO,
     StrategyDecisionDTO,
 )
-from polycopy.storage.models import MyOrder
+from polycopy.storage.models import MyOrder, MyPosition
 from polycopy.storage.repositories import (
     DetectedTradeRepository,
     MyPositionRepository,
     PnlSnapshotRepository,
     StrategyDecisionRepository,
+    TargetTraderRepository,
 )
 
 
@@ -327,3 +328,89 @@ async def test_fetch_pnl_series_respects_since_window(
     assert sorted(series_wide.total_usdc) == [50.0, 99.0]
     # Silence unused var
     _ = recent
+
+
+@pytest.mark.asyncio
+async def test_get_home_alltime_stats_empty_db(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """DB vide → tous les champs valident leur None/0 defensif."""
+    stats = await queries.get_home_alltime_stats(session_factory)
+    assert stats.realized_pnl_total == 0.0
+    assert stats.volume_usd_total == 0.0
+    assert stats.fills_count == 0
+    assert stats.fills_rate_pct is None
+    assert stats.strategy_approve_rate_pct is None
+    assert stats.top_trader is None
+    assert stats.uptime is None
+
+
+@pytest.mark.asyncio
+async def test_get_home_alltime_stats_with_seed(
+    session_factory: async_sessionmaker[AsyncSession],
+    strategy_decision_repo: StrategyDecisionRepository,
+    pnl_snapshot_repo: PnlSnapshotRepository,
+    target_trader_repo: TargetTraderRepository,
+) -> None:
+    """Commit 5 : chaque champ agrégé correctement à partir de données seedées."""
+    # 2 FILLED + 1 REJECTED → fills_count=2, fills_rate=66.67%.
+    await _insert_order(session_factory, "0xa1", status="FILLED")
+    await _insert_order(session_factory, "0xa2", status="FILLED")
+    await _insert_order(session_factory, "0xa3", status="REJECTED")
+
+    # 2 APPROVED + 1 REJECTED → approve_rate=66.67%.
+    for i, decision in enumerate(["APPROVED", "APPROVED", "REJECTED"]):
+        await strategy_decision_repo.insert(
+            StrategyDecisionDTO(
+                detected_trade_id=i,
+                tx_hash=f"0xs{i}",
+                decision=decision,  # type: ignore[arg-type]
+                reason=None if decision == "APPROVED" else "slippage",
+                pipeline_state={},
+            ),
+        )
+
+    # 1 active trader avec score 0.82.
+    trader = await target_trader_repo.insert_shadow("0xtop", label="topcat")
+    await target_trader_repo.update_score(
+        "0xtop",
+        score=0.82,
+        scoring_version="v1",
+    )
+    await target_trader_repo.transition_status("0xtop", new_status="active")
+
+    # 1 snapshot PnL (ancien) → uptime > 0.
+    await pnl_snapshot_repo.insert(_pnl_dto(100.0))
+
+    # 1 position dry-run fermée avec realized_pnl = +2.5.
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xcondX",
+                asset_id="9",
+                size=0.0,
+                avg_price=0.4,
+                opened_at=datetime.now(tz=UTC) - timedelta(days=1),
+                closed_at=datetime.now(tz=UTC),
+                simulated=True,
+                realized_pnl=2.5,
+            ),
+        )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    assert stats.fills_count == 2
+    assert stats.fills_rate_pct == pytest.approx(2 / 3 * 100.0, abs=0.01)
+    # volume = 2 fills × (size=1.0 × price=0.5) = 1.0.
+    assert stats.volume_usd_total == pytest.approx(1.0)
+    assert stats.strategy_approve_rate_pct == pytest.approx(2 / 3 * 100.0, abs=0.01)
+    assert stats.realized_pnl_total == pytest.approx(2.5)
+    assert stats.top_trader is not None
+    assert stats.top_trader["wallet_address"] == "0xtop"
+    assert stats.top_trader["label"] == "topcat"
+    assert stats.top_trader["score"] == pytest.approx(0.82)
+    assert stats.uptime is not None
+    assert stats.uptime.total_seconds() >= 0
+
+    # Silence unused var.
+    _ = trader

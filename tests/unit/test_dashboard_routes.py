@@ -224,6 +224,23 @@ async def test_each_page_returns_200(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_home_page_renders_alltime_stats_section(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Commit 5 : la page Home expose la section 'Stats all-time' même DB vide."""
+    res = await dashboard_client.get("/home")
+    assert res.status_code == 200
+    body = res.text
+    assert "Stats all-time" in body
+    assert "PnL réalisé" in body
+    assert "Volume tradé" in body
+    assert "Fills" in body
+    assert "Approve stratégie" in body
+    assert "Top trader actif" in body
+    assert "Durée de run" in body
+
+
+@pytest.mark.asyncio
 async def test_partials_positions_rows_renders_outcome_and_invested(
     dashboard_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
