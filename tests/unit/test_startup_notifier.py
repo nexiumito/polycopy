@@ -219,7 +219,7 @@ async def test_startup_dashboard_line_shows_localhost_when_tailscale_off(
     sample_telegram_response: dict[str, Any],
 ) -> None:
     """``DASHBOARD_BIND_TAILSCALE=false`` → la ligne Dashboard affiche
-    ``127.0.0.1:8787`` (fallback classique)."""
+    ``http://127.0.0.1:8787`` avec scheme explicite (fallback classique)."""
     settings = _settings(
         dashboard_enabled=True,
         dashboard_bind_tailscale=False,
@@ -234,8 +234,8 @@ async def test_startup_dashboard_line_shows_localhost_when_tailscale_off(
         )
         await notifier.send_once(asyncio.Event())
     text = _telegram_text(route.calls[0].request.content.decode())
-    # Points échappés par telegram_md_escape dans MarkdownV2.
-    assert r"127\.0\.0\.1:8787" in text
+    # Scheme http:// explicite + dots échappés par telegram_md_escape.
+    assert r"http://127\.0\.0\.1:8787" in text
 
 
 @pytest.mark.asyncio
@@ -246,9 +246,8 @@ async def test_startup_dashboard_line_reflects_tailscale_bind_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Régression : ``DASHBOARD_BIND_TAILSCALE=true`` + tailnet résolu →
-    la ligne Dashboard affiche l'URL Tailscale (``machine.tailnet:port``) au
-    lieu de ``127.0.0.1:8787`` — cohérent avec le bind effectif d'uvicorn
-    et le lien cliquable ``[📊 Dashboard]`` en bas du message."""
+    la ligne Dashboard affiche ``http://{machine}.{tailnet}:{port}`` — scheme
+    explicite pour empêcher Telegram d'auto-linkifier en HTTPS par défaut."""
     # Tailnet résolu via monkeypatch (évite shell out vers ``tailscale``).
     monkeypatch.setattr(
         "polycopy.monitoring.dashboard_url.resolve_tailnet_name",
@@ -269,8 +268,10 @@ async def test_startup_dashboard_line_reflects_tailscale_bind_when_enabled(
         )
         await notifier.send_once(asyncio.Event())
     text = _telegram_text(route.calls[0].request.content.decode())
-    # URL Tailscale présente (points + tirets échappés par telegram_md_escape).
-    assert r"pc\-elie\.tail\-abc\.ts\.net:8787" in text
-    # Pas de ``127.0.0.1:8787`` dans la ligne Dashboard : on asserte
-    # l'absence sur la forme escaped pour éviter les faux positifs.
+    # URL Tailscale présente avec scheme http:// explicite.
+    assert r"http://pc\-elie\.tail\-abc\.ts\.net:8787" in text
+    # Pas de ``https://`` dans le detail Dashboard (Telegram auto-upgrade trap).
+    assert "https://pc-elie" not in text
+    assert r"https://pc\-elie" not in text
+    # Pas de ``127.0.0.1:8787`` dans la ligne Dashboard (fallback non résolu).
     assert r"127\.0\.0\.1:8787" not in text

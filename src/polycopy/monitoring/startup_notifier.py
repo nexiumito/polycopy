@@ -169,13 +169,17 @@ def _executor_detail(execution_mode: str) -> str:
 
 
 def _dashboard_detail(settings: Settings) -> str:
-    """Texte ``host:port`` pour la ligne Dashboard du startup message.
+    """URL complète avec scheme ``http://`` pour la ligne Dashboard startup.
 
     Reflète le **bind effectif** : si ``DASHBOARD_BIND_TAILSCALE=true`` avec
-    tailnet et ``MACHINE_ID`` résolus, affiche ``{machine_id}.{tailnet}:{port}``
-    (cohérent avec le lien cliquable ``[📊 Dashboard]`` en bas du message).
-    Sinon fallback sur ``{DASHBOARD_HOST}:{DASHBOARD_PORT}``. Évite le piège
-    "127.0.0.1:8787 affiché alors que uvicorn bind sur l'IP Tailscale".
+    tailnet et ``MACHINE_ID`` résolus, retourne
+    ``http://{machine_id}.{tailnet}:{port}`` (cohérent avec le lien cliquable
+    ``[📊 Dashboard]`` en bas du message). Sinon fallback sur
+    ``http://{DASHBOARD_HOST}:{DASHBOARD_PORT}``.
+
+    Le scheme ``http://`` est **explicite** pour empêcher Telegram d'auto-
+    linkifier en ``https://`` par défaut (heuristique client sans scheme) —
+    le dashboard uvicorn bind uniquement en HTTP, pas en TLS.
     """
     if not settings.dashboard_enabled:
         return "désactivé"
@@ -183,11 +187,9 @@ def _dashboard_detail(settings: Settings) -> str:
     if url is None:
         # Ne devrait pas arriver (dashboard_enabled=True implique une URL)
         # mais on reste défensif.
-        return f"{settings.dashboard_host}:{settings.dashboard_port}"
-    # Extrait ``host:port`` de ``http://host:port/``. Pas d'urlparse : on veut
-    # un format compact et stable, peu importe le scheme ou le path.
-    stripped = url.removeprefix("http://").removeprefix("https://").rstrip("/")
-    return stripped or f"{settings.dashboard_host}:{settings.dashboard_port}"
+        return f"http://{settings.dashboard_host}:{settings.dashboard_port}"
+    # Strip trailing slash pour compacité (``http://x:8787/`` → ``http://x:8787``).
+    return url.rstrip("/") or f"http://{settings.dashboard_host}:{settings.dashboard_port}"
 
 
 def _resolve_version() -> str:
