@@ -141,6 +141,31 @@ class HomeAllTimeStats:
 
 
 @dataclass(frozen=True)
+class ActivityRow:
+    """Ligne d'historique PnL pour ``/activity`` (commit 6).
+
+    Une ligne = une position fermée (``closed_at IS NOT NULL``).
+    ``avg_sell_price`` est ``None`` quand la position a été résolue par
+    ``DryRunResolutionWatcher`` M8 (aucun fill SELL émis) ; dans ce cas,
+    ``realized_pnl`` vient de ``MyPosition.realized_pnl`` directement.
+    """
+
+    position_id: int
+    closed_at: datetime
+    opened_at: datetime
+    condition_id: str
+    outcome_label: str | None
+    source_trader_wallet: str | None
+    source_trader_label: str | None
+    size: float
+    avg_buy_price: float
+    avg_sell_price: float | None
+    realized_pnl: float | None
+    holding_duration: timedelta
+    simulated: bool
+
+
+@dataclass(frozen=True)
 class PositionRow:
     """Ligne enrichie pour la page ``/positions`` (commit 4).
 
@@ -1311,3 +1336,169 @@ def _spearman_rank(ranks_a: list[float], ranks_b: list[float]) -> float | None:
     if denom == 0:
         return None
     return 1.0 - (6.0 * d2_sum) / denom
+
+
+# --- M6 commit 6 : onglet /activity (historique des PnL réalisés) -----------
+
+
+async def list_activity_closed_positions(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[ActivityRow]:
+    """Historique des positions fermées avec PnL réalisé + trader source.
+
+    Pour chaque position ``closed_at IS NOT NULL`` on résout :
+
+    - ``avg_buy_price`` et ``avg_sell_price`` via moyenne pondérée des
+      ``MyOrder FILLED`` sur ``(condition_id, asset_id)``, ventilés par
+      ``side``. ``avg_sell_price`` est ``None`` si aucun SELL FILLED (cas
+      M8 : résolution par ``DryRunResolutionWatcher``).
+    - ``realized_pnl`` : priorité à ``MyPosition.realized_pnl`` quand non-null
+      (dry-run résolu) ; sinon ``Σ(SELL.size*SELL.price) − Σ(BUY.size*BUY.price)``
+      (path live ou dry-run encore non-résolu).
+    - ``source_trader_wallet`` / ``source_trader_label`` : remonte le premier
+      ``MyOrder BUY`` → ``source_tx_hash`` → ``DetectedTrade.target_wallet``
+      → ``TargetTrader.label``. ``None`` si la chaîne est cassée.
+    - ``outcome_label`` : ``DetectedTrade.outcome`` sur la même ``source_tx_hash``.
+
+    Ordre : ``closed_at DESC``.
+    """
+    limit = _clamp_limit(limit)
+    offset = _clamp_offset(offset)
+    async with session_factory() as session:
+        positions = list(
+            (
+                await session.execute(
+                    select(MyPosition)
+                    .where(MyPosition.closed_at.is_not(None))
+                    .order_by(MyPosition.closed_at.desc())
+                    .limit(limit)
+                    .offset(offset),
+                )
+            )
+            .scalars()
+            .all(),
+        )
+        if not positions:
+            return []
+
+        # --- Agrégats BUY / SELL FILLED par (condition_id, asset_id).
+        keys = [(p.condition_id, p.asset_id) for p in positions]
+        fill_stats: dict[tuple[str, str], dict[str, float]] = {}
+        for cond_id, asset_id in set(keys):
+            rows = list(
+                (
+                    await session.execute(
+                        select(MyOrder.side, MyOrder.size, MyOrder.price).where(
+                            MyOrder.condition_id == cond_id,
+                            MyOrder.asset_id == asset_id,
+                            MyOrder.status == "FILLED",
+                        ),
+                    )
+                ).all(),
+            )
+            buy_size = 0.0
+            buy_cost = 0.0
+            sell_size = 0.0
+            sell_recovery = 0.0
+            for side, size, price in rows:
+                s_val = float(size)
+                p_val = float(price)
+                if side == "BUY":
+                    buy_size += s_val
+                    buy_cost += s_val * p_val
+                elif side == "SELL":
+                    sell_size += s_val
+                    sell_recovery += s_val * p_val
+            fill_stats[(cond_id, asset_id)] = {
+                "buy_size": buy_size,
+                "buy_cost": buy_cost,
+                "sell_size": sell_size,
+                "sell_recovery": sell_recovery,
+            }
+
+        # --- Première BUY order source → source_tx_hash → DetectedTrade.
+        source_info: dict[tuple[str, str], tuple[str | None, str | None]] = {}
+        for cond_id, asset_id in set(keys):
+            first_buy = (
+                await session.execute(
+                    select(MyOrder.source_tx_hash)
+                    .where(
+                        MyOrder.condition_id == cond_id,
+                        MyOrder.asset_id == asset_id,
+                        MyOrder.side == "BUY",
+                    )
+                    .order_by(MyOrder.sent_at.asc())
+                    .limit(1),
+                )
+            ).scalar_one_or_none()
+            wallet: str | None = None
+            outcome: str | None = None
+            if first_buy is not None:
+                detected = (
+                    await session.execute(
+                        select(DetectedTrade.target_wallet, DetectedTrade.outcome).where(
+                            DetectedTrade.tx_hash == first_buy,
+                        ),
+                    )
+                ).first()
+                if detected is not None:
+                    wallet, outcome = detected
+            source_info[(cond_id, asset_id)] = (wallet, outcome)
+
+        # --- TargetTrader labels par wallet.
+        wallets_needed = {w for (w, _) in source_info.values() if w is not None}
+        trader_labels: dict[str, str | None] = {}
+        if wallets_needed:
+            trader_rows = list(
+                (
+                    await session.execute(
+                        select(TargetTrader.wallet_address, TargetTrader.label).where(
+                            TargetTrader.wallet_address.in_(wallets_needed),
+                        ),
+                    )
+                ).all(),
+            )
+            trader_labels = {str(addr): label for addr, label in trader_rows}
+
+    rows_out: list[ActivityRow] = []
+    for p in positions:
+        stats = fill_stats.get((p.condition_id, p.asset_id), {})
+        buy_size = stats.get("buy_size", 0.0)
+        buy_cost = stats.get("buy_cost", 0.0)
+        sell_size = stats.get("sell_size", 0.0)
+        sell_recovery = stats.get("sell_recovery", 0.0)
+        avg_buy = (buy_cost / buy_size) if buy_size > 0 else float(p.avg_price)
+        avg_sell: float | None = (sell_recovery / sell_size) if sell_size > 0 else None
+
+        # Priorité : realized_pnl dénormalisé (dry-run résolu) > calcul fills.
+        if p.realized_pnl is not None:
+            realized_pnl: float | None = float(p.realized_pnl)
+        elif sell_size > 0 or buy_size > 0:
+            realized_pnl = sell_recovery - buy_cost
+        else:
+            realized_pnl = None
+
+        wallet, outcome = source_info.get((p.condition_id, p.asset_id), (None, None))
+        holding_duration = (p.closed_at or datetime.now(tz=UTC)) - p.opened_at
+
+        rows_out.append(
+            ActivityRow(
+                position_id=p.id,
+                closed_at=p.closed_at or datetime.now(tz=UTC),
+                opened_at=p.opened_at,
+                condition_id=p.condition_id,
+                outcome_label=outcome,
+                source_trader_wallet=wallet,
+                source_trader_label=(trader_labels.get(wallet) if wallet else None),
+                size=float(p.size),
+                avg_buy_price=avg_buy,
+                avg_sell_price=avg_sell,
+                realized_pnl=realized_pnl,
+                holding_duration=holding_duration,
+                simulated=bool(p.simulated),
+            ),
+        )
+    return rows_out

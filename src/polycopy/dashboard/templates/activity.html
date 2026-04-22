@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}activité{% endblock %}
+{% block heading %}Activité — PnL réalisé{% endblock %}
+{% block content %}
+
+<p class="text-sm mb-4" style="color: var(--color-muted);">
+  Historique des positions fermées avec le PnL réalisé et le trader source
+  qui a déclenché l'ouverture. Seules les positions closed apparaissent
+  (voir <a href="/positions?state=open" class="underline">Positions ouvertes</a>
+  pour le reste).
+</p>
+
+<section class="rounded-xl border overflow-hidden"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <div id="activity-rows"
+       hx-get="/partials/activity-rows"
+       hx-trigger="load, every {{ poll_interval * 4 }}s[document.visibilityState==='visible']"
+       hx-swap="innerHTML">
+    <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
+  </div>
+</section>
+
+<footer class="mt-6 text-xs rounded-lg border p-4 space-y-1"
+        style="border-color: var(--color-border); background: var(--color-surface); color: var(--color-muted);">
+  <p class="font-semibold" style="color: var(--color-text);">Légende des colonnes</p>
+  <ul class="list-disc list-inside space-y-0.5">
+    <li><strong>Fermé</strong> — date/heure de clôture (SELL copié ou résolution marché M8).</li>
+    <li><strong>Marché</strong> — short hash du <code class="font-mono">condition_id</code> Polymarket.</li>
+    <li><strong>Outcome</strong> — côté du pari (YES / NO ou label du marché multi-outcome).</li>
+    <li><strong>Trader source</strong> — wallet copié qui a déclenché l'ouverture (label ou short hash).</li>
+    <li><strong>Size</strong> — quantité d'outcome tokens détenus à l'ouverture.</li>
+    <li><strong>Avg buy</strong> — prix moyen pondéré à l'entrée (fills BUY).</li>
+    <li><strong>Avg sell</strong> — prix moyen pondéré à la sortie (fills SELL). « — » si résolu par <code class="font-mono">DryRunResolutionWatcher</code> M8.</li>
+    <li><strong>Réalisé</strong> — PnL net en USDC après clôture (peut être négatif).</li>
+    <li><strong>Holding</strong> — durée entre ouverture et fermeture.</li>
+  </ul>
+</footer>
+
+{% endblock %}

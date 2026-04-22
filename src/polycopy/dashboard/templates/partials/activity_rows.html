@@ -1,0 +1,74 @@
+{% from "macros.html" import infinite_scroll_sentinel %}
+{% if rows %}
+<table class="w-full text-sm">
+  <thead class="sticky top-0" style="background: var(--color-surface-elevated);">
+    <tr>
+      <th class="text-left px-4 py-2">Fermé</th>
+      <th class="text-left px-4 py-2">Marché · Outcome</th>
+      <th class="text-left px-4 py-2">Trader source</th>
+      <th class="text-right px-4 py-2">Size</th>
+      <th class="text-right px-4 py-2">Avg buy</th>
+      <th class="text-right px-4 py-2">Avg sell</th>
+      <th class="text-right px-4 py-2">Réalisé</th>
+      <th class="text-right px-4 py-2">Holding</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+      <tr class="border-t" style="border-color: var(--color-border);">
+        <td class="px-4 py-2 whitespace-nowrap" style="color: var(--color-muted);">
+          {{ r.closed_at | humanize_dt }}
+          {% if r.simulated %}
+            <span class="ml-1 text-[10px] uppercase" style="color: var(--color-neutral);">dry-run</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2">
+          <span class="font-mono">{{ r.condition_id | short_hash }}</span>
+          <span style="color: var(--color-muted);">·</span>
+          {{ r.outcome_label | outcome_pill | safe }}
+        </td>
+        <td class="px-4 py-2">
+          {% if r.source_trader_wallet %}
+            <span title="{{ r.source_trader_wallet }}">
+              {{ r.source_trader_label or (r.source_trader_wallet | short_hash) }}
+            </span>
+          {% else %}
+            <span style="color: var(--color-muted);">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2 text-right">{{ r.size | format_size }}</td>
+        <td class="px-4 py-2 text-right">{{ "%.2f" | format(r.avg_buy_price) }}</td>
+        <td class="px-4 py-2 text-right">
+          {% if r.avg_sell_price is not none %}
+            {{ "%.2f" | format(r.avg_sell_price) }}
+          {% else %}
+            <span style="color: var(--color-muted);">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2 text-right font-semibold"
+            {% if r.realized_pnl is not none %}
+              style="color: {% if r.realized_pnl >= 0 %}var(--color-profit){% else %}var(--color-loss){% endif %};"
+            {% endif %}>
+          {% if r.realized_pnl is not none %}
+            {{ r.realized_pnl | format_usd }}
+          {% else %}
+            <span style="color: var(--color-muted);">—</span>
+          {% endif %}
+        </td>
+        <td class="px-4 py-2 text-right whitespace-nowrap" style="color: var(--color-muted);">
+          {{ r.holding_duration | format_duration }}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if rows | length >= limit %}
+  {{ infinite_scroll_sentinel(
+       "/partials/activity-rows",
+       offset + limit, limit, offset + (rows | length)) }}
+{% endif %}
+{% else %}
+<p class="p-4 text-sm" style="color: var(--color-muted);">
+  Aucune position fermée pour le moment — aucun SELL encore copié ni marché résolu.
+</p>
+{% endif %}
