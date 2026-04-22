@@ -94,6 +94,20 @@ async def test_latency_page_renders(
 
 
 @pytest.mark.asyncio
+async def test_latency_chart_init_is_deferred(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Garde-fou régression : l'init Chart.js doit attendre DOMContentLoaded.
+
+    Sinon l'IIFE inline s'exécute avant que le script `defer` Chart.js soit
+    chargé → Chart is undefined → canvas vide (bug observé en dry-run v0.6.0).
+    """
+    res = await dashboard_client.get("/latency")
+    assert res.status_code == 200
+    assert "DOMContentLoaded" in res.text
+
+
+@pytest.mark.asyncio
 async def test_latency_page_respects_since_filter(
     dashboard_client: AsyncClient,
 ) -> None:
