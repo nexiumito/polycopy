@@ -723,8 +723,23 @@ async def get_home_kpi_cards(
     ]
 
 
+_VALID_HOME_PNL_MODES = frozenset({"real", "dry_run", "both"})
+
+
+def normalize_home_pnl_mode(raw: str | None) -> Literal["real", "dry_run", "both"]:
+    """Normalise ``?pnl_mode=`` (``real``/``dry_run``/``both``). Fallback ``both``.
+
+    Cohérent avec le filtre côté ``/pnl`` (même trio de tokens).
+    """
+    if raw is not None and raw in _VALID_HOME_PNL_MODES:
+        return raw  # type: ignore[return-value]
+    return "both"
+
+
 async def get_home_alltime_stats(
     session_factory: async_sessionmaker[AsyncSession],
+    *,
+    pnl_mode: Literal["real", "dry_run", "both"] = "both",
 ) -> HomeAllTimeStats:
     """Agrège 6 stats all-time pour la section Home (commit 5).
 
@@ -733,6 +748,11 @@ async def get_home_alltime_stats(
     les fills ``MyOrder FILLED`` de même ``(condition_id, asset_id)``. Le
     dry-run lit directement ``MyPosition.realized_pnl`` (écrit par
     ``DryRunResolutionWatcher``).
+
+    ``pnl_mode`` ne filtre QUE ``realized_pnl_total`` ; les autres champs
+    (volume, fills, strategy_approve_rate, top_trader, uptime) sont
+    mode-agnostiques. ``real`` = live uniquement, ``dry_run`` = dry-run
+    uniquement, ``both`` = somme (comportement initial).
     """
     async with session_factory() as session:
         # --- PnL réalisé dry-run : somme simple de la colonne dénormalisée.
@@ -776,7 +796,12 @@ async def get_home_alltime_stats(
                 signed = float(size) * float(price)
                 live_pnl += signed if side == "SELL" else -signed
 
-        realized_pnl_total = dry_run_pnl + live_pnl
+        if pnl_mode == "real":
+            realized_pnl_total = live_pnl
+        elif pnl_mode == "dry_run":
+            realized_pnl_total = dry_run_pnl
+        else:
+            realized_pnl_total = dry_run_pnl + live_pnl
 
         # --- Volume USD total : Σ size*price sur MyOrder FILLED.
         volume_usd_total = float(

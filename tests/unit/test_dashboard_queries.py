@@ -345,6 +345,15 @@ async def test_get_home_alltime_stats_empty_db(
     assert stats.uptime is None
 
 
+def test_normalize_home_pnl_mode_fallback() -> None:
+    assert queries.normalize_home_pnl_mode(None) == "both"
+    assert queries.normalize_home_pnl_mode("") == "both"
+    assert queries.normalize_home_pnl_mode("bogus") == "both"
+    assert queries.normalize_home_pnl_mode("real") == "real"
+    assert queries.normalize_home_pnl_mode("dry_run") == "dry_run"
+    assert queries.normalize_home_pnl_mode("both") == "both"
+
+
 @pytest.mark.asyncio
 async def test_get_home_alltime_stats_with_seed(
     session_factory: async_sessionmaker[AsyncSession],
@@ -414,3 +423,76 @@ async def test_get_home_alltime_stats_with_seed(
 
     # Silence unused var.
     _ = trader
+
+
+@pytest.mark.asyncio
+async def test_get_home_alltime_stats_pnl_mode_filters(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """pnl_mode=real|dry_run|both segmente correctement le realized_pnl_total."""
+    # 1 dry-run fermée +2.5 (realized_pnl dénormalisé).
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xdry",
+                asset_id="1",
+                size=0.0,
+                avg_price=0.4,
+                opened_at=datetime.now(tz=UTC) - timedelta(days=1),
+                closed_at=datetime.now(tz=UTC),
+                simulated=True,
+                realized_pnl=2.5,
+            ),
+        )
+        await session.commit()
+
+    # 1 live fermée : BUY 10 @ 0.30 → SELL 10 @ 0.50 → +2.0.
+    await my_position_repo.upsert_on_fill("0xlive", "2", "BUY", 10.0, 0.30)
+    await my_position_repo.upsert_on_fill("0xlive", "2", "SELL", 10.0, 0.50)
+    async with session_factory() as session:
+        session.add(
+            MyOrder(
+                source_tx_hash="0xsrc-live",
+                condition_id="0xlive",
+                asset_id="2",
+                side="BUY",
+                size=10.0,
+                price=0.30,
+                tick_size=0.01,
+                neg_risk=False,
+                order_type="FOK",
+                status="FILLED",
+                simulated=False,
+                transaction_hashes=[],
+            ),
+        )
+        session.add(
+            MyOrder(
+                source_tx_hash="0xsrc-live",
+                condition_id="0xlive",
+                asset_id="2",
+                side="SELL",
+                size=10.0,
+                price=0.50,
+                tick_size=0.01,
+                neg_risk=False,
+                order_type="FOK",
+                status="FILLED",
+                simulated=False,
+                transaction_hashes=[],
+            ),
+        )
+        await session.commit()
+
+    both = await queries.get_home_alltime_stats(session_factory, pnl_mode="both")
+    assert both.realized_pnl_total == pytest.approx(2.5 + 2.0)
+
+    only_real = await queries.get_home_alltime_stats(session_factory, pnl_mode="real")
+    assert only_real.realized_pnl_total == pytest.approx(2.0)
+
+    only_dry_run = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    assert only_dry_run.realized_pnl_total == pytest.approx(2.5)
+
+    # Les champs mode-agnostiques restent identiques entre modes.
+    assert both.volume_usd_total == only_real.volume_usd_total == only_dry_run.volume_usd_total

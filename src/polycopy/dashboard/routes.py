@@ -102,9 +102,15 @@ def build_pages_router() -> APIRouter:
         return RedirectResponse(url="/home", status_code=307)
 
     @router.get("/home", response_class=HTMLResponse)
-    async def home(request: Request, sf: SFDep, settings: STDep) -> HTMLResponse:
+    async def home(
+        request: Request,
+        sf: SFDep,
+        settings: STDep,
+        pnl_mode: str | None = None,
+    ) -> HTMLResponse:
+        effective_pnl_mode = queries.normalize_home_pnl_mode(pnl_mode)
         cards = await queries.get_home_kpi_cards(sf)
-        alltime = await queries.get_home_alltime_stats(sf)
+        alltime = await queries.get_home_alltime_stats(sf, pnl_mode=effective_pnl_mode)
         discovery = await queries.get_discovery_status(sf, enabled=settings.discovery_enabled)
         recent_trades = await queries.list_detected_trades(sf, limit=8)
         return _render(
@@ -113,6 +119,7 @@ def build_pages_router() -> APIRouter:
             {
                 "cards": cards,
                 "alltime": alltime,
+                "pnl_mode": effective_pnl_mode,
                 "discovery": discovery,
                 "recent_trades": recent_trades,
             },

@@ -17,13 +17,25 @@
     Stats all-time
   </h2>
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    {# Card PnL réalisé avec filter-chips live/dry-run/les deux (cohérent /pnl). #}
     {% set pnl_color = "var(--color-profit)" if alltime.realized_pnl_total >= 0 else "var(--color-loss)" %}
-    {{ stat_card(
-         "PnL réalisé",
-         alltime.realized_pnl_total | format_usd,
-         "dollar-sign",
-         subtext="Dry-run + live (SELL − BUY)",
-         value_color=pnl_color) }}
+    <article class="rounded-xl border p-4 flex flex-col gap-1"
+             style="border-color: var(--color-border); background: var(--color-surface);">
+      <header class="flex items-center justify-between">
+        <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">PnL réalisé</span>
+        <i data-lucide="dollar-sign" class="w-4 h-4" style="color: var(--color-muted);"></i>
+      </header>
+      <p class="text-2xl font-semibold" style="color: {{ pnl_color }};">
+        {{ alltime.realized_pnl_total | format_usd }}
+      </p>
+      <nav class="flex flex-wrap gap-1 mt-1 text-[11px]" aria-label="Filtre mode PnL">
+        {% for opt in [("réel", "real"), ("dry-run", "dry_run"), ("les deux", "both")] %}
+          {% set label, val = opt %}
+          <a href="/home?pnl_mode={{ val }}"
+             class="filter-chip {% if pnl_mode == val %}filter-chip-active{% endif %}">{{ label }}</a>
+        {% endfor %}
+      </nav>
+    </article>
     {{ stat_card(
          "Volume tradé",
          alltime.volume_usd_total | format_usd,

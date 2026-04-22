@@ -241,6 +241,44 @@ async def test_home_page_renders_alltime_stats_section(
 
 
 @pytest.mark.asyncio
+async def test_home_page_exposes_pnl_mode_filter_chips(
+    dashboard_client: AsyncClient,
+) -> None:
+    """La card PnL réalisé expose 3 liens filter-chips (réel / dry-run / les deux)."""
+    res = await dashboard_client.get("/home")
+    assert res.status_code == 200
+    body = res.text
+    for href in ("/home?pnl_mode=real", "/home?pnl_mode=dry_run", "/home?pnl_mode=both"):
+        assert href in body
+    for label in ("réel", "dry-run", "les deux"):
+        assert label in body
+
+
+@pytest.mark.asyncio
+async def test_home_page_highlights_active_pnl_mode(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Le chip correspondant au ``?pnl_mode=`` courant porte filter-chip-active."""
+    res = await dashboard_client.get("/home?pnl_mode=real")
+    body = res.text
+    # Pragmatique : le body doit contenir à la fois le href ciblé et la classe
+    # active, co-occurrence suffisante pour prouver le marquage.
+    assert "filter-chip-active" in body
+    assert "pnl_mode=real" in body
+
+
+@pytest.mark.asyncio
+async def test_home_page_pnl_mode_bogus_falls_back_to_both(
+    dashboard_client: AsyncClient,
+) -> None:
+    """Valeur invalide → fallback silencieux sur 'both' (pas 422)."""
+    res = await dashboard_client.get("/home?pnl_mode=bogus")
+    assert res.status_code == 200
+    # "les deux" doit être le chip actif.
+    assert "filter-chip-active" in res.text
+
+
+@pytest.mark.asyncio
 async def test_partials_positions_rows_renders_outcome_and_invested(
     dashboard_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
