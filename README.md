@@ -779,6 +779,7 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 | `KILL_SWITCH_DRAWDOWN_PCT` | Stop tout si drawdown > X %. Actif dans les 3 modes depuis M10. | `20` | non |
 | `RISK_AVAILABLE_CAPITAL_USD_STUB` | Capital dispo stub M2, remplacé par lecture wallet on-chain à M3. | `1000.0` | non |
 | `POLL_INTERVAL_SECONDS` | Fréquence de polling Data API. | `5` | non |
+| `WATCHER_RELOAD_INTERVAL_SECONDS` | **M5_ter** : TTL du cycle de reload des pollers. Propage promotions Discovery (M5) et cascades eviction / blacklist reconcile (M5_bis) sans restart. Range `[30, 3600]`. | `300` | non |
 | `DATABASE_URL` | URL DB SQLAlchemy async. Postgres trivial (`postgresql+asyncpg://...`). | `sqlite+aiosqlite:///polycopy.db` | non |
 
 </details>
@@ -988,13 +989,13 @@ Table complète générée depuis [`.env.example`](.env.example). Les variables 
 - [x] **M11** : pipeline temps réel phase 1 (WS CLOB channel `market` + cache Gamma adaptatif + instrumentation latence 6 stages + onglet `/latency`)
 - [x] **M12** : scoring v2 (formule hybride 6 facteurs + 6 gates durs pré-scoring + shadow period v1/v2 + onglet `/traders/scoring`)
 - [x] **M12_bis** : multi-machine (badges `MACHINE_ID` dans alertes Telegram) + remote control Tailscale (4 routes HTTP + TOTP + sentinel `halt.flag` + auto-lockdown 3-strikes) + auto-resurrection (systemd / launchd / Task Scheduler)
-- [x] **M5_bis** : compétition adaptative entre wallets (`shadow`/`active`/`sell_only`/`blacklisted` + cascade eviction + wind-down réversible) (← *tu es ici*)
+- [x] **M5_bis** : compétition adaptative entre wallets (`shadow`/`active`/`sell_only`/`blacklisted` + cascade eviction + wind-down réversible)
+- [x] **M5_ter** : Watcher live-reload (cycle de reload périodique `WATCHER_RELOAD_INTERVAL_SECONDS` 5 min, diff set-based des pollers, promotions Discovery + cascades eviction prises en compte sans restart) (← *tu es ici*)
 
 ### Suite (idées, pas engagement)
 
 Ordre optimisé pour que chaque milestone débloque ou prépare le terrain du suivant (cf. [`docs/specs/ROADMAP.md`](docs/specs/ROADMAP.md)) :
 
-- [ ] **M5_ter** — **Watcher live-reload** (priorité 🔥, effort XS 1 j, dépend de M5_bis). Le watcher re-fetch périodiquement la liste des wallets à poller depuis la DB (toutes les 5 min par défaut) — les mutations lifecycle (promotions Discovery, cascades eviction, demotes) sont prises en compte sans restart. Spec complète : [`docs/specs/M5_ter_watcher_live_reload_spec.md`](docs/specs/M5_ter_watcher_live_reload_spec.md).
 - [ ] **M13** — **Taker fees dynamiques** (priorité 🟡, effort S 2-3 j, dépend de M11). Endpoint `GET /fee-rate?tokenID=` intégré au sizing EV. Cache TTL 60 s. Protège l'EV face à l'évolution tarifaire Polymarket sur crypto/sports rapides.
 - [ ] **M14** — **Real-time pipeline phase 2** (priorité 🟢 optionnel, effort M 2-4 sem., dépend de M11+M12). Parallélisation strategy pipeline + WebSocket `user` channel pour détection on-chain quasi-instantanée. Cible 2-3 s → < 1 s. Déclenche seulement si post-M11 on rate > 10 % d'opportunités.
 - [ ] **M15** — **Goldsky Turbo / Bitquery streaming** (priorité 🟢 optionnel, effort L, dépend de M11). Webhook direct depuis Polygon RPC (~50 ms). Alternative Bitquery Kafka. Justifier par ROI clair avant d'engager.

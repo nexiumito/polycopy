@@ -85,6 +85,21 @@ class Settings(BaseSettings):
     # --- Polling ---
     poll_interval_seconds: int = Field(5, ge=1)
 
+    # --- Watcher live-reload (M5_ter) ------------------------------------
+    watcher_reload_interval_seconds: int = Field(
+        300,
+        ge=30,
+        le=3600,
+        description=(
+            "M5_ter : TTL du cycle de reload du WatcherOrchestrator. À chaque "
+            "tick, re-fetch `list_wallets_to_poll()` et diff set-based contre "
+            "les pollers en cours (`tg.create_task` pour les nouveaux, "
+            "`task.cancel()` pour les retirés). Réactif aux mutations M5 "
+            "(promote/demote) et M5_bis (eviction cascade, sell_only wind-down, "
+            "blacklist reconcile) sans restart. Range [30, 3600]."
+        ),
+    )
+
     # --- Multi-machine identity (M12_bis) --------------------------------
     machine_id: str | None = Field(
         None,

@@ -173,6 +173,8 @@ Status terminal jusqu'à retrait de l'env var.
 
 **Différence fondamentale `sell_only` vs `shadow`** : `sell_only` a `active=True` — le watcher continue à poller le wallet pour détecter ses SELL. Un `shadow` est invisible au watcher (filtre [repositories.py:55-58](../../src/polycopy/storage/repositories.py#L55)). Cette différence impose d'étendre `list_active()` pour inclure `sell_only`.
 
+> **Note M5_ter** ✅ — la propagation DB→watcher des transitions M5_bis (`active→sell_only`, `sell_only→shadow`, etc.) est assurée par le cycle de reload `WATCHER_RELOAD_INTERVAL_SECONDS` (default 300s) ajouté dans [`WatcherOrchestrator.run_forever`](../../src/polycopy/watcher/orchestrator.py#L57). Une nouvelle méthode `TargetTraderRepository.list_wallets_to_poll()` remplace `list_active()` dans ce cycle pour greffer un double-check blacklist Python-side. Sans M5_ter, M5_bis ne livre pas sa valeur métier (cascade invisible jusqu'au prochain restart). Cf. spec [docs/specs/M5_ter_watcher_live_reload_spec.md](./M5_ter_watcher_live_reload_spec.md).
+
 ### 4.2 Diagramme ASCII
 
 ```

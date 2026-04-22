@@ -81,6 +81,38 @@ class TargetTraderRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def list_wallets_to_poll(
+        self,
+        *,
+        blacklist: list[str] | None = None,
+    ) -> list[TargetTrader]:
+        """Retourne les wallets que le Watcher doit poller (M5_ter).
+
+        Filtre ``active=True`` ET ``status IN ('active', 'pinned', 'sell_only')``,
+        puis exclut les adresses présentes dans ``blacklist`` (défense
+        en profondeur : normalement ``reconcile_blacklist`` les a déjà
+        passés en ``status='blacklisted'`` et la clause SQL les filtre,
+        mais le double-check Python préserve l'invariant absolu
+        BLACKLISTED_WALLETS même en cas de race boot).
+
+        Différence avec :meth:`list_active` — ``list_active`` retourne
+        aussi les pinned/active/sell_only mais sans filtrage blacklist
+        (caller responsable). M5_ter utilise cette méthode dédiée pour
+        exprimer sémantiquement "wallets à poller réseau" et y greffer
+        le filtre blacklist.
+        """
+        blacklist_lc = {w.lower() for w in (blacklist or [])}
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(
+                TargetTrader.active.is_(True),
+                TargetTrader.status.in_(("active", "pinned", "sell_only")),
+            )
+            result = await session.execute(stmt)
+            traders = list(result.scalars().all())
+        if not blacklist_lc:
+            return traders
+        return [t for t in traders if t.wallet_address.lower() not in blacklist_lc]
+
     async def list_all(self) -> list[TargetTrader]:
         """Retourne TOUS les traders (tous statuts), pour cycle de scoring M5."""
         async with self._session_factory() as session:

@@ -28,6 +28,8 @@
 
 > **Status M1** ✅ — implémenté. Voir `specs/M1-watcher-storage.md` pour le détail fonctionnel et `src/polycopy/watcher/` pour le code.
 
+> **Status M5_ter** ✅ — live-reload des pollers. `WatcherOrchestrator.run_forever` exécute un cycle de reload toutes les `WATCHER_RELOAD_INTERVAL_SECONDS` (default 300s, range [30, 3600]) : fetch `list_wallets_to_poll()`, diff set-based contre les pollers en cours, `tg.create_task` pour les nouveaux, `task.cancel() + asyncio.gather(return_exceptions=True)` pour les retirés. Réactif aux mutations M5 (promote shadow→active, demote active→shadow) et M5_bis (eviction cascade, sell_only wind-down, blacklist reconcile) en quasi-temps-réel sans restart. Diff strictement additif sur `WalletPoller`, `DataApiClient`, `DiscoveryOrchestrator`, `EvictionScheduler` — zéro ligne modifiée. Voir `specs/M5_ter_watcher_live_reload_spec.md`.
+
 **Responsabilité** : détecter les nouveaux trades des wallets cibles.
 
 **Implémentation** :
@@ -36,6 +38,7 @@
 - Déduplication par `transactionHash` (clé unique en DB)
 - Backoff exponentiel sur erreur réseau ou 429
 - Émet un événement `NewTradeDetected` dans une `asyncio.Queue` consommée par le Strategy Engine
+- **M5_ter** : la liste des pollers est reloadée périodiquement via `list_wallets_to_poll()` (filtre `status IN ('active', 'pinned', 'sell_only')` + double-check `BLACKLISTED_WALLETS` env)
 
 **Pourquoi pas WebSocket pour la détection ?** Le WS de Polymarket est par marché (token_id), pas par wallet. Pour suivre un wallet sur tous ses marchés, il faudrait s'abonner à des dizaines de tokens en parallèle et filtrer côté client — c'est moins efficace que le polling REST sur `/activity`.
 

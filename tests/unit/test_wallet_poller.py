@@ -74,11 +74,14 @@ async def test_poller_keeps_running_on_api_error(
     client = AsyncMock(spec=DataApiClient)
     client.get_trades.side_effect = [
         RuntimeError("boom"),
-        *([[_activity("0xtx_ok", ts=base_ts)]] * 10),
+        *([[_activity("0xtx_ok", ts=base_ts)]] * 20),
     ]
     stop_event = asyncio.Event()
     poller = WalletPoller("0xwallet", client, detected_trade_repo, interval_seconds=0)
-    await asyncio.gather(poller.run(stop_event), _stop_after(stop_event, 0.15))
+    # Laisse 1 s : le 1er tour rend le traceback rich via structlog
+    # (~150 ms d'overhead), donc 0.15 s ne suffit pas pour observer le 2ᵉ
+    # appel post-backoff.
+    await asyncio.gather(poller.run(stop_event), _stop_after(stop_event, 1.0))
     assert await detected_trade_repo.count_for_wallet("0xwallet") == 1
     assert client.get_trades.await_count >= 2
 
