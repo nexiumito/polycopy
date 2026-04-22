@@ -133,3 +133,69 @@ async def test_startup_no_pinned_wallets(
     assert route.called
     body = route.calls[0].request.content.decode()
     assert "Aucun wallet pinned" in body
+    # Discovery off (default) → suggestion d'activer TARGET_WALLETS ou DISCOVERY_ENABLED
+    assert "activer" in body
+    assert "DISCOVERY_ENABLED" in body
+
+
+@pytest.mark.asyncio
+async def test_startup_watcher_count_reflects_discovery_actives(
+    session_factory: async_sessionmaker[AsyncSession],
+    target_trader_repo: TargetTraderRepository,
+    http_client: httpx.AsyncClient,
+    sample_telegram_response: dict[str, Any],
+) -> None:
+    """M5_ter fix : watcher_count inclut les actives auto-découverts, pas
+    seulement ``len(TARGET_WALLETS)``.
+
+    Scénario reproduit depuis la prod 2026-04-22 : 0 wallet pinned via
+    env mais 7 wallets déjà en DB promus par Discovery précédemment.
+    Le startup message doit afficher "7 wallets" pas "0 wallets".
+    """
+    # Seed 7 wallets en DB via insert_shadow + transition_status (comme Discovery).
+    for i in range(7):
+        wallet = f"0x{str(i).zfill(40)}"
+        await target_trader_repo.insert_shadow(wallet)
+        await target_trader_repo.transition_status(wallet, new_status="active")
+
+    # TARGET_WALLETS reste vide — simule le cas user avec Discovery seule.
+    settings = _settings(discovery_enabled=True)
+    tg = TelegramClient(http_client, settings)
+    notifier = StartupNotifier(session_factory, tg, AlertRenderer(), settings)
+    with respx.mock() as mock:
+        route = mock.post(f"https://api.telegram.org/bot{_TOKEN}/sendMessage").mock(
+            return_value=httpx.Response(200, json=sample_telegram_response),
+        )
+        await notifier.send_once(asyncio.Event())
+    assert route.called
+    body = route.calls[0].request.content.decode()
+    # Le count reflète les 7 actives en DB, pas 0.
+    assert "7 wallets" in body
+    assert "0 wallets" not in body
+
+
+@pytest.mark.asyncio
+async def test_startup_no_pinned_but_discovery_enabled_shows_friendly_message(
+    session_factory: async_sessionmaker[AsyncSession],
+    http_client: httpx.AsyncClient,
+    sample_telegram_response: dict[str, Any],
+) -> None:
+    """M5_ter fix : quand ``DISCOVERY_ENABLED=true`` mais 0 pinned, le
+    message doit pointer que Discovery va peupler le pool plutôt que de
+    suggérer d'activer Discovery (qui l'est déjà)."""
+    settings = _settings(discovery_enabled=True)
+    tg = TelegramClient(http_client, settings)
+    notifier = StartupNotifier(session_factory, tg, AlertRenderer(), settings)
+    with respx.mock() as mock:
+        route = mock.post(f"https://api.telegram.org/bot{_TOKEN}/sendMessage").mock(
+            return_value=httpx.Response(200, json=sample_telegram_response),
+        )
+        await notifier.send_once(asyncio.Event())
+    assert route.called
+    body = route.calls[0].request.content.decode()
+    # Le message adapté à Discovery actif :
+    assert "Discovery actif" in body
+    assert "pool se remplit automatiquement" in body
+    # L'ancienne suggestion ambiguë n'est plus affichée.
+    assert "activer `DISCOVERY_ENABLED`" not in body
+    assert "activer \\`DISCOVERY\\_ENABLED\\`" not in body

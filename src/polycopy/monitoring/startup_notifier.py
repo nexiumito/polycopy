@@ -22,6 +22,7 @@ from polycopy.monitoring.dtos import ModuleStatus, PinnedWallet, StartupContext
 from polycopy.monitoring.md_escape import wallet_short
 from polycopy.monitoring.telegram_client import TelegramClient
 from polycopy.storage.models import TargetTrader
+from polycopy.storage.repositories import TargetTraderRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -71,7 +72,8 @@ class StartupNotifier:
 
     async def _build_context(self) -> StartupContext:
         pinned = await self._load_pinned_wallets()
-        modules = self._build_modules()
+        watched_count = await self._count_watched_wallets()
+        modules = self._build_modules(watched_count)
         # M12_bis Phase G : ``dashboard_url`` centralisé → injection via
         # ``AlertRenderer._startup_vars`` quand le DTO en porte ``None``.
         return StartupContext(
@@ -82,7 +84,23 @@ class StartupNotifier:
             modules=modules,
             dashboard_url=None,
             paused=self._paused,
+            discovery_enabled=self._settings.discovery_enabled,
+            watched_wallets_count=watched_count,
         )
+
+    async def _count_watched_wallets(self) -> int:
+        """Compte les wallets que le watcher va poller au boot (M5_ter fix).
+
+        Utilise ``list_wallets_to_poll`` pour refléter l'état DB réel
+        (actives + pinned + sell_only − blacklist), pas juste
+        ``len(target_wallets)`` qui ratait les wallets auto-découverts par
+        Discovery depuis un run précédent.
+        """
+        repo = TargetTraderRepository(self._session_factory)
+        watched = await repo.list_wallets_to_poll(
+            blacklist=list(self._settings.blacklisted_wallets),
+        )
+        return len(watched)
 
     async def _load_pinned_wallets(self) -> list[PinnedWallet]:
         async with self._session_factory() as session:
@@ -94,8 +112,7 @@ class StartupNotifier:
             for row in rows
         ]
 
-    def _build_modules(self) -> list[ModuleStatus]:
-        watcher_count = len(self._settings.target_wallets)
+    def _build_modules(self, watcher_count: int) -> list[ModuleStatus]:
         modules: list[ModuleStatus] = [
             ModuleStatus(
                 name="Watcher",

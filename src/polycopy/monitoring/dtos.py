@@ -77,6 +77,15 @@ class StartupContext(BaseModel):
     modules: list[ModuleStatus]
     dashboard_url: str | None = None
     paused: bool = False
+    # M5_ter cosmetic fix : le template startup vérifie ces deux flags pour
+    # afficher un message approprié quand ``pinned_wallets`` est vide :
+    # - ``discovery_enabled=True`` → "Discovery actif, pool peuplé automatiquement"
+    #   au lieu de "configurer TARGET_WALLETS ou activer DISCOVERY_ENABLED".
+    # - ``watched_wallets_count`` reflète le nb réel de wallets que le watcher
+    #   polle (`list_wallets_to_poll` à l'instant du boot) — inclut les actives
+    #   auto-découverts, pas seulement ``len(target_wallets)``.
+    discovery_enabled: bool = False
+    watched_wallets_count: int = 0
 
 
 class ShutdownContext(BaseModel):

@@ -16,6 +16,8 @@ _Heure :_ {{ boot_at | humanize_dt_tg }}
 {% for pw in pinned_wallets %}
 • {{ wallet_line(pw) }}
 {% endfor %}
+{% elif discovery_enabled %}
+_Aucun wallet pinned_ — _Discovery actif : le pool se remplit automatiquement_ \({{ watched_wallets_count }} _wallets suivis au boot\)_\.
 {% else %}
 _Aucun wallet pinned — configurer `TARGET_WALLETS` ou activer `DISCOVERY_ENABLED`\._
 {% endif %}
