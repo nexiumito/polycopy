@@ -141,6 +141,31 @@ class HomeAllTimeStats:
 
 
 @dataclass(frozen=True)
+class TraderPerformanceRow:
+    """Ligne trader-leaderboard pour ``/performance`` (commit 7).
+
+    Inclut toutes les positions tracées (ouvertes + fermées) agrégées par
+    trader source. Les ``active``, ``shadow``, ``sell_only``, ``blacklisted``
+    et ``pinned`` sont tous inclus (filter-chips côté UI). Un trader sans
+    aucune position tracée est **exclu** du leaderboard (``realized_pnl`` non
+    significatif).
+    """
+
+    wallet_address: str
+    label: str | None
+    status: str
+    pinned: bool
+    score_v1: float | None
+    positions_closed_count: int
+    positions_open_count: int
+    win_count: int
+    loss_count: int
+    win_rate_pct: float | None
+    realized_pnl_total: float
+    last_trade_at: datetime | None
+
+
+@dataclass(frozen=True)
 class ActivityRow:
     """Ligne d'historique PnL pour ``/activity`` (commit 6).
 
@@ -1502,3 +1527,189 @@ async def list_activity_closed_positions(
             ),
         )
     return rows_out
+
+
+# --- M6 commit 7 : onglet /performance (traders leaderboard par PnL net) -----
+
+
+_PERFORMANCE_STATUSES = frozenset(
+    {"active", "shadow", "sell_only", "blacklisted", "pinned"},
+)
+
+
+async def list_trader_performance(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[TraderPerformanceRow]:
+    """Leaderboard traders agrégé par PnL réalisé total.
+
+    Scope : tous traders avec au moins 1 position tracée (chaîne
+    ``MyOrder.source_tx_hash`` → ``DetectedTrade.tx_hash`` →
+    ``DetectedTrade.target_wallet``). Les traders sans aucune position dans
+    cette chaîne sont exclus du leaderboard. Filter ``status`` optionnel
+    (``active`` / ``shadow`` / ``sell_only`` / ``blacklisted`` / ``pinned``).
+
+    Agrégat PnL réalisé par position : priorité ``MyPosition.realized_pnl``
+    (dry-run résolu M8) > calcul ``Σ SELL − Σ BUY`` sur fills FILLED.
+    ``win_rate_pct = win_count / (win_count + loss_count)`` sur positions
+    **fermées** uniquement ; ``None`` si aucune position fermée.
+
+    Ordre : ``realized_pnl_total DESC``.
+    """
+    limit = _clamp_limit(limit)
+    offset = _clamp_offset(offset)
+    async with session_factory() as session:
+        traders = list((await session.execute(select(TargetTrader))).scalars().all())
+
+        # --- Chaîne wallet → positions tracées (via premier BUY order).
+        # Pour chaque position on résout son wallet source via
+        # MyPosition → premier MyOrder BUY sur (condition_id, asset_id)
+        # → DetectedTrade.tx_hash = source_tx_hash → target_wallet.
+        positions = list((await session.execute(select(MyPosition))).scalars().all())
+        if not positions:
+            return []
+
+        position_wallet: dict[int, str | None] = {}
+        position_fills: dict[int, dict[str, float]] = {}
+        for p in positions:
+            first_buy = (
+                await session.execute(
+                    select(MyOrder.source_tx_hash)
+                    .where(
+                        MyOrder.condition_id == p.condition_id,
+                        MyOrder.asset_id == p.asset_id,
+                        MyOrder.side == "BUY",
+                    )
+                    .order_by(MyOrder.sent_at.asc())
+                    .limit(1),
+                )
+            ).scalar_one_or_none()
+            wallet: str | None = None
+            if first_buy is not None:
+                detected_wallet = (
+                    await session.execute(
+                        select(DetectedTrade.target_wallet).where(
+                            DetectedTrade.tx_hash == first_buy,
+                        ),
+                    )
+                ).scalar_one_or_none()
+                wallet = detected_wallet
+            position_wallet[p.id] = wallet
+
+            # Fills (pour calcul PnL live).
+            fills = list(
+                (
+                    await session.execute(
+                        select(MyOrder.side, MyOrder.size, MyOrder.price).where(
+                            MyOrder.condition_id == p.condition_id,
+                            MyOrder.asset_id == p.asset_id,
+                            MyOrder.status == "FILLED",
+                        ),
+                    )
+                ).all(),
+            )
+            buy_size = 0.0
+            buy_cost = 0.0
+            sell_size = 0.0
+            sell_recovery = 0.0
+            for side, size, price in fills:
+                s_val = float(size)
+                p_val = float(price)
+                if side == "BUY":
+                    buy_size += s_val
+                    buy_cost += s_val * p_val
+                elif side == "SELL":
+                    sell_size += s_val
+                    sell_recovery += s_val * p_val
+            position_fills[p.id] = {
+                "buy_size": buy_size,
+                "buy_cost": buy_cost,
+                "sell_size": sell_size,
+                "sell_recovery": sell_recovery,
+            }
+
+        # --- Dernier trade par wallet (via DetectedTrade.timestamp).
+        last_trade_rows = list(
+            (
+                await session.execute(
+                    select(
+                        DetectedTrade.target_wallet,
+                        func.max(DetectedTrade.timestamp),
+                    ).group_by(DetectedTrade.target_wallet),
+                )
+            ).all(),
+        )
+        last_trade_by_wallet: dict[str, datetime] = {}
+        for w, ts in last_trade_rows:
+            if ts is None:
+                continue
+            # SQLite renvoie parfois des datetimes naives même si persistées
+            # avec tz=UTC — on normalise pour éviter compare naive/aware.
+            normalized = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
+            last_trade_by_wallet[str(w)] = normalized
+
+    # --- Agrégation Python (in-memory, volume typique ≪ 500 traders × 20 pos).
+    @dataclass
+    class _Agg:
+        realized_pnl_total: float = 0.0
+        positions_closed: int = 0
+        positions_open: int = 0
+        wins: int = 0
+        losses: int = 0
+
+    aggregates: dict[str, _Agg] = {}
+    for p in positions:
+        wallet = position_wallet[p.id]
+        if wallet is None:
+            continue
+        agg = aggregates.setdefault(wallet, _Agg())
+        stats = position_fills[p.id]
+        if p.realized_pnl is not None:
+            pnl: float | None = float(p.realized_pnl)
+        elif stats["buy_size"] > 0 or stats["sell_size"] > 0:
+            pnl = stats["sell_recovery"] - stats["buy_cost"]
+        else:
+            pnl = None
+        if p.closed_at is not None:
+            agg.positions_closed += 1
+            if pnl is not None:
+                agg.realized_pnl_total += pnl
+                if pnl > 0:
+                    agg.wins += 1
+                elif pnl < 0:
+                    agg.losses += 1
+        else:
+            agg.positions_open += 1
+
+    rows: list[TraderPerformanceRow] = []
+    traders_by_wallet = {t.wallet_address: t for t in traders}
+    for wallet, agg in aggregates.items():
+        trader = traders_by_wallet.get(wallet)
+        if trader is None:
+            continue
+        if status is not None and status in _PERFORMANCE_STATUSES and trader.status != status:
+            continue
+        decided_closed = agg.wins + agg.losses
+        win_rate = (agg.wins / decided_closed * 100.0) if decided_closed > 0 else None
+        rows.append(
+            TraderPerformanceRow(
+                wallet_address=wallet,
+                label=trader.label,
+                status=trader.status,
+                pinned=bool(trader.pinned),
+                score_v1=float(trader.score) if trader.score is not None else None,
+                positions_closed_count=agg.positions_closed,
+                positions_open_count=agg.positions_open,
+                win_count=agg.wins,
+                loss_count=agg.losses,
+                win_rate_pct=win_rate,
+                realized_pnl_total=agg.realized_pnl_total,
+                last_trade_at=last_trade_by_wallet.get(wallet),
+            ),
+        )
+
+    rows.sort(key=lambda r: r.realized_pnl_total, reverse=True)
+    return rows[offset : offset + limit]

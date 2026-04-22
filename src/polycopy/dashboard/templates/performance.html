@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}performance{% endblock %}
+{% block heading %}Performance — leaderboard traders{% endblock %}
+{% block content %}
+
+<p class="text-sm mb-4" style="color: var(--color-muted);">
+  Traders classés par PnL net réalisé (positions fermées — closed_at ≠ NULL).
+  Inclut actifs, shadow, sell_only, blacklisted et pinned. Les traders sans
+  position tracée sont exclus. Tri par défaut : PnL total desc.
+</p>
+
+<nav class="flex flex-wrap gap-2 mb-4 text-sm">
+  {% for opt in [("Toutes", ""), ("Active", "active"), ("Shadow", "shadow"), ("Sell-only", "sell_only"), ("Blacklisted", "blacklisted"), ("Pinned", "pinned")] %}
+    {% set label, val = opt %}
+    <a href="/performance{% if val %}?status={{ val }}{% endif %}"
+       class="filter-chip {% if status_filter == val %}filter-chip-active{% endif %}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+<section id="performance-rows"
+         hx-get="/partials/performance-rows{% if status_filter %}?status={{ status_filter | urlencode }}{% endif %}"
+         hx-trigger="load, every {{ poll_interval * 4 }}s[document.visibilityState==='visible']"
+         hx-swap="innerHTML"
+         class="rounded-xl border overflow-hidden"
+         style="border-color: var(--color-border); background: var(--color-surface);">
+  <p class="p-4 text-sm" style="color: var(--color-muted);">chargement…</p>
+</section>
+
+{% endblock %}

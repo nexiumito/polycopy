@@ -163,6 +163,18 @@ def build_pages_router() -> APIRouter:
         """Historique des positions fermées (commit 6)."""
         return _render(request, "activity.html", {})
 
+    @router.get("/performance", response_class=HTMLResponse)
+    async def performance(
+        request: Request,
+        status: str | None = None,
+    ) -> HTMLResponse:
+        """Leaderboard traders par PnL réalisé (commit 7)."""
+        return _render(
+            request,
+            "performance.html",
+            {"status_filter": status or ""},
+        )
+
     @router.get("/traders/scoring", response_class=HTMLResponse)
     async def traders_scoring_page(
         request: Request,
@@ -507,6 +519,31 @@ def build_partials_router() -> APIRouter:
             request,
             "partials/activity_rows.html",
             {"rows": rows, "limit": limit, "offset": offset},
+        )
+
+    @router.get("/performance-rows", response_class=HTMLResponse)
+    async def performance_rows(
+        request: Request,
+        sf: SFDep,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> HTMLResponse:
+        rows = await queries.list_trader_performance(
+            sf,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+        return _render(
+            request,
+            "partials/performance_rows.html",
+            {
+                "rows": rows,
+                "status": status or "",
+                "limit": limit,
+                "offset": offset,
+            },
         )
 
     @router.get("/traders-rows", response_class=HTMLResponse)
