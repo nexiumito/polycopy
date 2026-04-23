@@ -46,6 +46,7 @@ async def collect_daily_summary_context(
     orders_sent, orders_filled, orders_rejected, volume = await _orders_stats_since(
         session_factory,
         since,
+        settings,
     )
     positions_open, positions_value = await _positions_current(session_factory)
     total_usdc, delta_pct, drawdown_pct = await _pnl_stats_since(session_factory, since)
@@ -169,7 +170,16 @@ async def _decisions_stats_since(
 async def _orders_stats_since(
     session_factory: async_sessionmaker[AsyncSession],
     since: datetime,
+    settings: Settings,
 ) -> tuple[int, int, int, float]:
+    # M13 Bug 7 : en dry-run / simulation, les ordres "remplis virtuels"
+    # portent le status SIMULATED (M8 realistic_fill). Aligner le filtre
+    # volume sur ``execution_mode`` pour que le recap Telegram reste
+    # cohérent avec /home (cf. spec M13 §5.3).
+    if settings.execution_mode == "live":
+        filled_statuses: tuple[str, ...] = ("FILLED", "PARTIALLY_FILLED")
+    else:
+        filled_statuses = ("SIMULATED",)
     async with session_factory() as session:
         stmt = (
             select(MyOrder.status, func.count(MyOrder.id).label("n"))
@@ -181,11 +191,11 @@ async def _orders_stats_since(
             func.coalesce(func.sum(MyOrder.size * MyOrder.price), 0.0),
         ).where(
             MyOrder.sent_at >= since,
-            MyOrder.status.in_(("FILLED", "PARTIALLY_FILLED")),
+            MyOrder.status.in_(filled_statuses),
         )
         volume = float((await session.execute(volume_stmt)).scalar_one() or 0.0)
     sent = sum(counts.get(s, 0) for s in ("SENT", "FILLED", "PARTIALLY_FILLED", "SIMULATED"))
-    filled = counts.get("FILLED", 0) + counts.get("PARTIALLY_FILLED", 0)
+    filled = sum(counts.get(s, 0) for s in filled_statuses)
     rejected = counts.get("REJECTED", 0) + counts.get("FAILED", 0)
     return sent, filled, rejected, volume
 

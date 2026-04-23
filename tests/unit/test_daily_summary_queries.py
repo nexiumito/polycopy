@@ -10,7 +10,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.config import Settings
-from polycopy.monitoring.daily_summary_queries import collect_daily_summary_context
+from polycopy.monitoring.daily_summary_queries import (
+    _orders_stats_since,
+    collect_daily_summary_context,
+)
 from polycopy.storage.dtos import (
     DetectedTradeDTO,
     MyOrderDTO,
@@ -296,6 +299,96 @@ async def test_alerts_counts_from_memory(
     assert ctx.alerts_total_24h == 7
     assert "filled:5" in ctx.alerts_by_type_compact
     assert "drawdown:2" in ctx.alerts_by_type_compact
+
+
+@pytest.mark.asyncio
+async def test_orders_stats_dry_run_counts_simulated(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_order_repo: MyOrderRepository,
+) -> None:
+    """M13 Bug 7 : en dry_run, SIMULATED est traité comme fill et contribue au volume."""
+    base: dict[str, Any] = dict(
+        source_tx_hash="0x" + "1" * 64,
+        clob_order_id="0x" + "2" * 64,
+        condition_id="0x" + "3" * 64,
+        asset_id="asset",
+        side="BUY",
+        size=10.0,
+        price=0.5,
+        tick_size=0.01,
+        neg_risk=False,
+        order_type="FOK",
+        status="SIMULATED",
+        simulated=True,
+    )
+    # 3 SIMULATED (3 × 10 × 0.5 = 15) + 1 REJECTED.
+    for i in range(3):
+        await my_order_repo.insert(
+            MyOrderDTO(**{**base, "source_tx_hash": f"0x{i:064x}"}),
+        )
+    rejected = await my_order_repo.insert(
+        MyOrderDTO(**{**base, "source_tx_hash": "0x" + "b" * 64, "status": "SENT"}),
+    )
+    await my_order_repo.update_status(rejected.id, "REJECTED")
+
+    dry_run_settings = Settings(_env_file=None, execution_mode="dry_run")  # type: ignore[call-arg]
+    since = datetime(1970, 1, 1, tzinfo=UTC)
+    sent, filled, rejected_count, volume = await _orders_stats_since(
+        session_factory,
+        since,
+        dry_run_settings,
+    )
+    assert filled == 3
+    assert rejected_count == 1
+    assert volume == pytest.approx(15.0)
+    # sent = SENT + FILLED + PARTIALLY_FILLED + SIMULATED = 3 SIMULATED.
+    assert sent == 3
+
+
+@pytest.mark.asyncio
+async def test_orders_stats_live_counts_filled(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_order_repo: MyOrderRepository,
+) -> None:
+    """M13 Bug 7 régression guard : en live, SIMULATED n'entre pas dans filled/volume."""
+    base: dict[str, Any] = dict(
+        source_tx_hash="0x" + "1" * 64,
+        clob_order_id="0x" + "2" * 64,
+        condition_id="0x" + "3" * 64,
+        asset_id="asset",
+        side="BUY",
+        size=10.0,
+        price=0.5,
+        tick_size=0.01,
+        neg_risk=False,
+        order_type="FOK",
+        status="SENT",
+        simulated=False,
+    )
+    # 2 FILLED + 1 SIMULATED.
+    filled_a = await my_order_repo.insert(
+        MyOrderDTO(**{**base, "source_tx_hash": "0x" + "a" * 64}),
+    )
+    filled_b = await my_order_repo.insert(
+        MyOrderDTO(**{**base, "source_tx_hash": "0x" + "b" * 64}),
+    )
+    await my_order_repo.insert(
+        MyOrderDTO(
+            **{**base, "source_tx_hash": "0x" + "c" * 64, "status": "SIMULATED", "simulated": True},
+        ),
+    )
+    await my_order_repo.update_status(filled_a.id, "FILLED")
+    await my_order_repo.update_status(filled_b.id, "FILLED")
+
+    live_settings = Settings(_env_file=None, execution_mode="live")  # type: ignore[call-arg]
+    since = datetime(1970, 1, 1, tzinfo=UTC)
+    _sent, filled, _rejected, volume = await _orders_stats_since(
+        session_factory,
+        since,
+        live_settings,
+    )
+    assert filled == 2
+    assert volume == pytest.approx(10.0)  # 2 × 10 × 0.5 — le SIMULATED est exclu.
 
 
 @pytest.mark.asyncio
