@@ -496,5 +496,70 @@ async def test_get_home_alltime_stats_pnl_mode_filters(
     only_dry_run = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
     assert only_dry_run.realized_pnl_total == pytest.approx(2.5)
 
-    # Les champs mode-agnostiques restent identiques entre modes.
-    assert both.volume_usd_total == only_real.volume_usd_total == only_dry_run.volume_usd_total
+    # Bug 2 fix : volume & fills_count suivent désormais le mode, comme PnL.
+    # Ici le setup n'a que des FILLED (live) → real voit tout, dry_run voit
+    # rien, both voit tout.
+    assert only_real.volume_usd_total == pytest.approx(10 * 0.30 + 10 * 0.50)
+    assert only_real.fills_count == 2
+    assert only_dry_run.volume_usd_total == pytest.approx(0.0)
+    assert only_dry_run.fills_count == 0
+    assert both.volume_usd_total == only_real.volume_usd_total
+    assert both.fills_count == only_real.fills_count
+
+
+@pytest.mark.asyncio
+async def test_get_home_alltime_stats_dry_run_counts_simulated(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Bug 2 : en dry-run, volume et fills comptent les ordres SIMULATED."""
+    # 3 ordres SIMULATED totalisant $123 volume : 1×50 + 1×40 + 1×33.
+    async with session_factory() as session:
+        for i, (size, price) in enumerate([(100.0, 0.50), (100.0, 0.40), (100.0, 0.33)]):
+            session.add(
+                MyOrder(
+                    source_tx_hash=f"0xsim{i}",
+                    condition_id="0xcondSim",
+                    asset_id="s1",
+                    side="BUY",
+                    size=size,
+                    price=price,
+                    tick_size=0.01,
+                    neg_risk=False,
+                    order_type="FOK",
+                    status="SIMULATED",
+                    simulated=True,
+                    realistic_fill=True,
+                    transaction_hashes=[],
+                ),
+            )
+        # 1 REJECTED pour vérifier fills_rate_pct en dry-run.
+        session.add(
+            MyOrder(
+                source_tx_hash="0xsimR",
+                condition_id="0xcondSim",
+                asset_id="s1",
+                side="BUY",
+                size=1.0,
+                price=0.1,
+                tick_size=0.01,
+                neg_risk=False,
+                order_type="FOK",
+                status="REJECTED",
+                simulated=True,
+                realistic_fill=True,
+                transaction_hashes=[],
+            ),
+        )
+        await session.commit()
+
+    dry_run = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    assert dry_run.volume_usd_total == pytest.approx(50.0 + 40.0 + 33.0)
+    assert dry_run.fills_count == 3
+    # 3 SIMULATED + 1 REJECTED = 4 tentatives d'exécution → 75% fills_rate.
+    assert dry_run.fills_rate_pct == pytest.approx(75.0, abs=0.01)
+
+    real = await queries.get_home_alltime_stats(session_factory, pnl_mode="real")
+    assert real.volume_usd_total == pytest.approx(0.0)
+    assert real.fills_count == 0
+    # 0 FILLED + 1 REJECTED → fills_rate = 0% (pas None car exec_total > 0).
+    assert real.fills_rate_pct == pytest.approx(0.0, abs=0.01)

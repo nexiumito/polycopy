@@ -759,10 +759,11 @@ async def get_home_alltime_stats(
     dry-run lit directement ``MyPosition.realized_pnl`` (écrit par
     ``DryRunResolutionWatcher``).
 
-    ``pnl_mode`` ne filtre QUE ``realized_pnl_total`` ; les autres champs
-    (volume, fills, strategy_approve_rate, top_trader, uptime) sont
-    mode-agnostiques. ``real`` = live uniquement, ``dry_run`` = dry-run
-    uniquement, ``both`` = somme (comportement initial).
+    ``pnl_mode`` filtre ``realized_pnl_total``, ``volume_usd_total``,
+    ``fills_count`` et ``fills_rate_pct`` de manière cohérente (bug 2 fix) :
+    ``real`` = ordres ``FILLED``, ``dry_run`` = ordres ``SIMULATED``,
+    ``both`` = les deux. Les autres champs (``strategy_approve_rate``,
+    ``top_trader``, ``uptime``) restent mode-agnostiques.
     """
     async with session_factory() as session:
         # --- PnL réalisé dry-run : somme simple de la colonne dénormalisée.
@@ -813,18 +814,29 @@ async def get_home_alltime_stats(
         else:
             realized_pnl_total = dry_run_pnl + live_pnl
 
-        # --- Volume USD total : Σ size*price sur MyOrder FILLED.
+        # --- Volume USD total : Σ size*price sur MyOrder FILLED/SIMULATED
+        # selon le mode. En dry-run, seuls les ordres SIMULATED existent ;
+        # on veut pouvoir les visualiser pendant un test 14 jours même s'ils
+        # sont virtuels (bug 2 fix).
+        fill_statuses: list[str]
+        if pnl_mode == "real":
+            fill_statuses = ["FILLED"]
+        elif pnl_mode == "dry_run":
+            fill_statuses = ["SIMULATED"]
+        else:
+            fill_statuses = ["FILLED", "SIMULATED"]
+
         volume_usd_total = float(
             (
                 await session.execute(
                     select(
                         func.coalesce(func.sum(MyOrder.size * MyOrder.price), 0.0),
-                    ).where(MyOrder.status == "FILLED"),
+                    ).where(MyOrder.status.in_(fill_statuses)),
                 )
             ).scalar_one(),
         )
 
-        # --- Comptes FILLED / REJECTED / FAILED.
+        # --- Comptes FILLED / SIMULATED / REJECTED / FAILED, filtrés par mode.
         order_status_rows = list(
             (
                 await session.execute(
@@ -833,9 +845,9 @@ async def get_home_alltime_stats(
             ).all(),
         )
         order_counts = {str(s): int(n) for s, n in order_status_rows}
-        fills_count = order_counts.get("FILLED", 0)
+        fills_count = sum(order_counts.get(s, 0) for s in fill_statuses)
         exec_total = (
-            order_counts.get("FILLED", 0)
+            fills_count
             + order_counts.get("REJECTED", 0)
             + order_counts.get("FAILED", 0)
         )
@@ -959,15 +971,33 @@ async def get_pnl_milestones(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     since: timedelta,
+    mode: Literal["real", "dry_run", "both"] = "real",
 ) -> list[PnlMilestone]:
-    """Extrait les 8 derniers moments clés (fills, kill switches, promotions M5)."""
+    """Extrait les 8 derniers moments clés (fills, kill switches, promotions M5).
+
+    Le paramètre ``mode`` détermine quel statut d'ordre compte comme "fill" :
+    ``real`` → ``FILLED`` (``filled_at`` requis), ``dry_run`` → ``SIMULATED``
+    (``sent_at`` utilisé — les ordres simulés M8 n'écrivent pas ``filled_at``),
+    ``both`` → les deux. Cohérent avec le toggle mode de ``/pnl`` (bug 2 fix
+    : les milestones deviennent visibles en dry-run).
+    """
     cutoff = datetime.now(tz=UTC) - since
+    # COALESCE(filled_at, sent_at) : timestamp effectif du fill, en dry-run
+    # seul ``sent_at`` est peuplé (insert_realistic_simulated ne set pas
+    # filled_at) ; en live, ``filled_at`` écrase ``sent_at``.
+    effective_at = func.coalesce(MyOrder.filled_at, MyOrder.sent_at)
+    if mode == "real":
+        status_clause = MyOrder.status == "FILLED"
+    elif mode == "dry_run":
+        status_clause = MyOrder.status == "SIMULATED"
+    else:
+        status_clause = MyOrder.status.in_(["FILLED", "SIMULATED"])
     async with session_factory() as session:
         first_fill = (
             await session.execute(
                 select(MyOrder)
-                .where(MyOrder.status == "FILLED", MyOrder.filled_at.is_not(None))
-                .order_by(MyOrder.filled_at.asc())
+                .where(status_clause)
+                .order_by(effective_at.asc())
                 .limit(1),
             )
         ).scalar_one_or_none()
@@ -977,11 +1007,10 @@ async def get_pnl_milestones(
                 await session.execute(
                     select(MyOrder)
                     .where(
-                        MyOrder.status == "FILLED",
-                        MyOrder.filled_at.is_not(None),
-                        MyOrder.filled_at >= cutoff,
+                        status_clause,
+                        effective_at >= cutoff,
                     )
-                    .order_by(MyOrder.filled_at.desc())
+                    .order_by(effective_at.desc())
                     .limit(_PNL_MILESTONES_CAP),
                 )
             )
@@ -1022,10 +1051,13 @@ async def get_pnl_milestones(
         )
 
     milestones: list[PnlMilestone] = []
-    if first_fill is not None and first_fill.filled_at is not None:
+    if first_fill is not None:
+        # Même logique COALESCE que le SQL : en dry-run ``filled_at`` est None
+        # mais ``sent_at`` est toujours peuplé (default _now_utc à l'insert).
+        first_at = first_fill.filled_at or first_fill.sent_at
         milestones.append(
             PnlMilestone(
-                at=first_fill.filled_at,
+                at=first_at,
                 event_type="first_fill",
                 label="Premier fill",
                 wallet_address=None,
@@ -1033,13 +1065,12 @@ async def get_pnl_milestones(
             ),
         )
     for order in recent_fills:
-        if order.filled_at is None:
-            continue
         if first_fill is not None and order.id == first_fill.id:
             continue
+        order_at = order.filled_at or order.sent_at
         milestones.append(
             PnlMilestone(
-                at=order.filled_at,
+                at=order_at,
                 event_type="cycle_completed",
                 label=f"Fill {order.side} {order.size:.2f}",
                 wallet_address=None,

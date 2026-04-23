@@ -148,9 +148,13 @@ def build_pages_router() -> APIRouter:
         since: str = "24h",
         mode: str = "real",
     ) -> HTMLResponse:
-        milestones = await queries.get_pnl_milestones(sf, since=queries.parse_since(since))
         # M8 : ``mode`` ∈ {real, dry_run, both}. Validation côté queries.
         effective_mode = mode if mode in {"real", "dry_run", "both"} else "real"
+        milestones = await queries.get_pnl_milestones(
+            sf,
+            since=queries.parse_since(since),
+            mode=effective_mode,  # type: ignore[arg-type]
+        )
         return _render(
             request,
             "pnl.html",
