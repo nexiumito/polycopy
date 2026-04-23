@@ -347,6 +347,25 @@ class Settings(BaseSettings):
             "Si true, accepte un fill partiel (s'écarte du comportement live)."
         ),
     )
+    dry_run_neg_risk_resolution_enabled: bool = Field(
+        True,
+        description=(
+            "M13 M8 v2 : active la résolution automatique des marchés "
+            "neg_risk par ``DryRunResolutionWatcher``. Si false, comportement "
+            "M8 v1 préservé (skip + warning). Opt-out pour revenir au "
+            "comportement historique si une régression apparaît."
+        ),
+    )
+    dry_run_initial_capital_usd: float | None = Field(
+        None,
+        ge=10.0,
+        le=10_000_000.0,
+        description=(
+            "M13 : capital initial explicite pour le calcul du PnL latent "
+            "sur /home. Si None, fallback sur PnlSnapshot.total_usdc le "
+            "plus ancien ; sinon risk_available_capital_usd_stub."
+        ),
+    )
 
     # --- Monitoring ---
     telegram_bot_token: str | None = None

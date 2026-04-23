@@ -103,6 +103,7 @@ class ExecutorOrchestrator:
                     self._session_factory,
                     gamma_client,
                     self._settings,
+                    alerts_queue=self._alerts,
                 )
                 log.warning(
                     "dry_run_realistic_fill_enabled",

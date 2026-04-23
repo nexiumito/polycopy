@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+📊 *\[dry\_run\_market\_resolved\_neg\_risk\]* INFO
+
+{{ body | telegram_md_escape }}
+
+_Marché neg\_risk résolu automatiquement — PnL réalisé matérialisé sur la position virtuelle\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

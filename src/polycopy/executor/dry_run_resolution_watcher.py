@@ -5,7 +5,9 @@ Boucle toutes les ``DRY_RUN_RESOLUTION_POLL_MINUTES`` minutes :
 2. Batch query Gamma ``/markets?condition_ids=<csv>`` pour leur état.
 3. Pour chaque marché ``closed=true`` binaire YES/NO, calcule le realized_pnl.
 4. ``close_virtual`` la position et logge ``dry_run_position_resolved``.
-5. Skip + warning sur marchés neg_risk (v1, cf. spec §14.5 #3).
+5. M13 M8 v2 : les marchés neg_risk sont résolus via la même logique
+   (structurellement binaires YES/NO côté candidat) derrière le flag
+   ``DRY_RUN_NEG_RISK_RESOLUTION_ENABLED=true``. Opt-out = skip + debug.
 
 Lancé conditionnellement par ``ExecutorOrchestrator.run_forever`` (cf. spec
 §8.2) — pas un nouveau top-level module.
@@ -24,6 +26,7 @@ from polycopy.storage.repositories import MyPositionRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.monitoring.dtos import Alert
     from polycopy.storage.models import MyPosition
     from polycopy.strategy.dtos import MarketMetadata
     from polycopy.strategy.gamma_client import GammaApiClient
@@ -39,10 +42,12 @@ class DryRunResolutionWatcher:
         session_factory: async_sessionmaker[AsyncSession],
         gamma_client: GammaApiClient,
         settings: Settings,
+        alerts_queue: asyncio.Queue[Alert] | None = None,
     ) -> None:
         self._positions_repo = MyPositionRepository(session_factory)
         self._gamma = gamma_client
         self._settings = settings
+        self._alerts_queue = alerts_queue
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         """Boucle jusqu'à ``stop_event.set()``. No-op si M8 désactivé."""
@@ -87,9 +92,11 @@ class DryRunResolutionWatcher:
                 continue
             if not market.closed:
                 continue
-            if market.neg_risk:
-                log.warning(
-                    "dry_run_resolution_neg_risk_unsupported",
+            if market.neg_risk and not self._settings.dry_run_neg_risk_resolution_enabled:
+                # M13 M8 v2 opt-out : le flag ``false`` préserve le
+                # comportement M8 v1 (skip + warning).
+                log.debug(
+                    "dry_run_resolution_neg_risk_skipped_by_flag",
                     asset_id=pos.asset_id,
                     condition_id=pos.condition_id,
                 )
@@ -116,6 +123,51 @@ class DryRunResolutionWatcher:
                 avg_price=pos.avg_price,
                 payout=payout,
                 realized_pnl=realized_pnl,
+                neg_risk=market.neg_risk,
+            )
+            if market.neg_risk and self._alerts_queue is not None:
+                self._emit_neg_risk_alert(pos, market, payout, realized_pnl)
+
+    def _emit_neg_risk_alert(
+        self,
+        pos: MyPosition,
+        market: MarketMetadata,
+        payout: float,
+        realized_pnl: float,
+    ) -> None:
+        """Émet une alerte Telegram INFO pour une résolution neg_risk."""
+        from polycopy.monitoring.dtos import Alert
+
+        # Question optionnelle côté DTO — fallback sur condition_id court.
+        question = getattr(market, "question", None)
+        question_line = f"{question}\n" if question else ""
+        short_cid = (
+            f"{pos.condition_id[:10]}…{pos.condition_id[-6:]}"
+            if len(pos.condition_id) > 16
+            else pos.condition_id
+        )
+        body = (
+            f"{question_line}"
+            f"• PnL réalisé : {realized_pnl:+.2f} USDC\n"
+            f"• Taille : {pos.size:.2f} @ {pos.avg_price:.3f}\n"
+            f"• Payout : {payout:.2f} USDC/share\n"
+            f"• Condition : {short_cid}"
+        )
+        if self._alerts_queue is None:
+            return
+        try:
+            self._alerts_queue.put_nowait(
+                Alert(
+                    level="INFO",
+                    event="dry_run_market_resolved_neg_risk",
+                    body=body,
+                    cooldown_key=f"neg_risk_resolved_{pos.condition_id}",
+                ),
+            )
+        except asyncio.QueueFull:
+            log.warning(
+                "dry_run_neg_risk_alert_queue_full",
+                condition_id=pos.condition_id,
             )
 
 

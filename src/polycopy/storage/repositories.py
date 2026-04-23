@@ -745,6 +745,10 @@ class MyPositionRepository:
 
         Garde-fou : refuse si la position n'est pas ``simulated=True`` (defense
         in depth — on ne touche jamais à une vraie position via cette méthode).
+
+        M13 §14.3 : idempotent — si la position est déjà fermée (par un SELL
+        copié entre-temps par ex.), on log et on skip au lieu d'écraser le
+        ``realized_pnl`` existant. Le PnL SELL prime sur le PnL résolution.
         """
         async with self._session_factory() as session:
             position = await session.get(MyPosition, position_id)
@@ -755,6 +759,14 @@ class MyPositionRepository:
                     f"MyPosition id={position_id} is not virtual — "
                     "close_virtual must only be called on simulated positions",
                 )
+            if position.closed_at is not None:
+                log.info(
+                    "close_virtual_skipped_already_closed",
+                    position_id=position_id,
+                    existing_closed_at=position.closed_at.isoformat(),
+                    existing_realized_pnl=position.realized_pnl,
+                )
+                return
             position.closed_at = closed_at
             position.realized_pnl = realized_pnl
             await session.commit()
