@@ -220,6 +220,98 @@ async def test_position_sizer_pass_no_cap(
     assert ctx.my_size == pytest.approx(0.1)
 
 
+# --- PositionSizer side-aware (M13 Bug 5) -----------------------------------
+
+
+async def test_position_sizer_sell_matches_open_position(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """SELL sur (cond, asset) matching → accepté, size cappée à existing.size."""
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=10.0,
+                avg_price=0.4,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings(copy_ratio=0.01))
+    trade = _trade(price=0.6, size=1000.0)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL"})
+    ctx = PipelineContext(trade=trade)
+    result = await f.check(ctx)
+    assert result.passed is True
+    # raw=1000*0.01=10 ; existing.size=10 ; min=10.0.
+    assert ctx.my_size == pytest.approx(10.0)
+
+
+async def test_position_sizer_sell_proportional_when_source_smaller(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """SELL : raw_size < existing.size → proportional strict, pas capé."""
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=10.0,
+                avg_price=0.4,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings(copy_ratio=0.01))
+    trade = _trade(price=0.6, size=500.0)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL"})
+    ctx = PipelineContext(trade=trade)
+    result = await f.check(ctx)
+    assert result.passed is True
+    # raw=500*0.01=5 < existing.size=10 → prend raw proportional.
+    assert ctx.my_size == pytest.approx(5.0)
+
+
+async def test_position_sizer_sell_orphan_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """SELL sans position matching → rejeté avec ``sell_without_position``."""
+    f = PositionSizer(session_factory, _settings())
+    trade = _trade(price=0.6, size=1000.0)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL"})
+    result = await f.check(PipelineContext(trade=trade))
+    assert result.passed is False
+    assert result.reason == "sell_without_position"
+
+
+async def test_position_sizer_sell_wrong_asset_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """SELL sur cond=X/asset_B alors qu'on a cond=X/asset_A ouvert → rejeté.
+
+    Un SELL YES ne ferme pas une position NO (asset_id différent).
+    Conservateur et sûr.
+    """
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",  # asset A
+                size=10.0,
+                avg_price=0.4,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings())
+    trade = _trade(price=0.6, size=1000.0)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL", "asset_id": "456"})
+    result = await f.check(PipelineContext(trade=trade))
+    assert result.passed is False
+    assert result.reason == "sell_without_position"
+
+
 # --- SlippageChecker ---------------------------------------------------------
 
 

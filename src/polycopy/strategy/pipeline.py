@@ -153,8 +153,12 @@ class EntryPriceFilter:
 class PositionSizer:
     """Calcule `my_size` selon `COPY_RATIO` plafonné à `MAX_POSITION_USD`.
 
-    Rejette si une position est déjà ouverte sur le `condition_id` (table
-    `my_positions` — vide à M2, peuplée à M3).
+    M13 Bug 5 : logique side-aware. Un BUY check *coarse* sur ``condition_id``
+    (empêche double-buy YES/NO sur la même condition, préserve le
+    comportement M2..M12). Un SELL check *fin* sur ``(condition_id,
+    asset_id)`` pour autoriser la fermeture de la position exacte — sinon
+    les SELL copiés restent bloqués indéfiniment et le capital ne se libère
+    jamais en dry-run (cf. spec M13 §5.1).
     """
 
     def __init__(
@@ -166,6 +170,11 @@ class PositionSizer:
         self._settings = settings
 
     async def check(self, ctx: PipelineContext) -> FilterResult:
+        if ctx.trade.side == "BUY":
+            return await self._check_buy(ctx)
+        return await self._check_sell(ctx)
+
+    async def _check_buy(self, ctx: PipelineContext) -> FilterResult:
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
                 MyPosition.condition_id == ctx.trade.condition_id,
@@ -177,6 +186,25 @@ class PositionSizer:
         raw_size = ctx.trade.size * self._settings.copy_ratio
         cap_size = self._settings.max_position_usd / ctx.trade.price if ctx.trade.price > 0 else 0.0
         ctx.my_size = min(raw_size, cap_size)
+        if ctx.my_size <= 0:
+            return FilterResult(passed=False, reason="size_zero")
+        return FilterResult(passed=True)
+
+    async def _check_sell(self, ctx: PipelineContext) -> FilterResult:
+        # Match fin (condition_id, asset_id) : un SELL YES ne ferme pas une
+        # position NO. Sizing proportional capé à ``existing.size`` (on ne
+        # vend jamais plus qu'on détient). ``max_position_usd`` N/A en SELL.
+        async with self._session_factory() as session:
+            stmt = select(MyPosition).where(
+                MyPosition.condition_id == ctx.trade.condition_id,
+                MyPosition.asset_id == ctx.trade.asset_id,
+                MyPosition.closed_at.is_(None),
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            return FilterResult(passed=False, reason="sell_without_position")
+        raw_size = ctx.trade.size * self._settings.copy_ratio
+        ctx.my_size = min(raw_size, float(existing.size or 0.0))
         if ctx.my_size <= 0:
             return FilterResult(passed=False, reason="size_zero")
         return FilterResult(passed=True)
