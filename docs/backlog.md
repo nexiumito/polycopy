@@ -196,3 +196,48 @@ sur ces wallets → compétition de copy-trading documentée.
 **Priorité** : moyenne-basse — dépendante des résultats du test M13.
 
 ---
+
+## Shutdown lent (1-3 min) au SIGTERM
+
+**Contexte** : `systemctl --user stop polycopy.service` ou `restart`
+prend régulièrement **1-3 min** avant de reprendre la main, et finit
+souvent sur un `TimeoutStopSec` → SIGKILL systemd forcé. Observé
+plusieurs fois lors des maintenance windows M13 (2026-04-23).
+
+Le Telegram envoie bien son alert `🛑 polycopy arrêté` en début de
+shutdown (donc le SIGTERM handler asyncio s'amorce correctement), mais
+la boucle asyncio n'arrive pas à finaliser le `TaskGroup.__aexit__`.
+
+**Hypothèses** (à investiguer) :
+1. **`WalletPoller._poll_cycle`** — un cycle de polling Data API en
+   cours au moment du SIGTERM peut bloquer sur le HTTP timeout (30 s
+   typique httpx) × `_MAX_CURSOR_RESETS` × N pollers → potentiellement
+   plusieurs minutes si le Data API répond lentement.
+2. **`ClobMarketWSClient`** — la boucle tenacity reconnect ne check
+   peut-être pas `stop_event` entre ses retries (max 10 × backoff
+   exponentiel = plusieurs minutes).
+3. **`DryRunResolutionWatcher`** — `asyncio.wait_for(stop_event.wait(),
+   timeout=interval_s)` avec `interval_s=1800` (30 min) — le
+   `wait_for` devrait se réveiller sur `stop_event.set()` mais vérifier
+   qu'il n'y a pas d'éternité passée dans `_run_once` en cours.
+4. **`MonitoringOrchestrator`** heartbeat/daily scheduler — `asyncio.sleep`
+   long typiques.
+
+**Fix potentiel v1** : ajouter un `shutdown_timeout_seconds=10` global
+dans `cli/runner.py`, après `stop_event.set()`, via `asyncio.wait_for`
+sur le `TaskGroup.__aexit__`. Si timeout, on laisse systemd SIGKILL
+prendre la main proprement (pas de rage, juste plus rapide).
+
+**Fix potentiel v2** : auditer chaque boucle `while not stop_event`
+pour s'assurer que tous les `await` longs (`httpx.get`, `asyncio.sleep`,
+tenacity retry) sont wrappés en `asyncio.wait_for(..., timeout=min(X, ...))`
+avec check `stop_event` à la sortie.
+
+**Impact opérationnel** : chaque `git pull` + restart = 1-3 min de
+downtime inutile. Gêne pour les maintenance légères. Pas bloquant pour
+les 14 jours de test (on restart rarement pendant).
+
+**Priorité** : basse — cosmétique, mais à traiter en M14+ pour confort
+ops.
+
+---
