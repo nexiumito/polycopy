@@ -1475,7 +1475,9 @@ async def list_activity_closed_positions(
         if not positions:
             return []
 
-        # --- Agrégats BUY / SELL FILLED par (condition_id, asset_id).
+        # --- Agrégats BUY / SELL FILLED|SIMULATED par (condition_id, asset_id).
+        # Bug 3 fix : en dry-run les ordres sont SIMULATED — sans ce filtre,
+        # /activity affichait des lignes avec avg_buy/sell_price à None.
         keys = [(p.condition_id, p.asset_id) for p in positions]
         fill_stats: dict[tuple[str, str], dict[str, float]] = {}
         for cond_id, asset_id in set(keys):
@@ -1485,7 +1487,7 @@ async def list_activity_closed_positions(
                         select(MyOrder.side, MyOrder.size, MyOrder.price).where(
                             MyOrder.condition_id == cond_id,
                             MyOrder.asset_id == asset_id,
-                            MyOrder.status == "FILLED",
+                            MyOrder.status.in_(["FILLED", "SIMULATED"]),
                         ),
                     )
                 ).all(),
@@ -1665,14 +1667,19 @@ async def list_trader_performance(
                 wallet = detected_wallet
             position_wallet[p.id] = wallet
 
-            # Fills (pour calcul PnL live).
+            # Fills (pour calcul PnL live + fallback dry-run). Bug 3 fix :
+            # inclure SIMULATED pour que le leaderboard dry-run remonte bien
+            # les winrate / PnL total. Pour les positions virtuelles closes
+            # par SELL (Bug 1 fix), p.realized_pnl prend la main ligne ~1705 ;
+            # ce fallback sert pour les positions ouvertes ou les résolutions
+            # M8 (close_virtual) qui n'a pas de fills associés côté MyOrder.
             fills = list(
                 (
                     await session.execute(
                         select(MyOrder.side, MyOrder.size, MyOrder.price).where(
                             MyOrder.condition_id == p.condition_id,
                             MyOrder.asset_id == p.asset_id,
-                            MyOrder.status == "FILLED",
+                            MyOrder.status.in_(["FILLED", "SIMULATED"]),
                         ),
                     )
                 ).all(),

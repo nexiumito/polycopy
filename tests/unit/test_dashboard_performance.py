@@ -329,3 +329,105 @@ async def test_performance_last_trade_at_reflects_latest_detected(
     assert rows[0].last_trade_at is not None
     # Doit pointer sur le plus récent (newest), pas sur oldest.
     assert rows[0].last_trade_at >= newest - timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_performance_leaderboard_dry_run_winrate(
+    session_factory: async_sessionmaker[AsyncSession],
+    detected_trade_repo: DetectedTradeRepository,
+    target_trader_repo: TargetTraderRepository,
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Bug 3 : un scénario BUY+SELL SIMULATED qui ferme une position virtuelle
+    doit remonter avec un winrate et un PnL réel, pas des zéros ni "—".
+    """
+    wallet = "0xdryrun1"
+    tx = "0xtx-dry"
+    cond = "0xcond-dry"
+    asset = "asset-dry"
+    await target_trader_repo.insert_shadow(wallet, label="dry-subject")
+    await target_trader_repo.transition_status(wallet, new_status="active")
+    await detected_trade_repo.insert_if_new(
+        DetectedTradeDTO(
+            tx_hash=tx,
+            target_wallet=wallet,
+            condition_id=cond,
+            asset_id=asset,
+            side="BUY",
+            size=10.0,
+            usdc_size=4.0,
+            price=0.4,
+            timestamp=datetime.now(tz=UTC),
+            outcome="Yes",
+            slug="slug",
+            raw_json={"tx_hash": tx},
+        ),
+    )
+
+    # BUY 10 @ 0.40 SIMULATED (dry-run via M8 realistic_fill).
+    async with session_factory() as session:
+        session.add(
+            MyOrder(
+                source_tx_hash=tx,
+                condition_id=cond,
+                asset_id=asset,
+                side="BUY",
+                size=10.0,
+                price=0.40,
+                tick_size=0.01,
+                neg_risk=False,
+                order_type="FOK",
+                status="SIMULATED",
+                simulated=True,
+                realistic_fill=True,
+                transaction_hashes=[],
+            ),
+        )
+        # SELL 10 @ 0.60 SIMULATED (la copie du SELL source wallet).
+        session.add(
+            MyOrder(
+                source_tx_hash=tx,
+                condition_id=cond,
+                asset_id=asset,
+                side="SELL",
+                size=10.0,
+                price=0.60,
+                tick_size=0.01,
+                neg_risk=False,
+                order_type="FOK",
+                status="SIMULATED",
+                simulated=True,
+                realistic_fill=True,
+                transaction_hashes=[],
+            ),
+        )
+        await session.commit()
+    # Position virtuelle créée puis close via upsert_virtual (chaîne réelle
+    # bug 1 + bug 3) — realized_pnl doit être +2.0 dénormalisé.
+    await my_position_repo.upsert_virtual(
+        condition_id=cond,
+        asset_id=asset,
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.40,
+    )
+    closed = await my_position_repo.upsert_virtual(
+        condition_id=cond,
+        asset_id=asset,
+        side="SELL",
+        size_filled=10.0,
+        fill_price=0.60,
+    )
+    assert closed is not None
+    assert closed.realized_pnl == pytest.approx(2.0, abs=1e-9)
+
+    rows = await queries.list_trader_performance(session_factory)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.wallet_address == wallet
+    assert row.positions_closed_count == 1
+    assert row.positions_open_count == 0
+    assert row.win_count == 1
+    assert row.loss_count == 0
+    assert row.win_rate_pct == pytest.approx(100.0, abs=0.01)
+    assert row.realized_pnl_total == pytest.approx(2.0, abs=1e-9)
