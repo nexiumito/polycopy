@@ -36,6 +36,42 @@
         {% endfor %}
       </nav>
     </article>
+    {# M13 : PnL latent (mark-to-market des positions ouvertes). Positif = les
+       prix ont monté en notre faveur. Distinct du PnL réalisé cristallisé. #}
+    {% set latent_color = "var(--color-profit)" if alltime.open_latent_pnl_usd >= 0 else "var(--color-loss)" %}
+    <article class="rounded-xl border p-4 flex flex-col gap-1"
+             style="border-color: var(--color-border); background: var(--color-surface);">
+      <header class="flex items-center justify-between">
+        <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">PnL latent</span>
+        <i data-lucide="activity" class="w-4 h-4" style="color: var(--color-muted);"></i>
+      </header>
+      <p class="text-2xl font-semibold" style="color: {{ latent_color }};">
+        {{ alltime.open_latent_pnl_usd | format_usd }}
+      </p>
+      <p class="text-xs" style="color: var(--color-muted);">mark-to-market positions ouvertes</p>
+    </article>
+    {# M13 Bug 6 : Win rate global (wins / (wins + losses) sur closed). #}
+    {% if alltime.win_rate_pct is not none %}
+      {{ stat_card(
+           "Win rate",
+           alltime.win_rate_pct | format_pct(with_sign=False),
+           "target",
+           subtext="positions gagnantes / décidées") }}
+    {% else %}
+      {{ stat_card("Win rate", "—", "target", subtext="aucune position décidée") }}
+    {% endif %}
+    {# M13 Bug 6 : Exposition = Σ size × avg_price sur positions ouvertes. #}
+    {{ stat_card(
+         "Exposition",
+         alltime.open_exposition_usd | format_usd,
+         "shield",
+         subtext="capital engagé positions ouvertes") }}
+    {# M13 Bug 6 : Gain max latent = Σ size × (1 - avg_price) sur ouvertes. #}
+    {{ stat_card(
+         "Gain max latent",
+         alltime.open_max_profit_usd | format_usd,
+         "trending-up",
+         subtext="upside max si toutes YES gagnent") }}
     {{ stat_card(
          "Volume tradé",
          alltime.volume_usd_total | format_usd,

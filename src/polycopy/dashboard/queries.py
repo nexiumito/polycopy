@@ -14,12 +14,15 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.dashboard.dtos import DiscoveryStatus, KpiCard, PnlMilestone
+
+if TYPE_CHECKING:
+    from polycopy.config import Settings
 from polycopy.storage.models import (
     DetectedTrade,
     MyOrder,
@@ -138,6 +141,11 @@ class HomeAllTimeStats:
     strategy_approve_rate_pct: float | None
     top_trader: dict[str, float | str | None] | None
     uptime: timedelta | None
+    # M13 Bug 6 + PnL latent (defaults non-cassants pour les tests existants).
+    open_exposition_usd: float = 0.0
+    open_max_profit_usd: float = 0.0
+    open_latent_pnl_usd: float = 0.0
+    win_rate_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -750,6 +758,7 @@ async def get_home_alltime_stats(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     pnl_mode: Literal["real", "dry_run", "both"] = "both",
+    settings: Settings | None = None,
 ) -> HomeAllTimeStats:
     """Agrège 6 stats all-time pour la section Home (commit 5).
 
@@ -896,6 +905,82 @@ async def get_home_alltime_stats(
             await session.execute(select(func.min(PnlSnapshot.timestamp)))
         ).scalar_one_or_none()
 
+        # --- M13 Bug 6 : exposition + gain max latent sur positions OUVERTES.
+        open_filter = [MyPosition.closed_at.is_(None)]
+        if pnl_mode == "real":
+            open_filter.append(MyPosition.simulated.is_(False))
+        elif pnl_mode == "dry_run":
+            open_filter.append(MyPosition.simulated.is_(True))
+        open_stats = (
+            await session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(MyPosition.size * MyPosition.avg_price),
+                        0.0,
+                    ).label("exposition"),
+                    func.coalesce(
+                        func.sum(MyPosition.size * (1.0 - MyPosition.avg_price)),
+                        0.0,
+                    ).label("max_profit"),
+                ).where(*open_filter),
+            )
+        ).first()
+        open_exposition_usd = float(open_stats.exposition) if open_stats else 0.0
+        open_max_profit_usd = float(open_stats.max_profit) if open_stats else 0.0
+
+        # --- M13 Bug 6 : win rate sur positions fermées avec PnL cristallisé.
+        closed_filter = [
+            MyPosition.closed_at.is_not(None),
+            MyPosition.realized_pnl.is_not(None),
+        ]
+        if pnl_mode == "real":
+            closed_filter.append(MyPosition.simulated.is_(False))
+        elif pnl_mode == "dry_run":
+            closed_filter.append(MyPosition.simulated.is_(True))
+        closed_pnls = (
+            (
+                await session.execute(
+                    select(MyPosition.realized_pnl).where(*closed_filter),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        wins = sum(1 for p in closed_pnls if p is not None and float(p) > 0)
+        losses = sum(1 for p in closed_pnls if p is not None and float(p) < 0)
+        decided = wins + losses
+        win_rate_pct: float | None = (wins / decided * 100.0) if decided > 0 else None
+
+        # --- M13 PnL latent : total_usdc courant − initial_capital − realized_pnl.
+        # ``settings is None`` = caller n'a pas besoin du latent (compat tests
+        # unitaires qui n'injectent pas Settings) → 0.0.
+        open_latent_pnl_usd = 0.0
+        if settings is not None:
+            latest_snapshot_total = (
+                await session.execute(
+                    select(PnlSnapshot.total_usdc).order_by(PnlSnapshot.timestamp.desc()).limit(1),
+                )
+            ).scalar_one_or_none()
+            if latest_snapshot_total is not None:
+                if settings.dry_run_initial_capital_usd is not None:
+                    initial_capital = float(settings.dry_run_initial_capital_usd)
+                else:
+                    oldest = (
+                        await session.execute(
+                            select(PnlSnapshot.total_usdc)
+                            .order_by(PnlSnapshot.timestamp.asc())
+                            .limit(1),
+                        )
+                    ).scalar_one_or_none()
+                    initial_capital = (
+                        float(oldest)
+                        if oldest is not None
+                        else float(settings.risk_available_capital_usd_stub)
+                    )
+                open_latent_pnl_usd = (
+                    float(latest_snapshot_total) - initial_capital - realized_pnl_total
+                )
+
     uptime: timedelta | None = None
     if first_snapshot_ts is not None:
         if first_snapshot_ts.tzinfo is None:
@@ -910,6 +995,10 @@ async def get_home_alltime_stats(
         strategy_approve_rate_pct=strategy_approve_rate_pct,
         top_trader=top_trader,
         uptime=uptime,
+        open_exposition_usd=open_exposition_usd,
+        open_max_profit_usd=open_max_profit_usd,
+        open_latent_pnl_usd=open_latent_pnl_usd,
+        win_rate_pct=win_rate_pct,
     )
 
 

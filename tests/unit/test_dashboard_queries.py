@@ -563,3 +563,202 @@ async def test_get_home_alltime_stats_dry_run_counts_simulated(
     assert real.fills_count == 0
     # 0 FILLED + 1 REJECTED → fills_rate = 0% (pas None car exec_total > 0).
     assert real.fills_rate_pct == pytest.approx(0.0, abs=0.01)
+
+
+# --- M13 Bug 6 + PnL latent ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_exposition_and_gain_max_dry_run(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """M13 Bug 6 : exposition = Σ size*avg ; gain max = Σ size*(1-avg) sur ouvertes."""
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xC1",
+                asset_id="A1",
+                size=10.0,
+                avg_price=0.30,
+                simulated=True,
+            ),
+        )
+        session.add(
+            MyPosition(
+                condition_id="0xC2",
+                asset_id="A2",
+                size=5.0,
+                avg_price=0.80,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    stats = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    # 10*0.30 + 5*0.80 = 3 + 4 = 7.
+    assert stats.open_exposition_usd == pytest.approx(7.0)
+    # 10*0.70 + 5*0.20 = 7 + 1 = 8.
+    assert stats.open_max_profit_usd == pytest.approx(8.0)
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_exposition_ignores_closed_positions(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """M13 Bug 6 : les closed sont exclues de exposition / gain max."""
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xclosed",
+                asset_id="AC",
+                size=50.0,
+                avg_price=0.5,
+                simulated=True,
+                closed_at=now,
+                realized_pnl=5.0,
+            ),
+        )
+        session.add(
+            MyPosition(
+                condition_id="0xopen",
+                asset_id="AO",
+                size=10.0,
+                avg_price=0.30,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    stats = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    assert stats.open_exposition_usd == pytest.approx(3.0)
+    assert stats.open_max_profit_usd == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_win_rate_dry_run(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """M13 Bug 6 : win_rate = wins / (wins + losses). Ignore realized_pnl == 0."""
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        for i, pnl in enumerate([2.0, 3.0, -1.0]):
+            session.add(
+                MyPosition(
+                    condition_id=f"0xc{i}",
+                    asset_id=f"A{i}",
+                    size=1.0,
+                    avg_price=0.5,
+                    simulated=True,
+                    closed_at=now,
+                    realized_pnl=pnl,
+                ),
+            )
+        await session.commit()
+    stats = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    # 2 wins, 1 loss → 66.666...%.
+    assert stats.win_rate_pct == pytest.approx(200.0 / 3.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_win_rate_none_when_no_closed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """M13 Bug 6 : win_rate=None quand aucune position décidée."""
+    stats = await queries.get_home_alltime_stats(session_factory, pnl_mode="dry_run")
+    assert stats.win_rate_pct is None
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_latent_pnl_with_explicit_initial_capital(
+    session_factory: async_sessionmaker[AsyncSession],
+    pnl_snapshot_repo: PnlSnapshotRepository,
+) -> None:
+    """M13 PnL latent : formule explicite avec DRY_RUN_INITIAL_CAPITAL_USD."""
+    from polycopy.config import Settings
+
+    now = datetime.now(tz=UTC)
+    # 2 PnlSnapshot : ancien 1000, dernier 1050.
+    async with session_factory() as session:
+        from polycopy.storage.models import PnlSnapshot
+
+        session.add(
+            PnlSnapshot(
+                timestamp=now - timedelta(hours=2),
+                total_usdc=1000.0,
+                drawdown_pct=0.0,
+                open_positions_count=0,
+                is_dry_run=True,
+            ),
+        )
+        session.add(
+            PnlSnapshot(
+                timestamp=now,
+                total_usdc=1050.0,
+                drawdown_pct=0.0,
+                open_positions_count=1,
+                is_dry_run=True,
+            ),
+        )
+        # 1 position virtual closed avec realized_pnl=10.
+        session.add(
+            MyPosition(
+                condition_id="0xclosed",
+                asset_id="AC",
+                size=1.0,
+                avg_price=0.4,
+                simulated=True,
+                closed_at=now,
+                realized_pnl=10.0,
+            ),
+        )
+        await session.commit()
+    _ = pnl_snapshot_repo  # fixture required for migrations.
+    settings = Settings(_env_file=None, dry_run_initial_capital_usd=1000.0)  # type: ignore[call-arg]
+    stats = await queries.get_home_alltime_stats(
+        session_factory,
+        pnl_mode="dry_run",
+        settings=settings,
+    )
+    # 1050 - 1000 - 10 = 40.
+    assert stats.open_latent_pnl_usd == pytest.approx(40.0)
+
+
+@pytest.mark.asyncio
+async def test_home_alltime_stats_latent_pnl_fallback_oldest_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+    pnl_snapshot_repo: PnlSnapshotRepository,
+) -> None:
+    """M13 PnL latent : fallback sur PnlSnapshot le plus ancien si flag None."""
+    from polycopy.config import Settings
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        from polycopy.storage.models import PnlSnapshot
+
+        session.add(
+            PnlSnapshot(
+                timestamp=now - timedelta(hours=2),
+                total_usdc=950.0,
+                drawdown_pct=0.0,
+                open_positions_count=0,
+                is_dry_run=True,
+            ),
+        )
+        session.add(
+            PnlSnapshot(
+                timestamp=now,
+                total_usdc=980.0,
+                drawdown_pct=0.0,
+                open_positions_count=0,
+                is_dry_run=True,
+            ),
+        )
+        await session.commit()
+    _ = pnl_snapshot_repo
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    stats = await queries.get_home_alltime_stats(
+        session_factory,
+        pnl_mode="dry_run",
+        settings=settings,
+    )
+    # 980 - 950 - 0 = 30.
+    assert stats.open_latent_pnl_usd == pytest.approx(30.0)

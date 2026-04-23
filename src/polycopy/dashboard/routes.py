@@ -110,7 +110,11 @@ def build_pages_router() -> APIRouter:
     ) -> HTMLResponse:
         effective_pnl_mode = queries.normalize_home_pnl_mode(pnl_mode)
         cards = await queries.get_home_kpi_cards(sf)
-        alltime = await queries.get_home_alltime_stats(sf, pnl_mode=effective_pnl_mode)
+        alltime = await queries.get_home_alltime_stats(
+            sf,
+            pnl_mode=effective_pnl_mode,
+            settings=settings,
+        )
         discovery = await queries.get_discovery_status(sf, enabled=settings.discovery_enabled)
         recent_trades = await queries.list_detected_trades(sf, limit=8)
         return _render(
