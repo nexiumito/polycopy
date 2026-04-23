@@ -81,3 +81,55 @@ significative de toute façon — la doc actuelle filtre déjà à `n≥3` mais
 devrait remonter à `n≥10` pour avoir du sens.
 
 ---
+
+## Latence watcher : métrique `watcher_detected_ms` trompeuse
+
+**Contexte** : sur `/latence` du dashboard (remote 2026-04-23), le stage
+`watcher_detected_ms` affiche p50=16 182 ms, p95=32 642 ms, **p99=1 713 411 ms
+(28 minutes)**. Les autres stages sont nominaux (`strategy_sized_ms`
+2.71 ms p50, `executor_submitted_ms` 635 ms p50).
+
+**Cause racine — la métrique conflate deux latences différentes** :
+`watcher_detected_ms = now() - trade.timestamp` où `trade.timestamp` est
+le timestamp on-chain renvoyé par la Data API
+([wallet_poller.py:94-98](../src/polycopy/watcher/wallet_poller.py#L94)).
+Quand un wallet fraîchement promu a un gros backlog historique
+(> 2900 trades), la pagination time-cursor
+([data_api_client.py:30-96](../src/polycopy/watcher/data_api_client.py#L30))
+fait jusqu'à 50 cursor resets séquentiels pour tout rattraper — chaque
+reset = 1 HTTP call supplémentaire. Au moment où le trade le plus ancien
+du backlog atteint la DB, sa "détection latence" apparente = `now - timestamp_ancien`
+= des heures ou jours. Le p99 à 28 min = très probablement **un wallet
+promu récemment dont on aspire l'historique**, pas une vraie latence
+opérationnelle.
+
+**Pistes de fix** (à trancher après le test 14 jours) :
+1. **Refacto métrique (recommandé)** — séparer 2 stages distincts :
+   - `watcher_realtime_detected_ms` = `now() - trade.timestamp` **uniquement
+     pour les trades < 5 min** (zone temps-réel). Filtre en amont de
+     `latency_repo.insert()`. C'est la seule valeur pertinente pour
+     évaluer la compétitivité du bot.
+   - `watcher_backfill_duration_ms` = durée totale du cycle `get_trades()`
+     lors d'une promotion (mesurée autour du call `_poll_once`). Audit
+     pur, pas comparé aux autres stages.
+2. **Quick mitigation** : baisser `_MAX_CURSOR_RESETS` de 50 à 10 dans
+   [data_api_client.py:30](../src/polycopy/watcher/data_api_client.py#L30). Risque : on loupe des
+   trades historiques sur les gros wallets (seuil 10 resets × 2900 trades
+   = 29 000 trades max capturés au boot). Acceptable si on préfère
+   privilégier le temps-réel.
+3. **Non-fix** : accepter que le p50 réel ~16 s est en grande partie
+   "vraie" latence (poll interval 5 s + propagation Data API 1-5 s +
+   traitement). Dans ce cas passer `POLL_INTERVAL_SECONDS=2` dans `.env`
+   mais attention au rate-limit Data API (~100 req/min — avec 7 pollers
+   actifs à 2 s = 210 req/min, on frôle).
+
+**Use-case déclencheur** : test 14 jours en cours (démarré 2026-04-22).
+Le `position_already_open` domine les rejets strategy (cf. /strategy),
+en partie dû à cette latence (le temps qu'on traite, le source wallet
+a déjà enchaîné le trade suivant). À revisiter fin 2026-05-06 avec les
+métriques du test pour prioriser fix #1 vs fix #3.
+
+**Priorité** : moyenne — ne bloque pas le test dry-run en cours, mais
+obligatoire avant passage live.
+
+---

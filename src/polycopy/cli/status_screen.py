@@ -56,7 +56,7 @@ def build_initial_module_status(settings: Settings) -> list[ModuleStatus]:
             enabled=True,
             detail=f"{len(settings.target_wallets)} wallet(s) pinned",
         ),
-        ModuleStatus(name="Strategy", enabled=True, detail="4 filtres actifs"),
+        ModuleStatus(name="Strategy", enabled=True, detail="6 filtres actifs"),
         ModuleStatus(
             name="Executor",
             enabled=True,
