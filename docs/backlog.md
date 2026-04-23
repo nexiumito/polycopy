@@ -133,3 +133,66 @@ métriques du test pour prioriser fix #1 vs fix #3.
 obligatoire avant passage live.
 
 ---
+
+## Réduction de latence bout-en-bout (watcher → executor)
+
+**Contexte** : la latence actuelle source-trade → notre POST CLOB
+plafonne à 8-20 s, dominée par l'indexation Data API Polymarket (5-15 s
+incompressible côté client). C'est acceptable pour le copy-trading de
+stratégies à horizon minutes/heures (RN1 style — sell favorites,
+over/under) où le prix ne bouge pas dans la fenêtre. C'est *bloquant*
+pour :
+- Les stratégies d'arbitrage sub-minute (sportsbook ↔ Polymarket).
+- Les wallets massivement copiés (>100k views) où la compétition d'ordre
+  d'arrivée sur le carnet compresse le edge en quelques secondes.
+
+**Pistes (par ordre de ROI décroissant)** :
+
+1. **Goldsky subgraph `pnl-subgraph`** en remplacement du polling Data
+   API HTTP — gain estimé **~5-10 s**. Déjà partiellement supporté via
+   `DISCOVERY_BACKEND=goldsky|hybrid` (M5) ; à étendre au watcher
+   principal. Risque : versions subgraph qui drift (hardcoder un
+   fallback URL + override env, pattern déjà en place).
+
+2. **Polygon logs directs** — `WebSocket eth_subscribe` sur les events
+   `OrderFilled` du CTF contract Polymarket. Détection à la confirmation
+   de bloc (~2 s), bypass total de l'indexation Data API. Gain estimé
+   **~10 s**. Coût d'implémentation non-trivial : nouveau module
+   `watcher/polygon_logs_client.py` + gestion des reorgs + decoding
+   ABI. Dépendance : un RPC WebSocket stable (public free RPC = pas
+   fiable, besoin d'un provider).
+
+3. **RPC Polygon premium** (Alchemy / QuickNode / Infura) — quand on
+   aura #2 en place, passer du RPC public (latence 200-500 ms) à un
+   plan payant (~30-50 ms). Gain marginal **~200 ms**, mais nécessaire
+   pour que #2 soit fiable (le public RPC coupe les WebSocket
+   régulièrement).
+
+4. **Deploy géographique** — passer du WSL/laptop local à un VPS AWS
+   us-east-1 (proche des validators Polygon et du DC de Polymarket).
+   Gain estimé **-50 à -100 ms** sur tous les round-trips. ROI faible
+   vs coût d'ops (supervisor systemd remote, réplication DB, etc.).
+
+**Ordre d'implémentation suggéré** : #1 en priorité (retour faible
+effort vs gain substantiel, code déjà en place pour discovery). #2 si
+#1 ne suffit pas pour débloquer les copy-trades rapides. #3 et #4
+uniquement si #2 est adopté.
+
+**Budget latence cible** (si tout fait) : 8-20 s → **2-5 s**. Rapproche
+polycopy de la classe bot "niveau semi-pro", en-dessous du HFT
+institutionnel (<1 s) mais largement compétitif sur les stratégies à
+horizon trade-to-trade > 30 s.
+
+**Ne pas traiter avant** d'avoir les résultats du test 14 j M13 —
+priorité produit. Si le test montre +10 % net réalisé via copy-trading
+sans optimisation latence, la latence n'est pas le bottleneck. Si le
+test montre du slippage marqué sur les wallets très copiés, #1 devient
+prioritaire.
+
+**Use-case déclencheur** : analyse 2026-04-23 de wallets candidats
+`swisstony` / `RN1` / `0xD9E0` — tweet viral qui affiche 461-675k views
+sur ces wallets → compétition de copy-trading documentée.
+
+**Priorité** : moyenne-basse — dépendante des résultats du test M13.
+
+---
