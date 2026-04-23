@@ -14,6 +14,7 @@ from polycopy.strategy.clob_read_client import ClobReadClient
 from polycopy.strategy.dtos import MarketMetadata, PipelineContext
 from polycopy.strategy.gamma_client import GammaApiClient
 from polycopy.strategy.pipeline import (
+    EntryPriceFilter,
     MarketFilter,
     PositionSizer,
     RiskManager,
@@ -140,6 +141,47 @@ async def test_market_filter_pass() -> None:
     assert ctx.market is not None
 
 
+# --- EntryPriceFilter --------------------------------------------------------
+
+
+async def test_entry_price_filter_rejects_buy_above_threshold() -> None:
+    """BUY @ 0.99 avec max=0.97 → rejeté avec reason='entry_price_too_high'."""
+    f = EntryPriceFilter(_settings(strategy_max_entry_price=0.97))
+    result = await f.check(PipelineContext(trade=_trade(price=0.99)))
+    assert result.passed is False
+    assert result.reason == "entry_price_too_high"
+
+
+async def test_entry_price_filter_accepts_buy_at_exact_threshold() -> None:
+    """Comparaison stricte ``>`` : price==max doit passer (on rejette au-dessus)."""
+    f = EntryPriceFilter(_settings(strategy_max_entry_price=0.97))
+    result = await f.check(PipelineContext(trade=_trade(price=0.97)))
+    assert result.passed is True
+
+
+async def test_entry_price_filter_accepts_buy_below_threshold() -> None:
+    """BUY @ 0.50 avec max=0.97 → accepté (zone normale)."""
+    f = EntryPriceFilter(_settings(strategy_max_entry_price=0.97))
+    result = await f.check(PipelineContext(trade=_trade(price=0.50)))
+    assert result.passed is True
+
+
+async def test_entry_price_filter_sell_passthrough_even_above_threshold() -> None:
+    """SELL @ 0.99 doit passer — on doit pouvoir copier un SELL pour fermer."""
+    f = EntryPriceFilter(_settings(strategy_max_entry_price=0.97))
+    trade = _trade(price=0.99)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL"})
+    result = await f.check(PipelineContext(trade=trade))
+    assert result.passed is True
+
+
+async def test_entry_price_filter_disabled_at_100pct() -> None:
+    """max=1.0 désactive le filtre (aucun prix > 1.0 possible sur Polymarket)."""
+    f = EntryPriceFilter(_settings(strategy_max_entry_price=1.0))
+    result = await f.check(PipelineContext(trade=_trade(price=0.999)))
+    assert result.passed is True
+
+
 # --- PositionSizer -----------------------------------------------------------
 
 
@@ -258,8 +300,9 @@ async def test_full_pipeline_approved(
     assert ctx.market is not None
     assert ctx.my_size is not None and ctx.my_size > 0
     assert ctx.midpoint == 0.0805
-    # M5_bis Phase C.4 : 5 filtres désormais (ajout TraderLifecycleFilter en tête).
-    assert len(ctx.filter_trace) == 5
+    # 6 filtres : TraderLifecycle, Market, EntryPrice (bug 4), PositionSizer,
+    # SlippageChecker, RiskManager.
+    assert len(ctx.filter_trace) == 6
     assert all(step["passed"] for step in ctx.filter_trace)
 
 

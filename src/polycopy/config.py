@@ -72,6 +72,19 @@ class Settings(BaseSettings):
     min_market_liquidity_usd: float = Field(5000, ge=0)
     min_hours_to_expiry: float = Field(24, ge=0)
     max_slippage_pct: float = Field(2.0, ge=0)
+    strategy_max_entry_price: float = Field(
+        0.97,
+        gt=0,
+        le=1.0,
+        description=(
+            "Seuil strict supérieur du prix d'entrée côté BUY. Au-delà le "
+            "trade est rejeté (reason='entry_price_too_high'). Défaut 0.97 = "
+            "upside résiduel ≥ 3% — un BUY à 1.00 a zéro gain max et risque "
+            "de dévaluation avant résolution. Mettre à 1.0 pour désactiver "
+            "(passthrough). SELL jamais concerné (on doit pouvoir copier "
+            "un SELL à n'importe quel prix pour fermer la position copiée)."
+        ),
+    )
     kill_switch_drawdown_pct: float = Field(20, ge=0, le=100)
     risk_available_capital_usd_stub: float = Field(
         1000.0,

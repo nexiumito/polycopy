@@ -125,6 +125,31 @@ class MarketFilter:
             return None
 
 
+class EntryPriceFilter:
+    """Rejette les BUY dont le prix source dépasse ``strategy_max_entry_price``.
+
+    Un BUY à ~1.00 = aucune upside (payoff max − coût = 0) et risque
+    non-nul de dévaluation avant résolution. Seuil par défaut 0.97 →
+    upside résiduel ≥ 3%. SELL jamais concerné — un wallet source qui
+    sort à 0.99 veut simplement clôturer au meilleur prix et on doit
+    pouvoir copier pour fermer notre position.
+
+    Placement pipeline : après ``MarketFilter`` (sémantiquement : on sait
+    d'abord que le marché est tradable, puis on regarde son prix). Coût
+    runtime négligeable — une comparaison float.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    async def check(self, ctx: PipelineContext) -> FilterResult:
+        if ctx.trade.side == "SELL":
+            return FilterResult(passed=True)
+        if ctx.trade.price > self._settings.strategy_max_entry_price:
+            return FilterResult(passed=False, reason="entry_price_too_high")
+        return FilterResult(passed=True)
+
+
 class PositionSizer:
     """Calcule `my_size` selon `COPY_RATIO` plafonné à `MAX_POSITION_USD`.
 
@@ -253,6 +278,7 @@ async def run_pipeline(
     filters = (
         ("TraderLifecycleFilter", TraderLifecycleFilter(session_factory, settings)),
         ("MarketFilter", MarketFilter(gamma_client, settings)),
+        ("EntryPriceFilter", EntryPriceFilter(settings)),
         ("PositionSizer", PositionSizer(session_factory, settings)),
         ("SlippageChecker", SlippageChecker(clob_client, settings, ws_client)),
         ("RiskManager", RiskManager(session_factory, settings)),

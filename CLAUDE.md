@@ -44,7 +44,8 @@ src/polycopy/
 ├── watcher/      Détection trades on-chain (Data API polling)
 ├── strategy/     Filtres, sizing, risk manager
 │   ├── clob_ws_client.py   WebSocket CLOB `market` cache (M11)
-│   └── _cache_policy.py    TTL adaptatif Gamma (M11)
+│   ├── _cache_policy.py    TTL adaptatif Gamma (M11)
+│   └── pipeline.py         6 filtres ordonnés : TraderLifecycle → Market → EntryPrice → PositionSizer → Slippage → Risk. EntryPriceFilter (bug 4) rejette les BUY > `STRATEGY_MAX_ENTRY_PRICE` (défaut 0.97, SELL passthrough).
 ├── executor/     Construction & envoi ordres CLOB
 ├── storage/      Models SQLAlchemy + repositories (inclut `trade_latency_samples` M11 + `LatencyPurgeScheduler`)
 ├── monitoring/   Logs, metrics, alertes
