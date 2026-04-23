@@ -846,11 +846,7 @@ async def get_home_alltime_stats(
         )
         order_counts = {str(s): int(n) for s, n in order_status_rows}
         fills_count = sum(order_counts.get(s, 0) for s in fill_statuses)
-        exec_total = (
-            fills_count
-            + order_counts.get("REJECTED", 0)
-            + order_counts.get("FAILED", 0)
-        )
+        exec_total = fills_count + order_counts.get("REJECTED", 0) + order_counts.get("FAILED", 0)
         fills_rate_pct: float | None = (
             (fills_count / exec_total * 100.0) if exec_total > 0 else None
         )
@@ -995,10 +991,7 @@ async def get_pnl_milestones(
     async with session_factory() as session:
         first_fill = (
             await session.execute(
-                select(MyOrder)
-                .where(status_clause)
-                .order_by(effective_at.asc())
-                .limit(1),
+                select(MyOrder).where(status_clause).order_by(effective_at.asc()).limit(1),
             )
         ).scalar_one_or_none()
 
