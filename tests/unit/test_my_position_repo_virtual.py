@@ -192,6 +192,104 @@ async def test_unique_constraint_triple_allows_real_and_virtual_coexistence(
     assert len(open_real) == 1
 
 
+async def test_upsert_virtual_sell_close_sets_realized_pnl(
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Bug 1 : BUY 10 @ 0.40 puis SELL 10 @ 0.60 → position close, PnL = +2.0."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.40,
+    )
+    closed = await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="SELL",
+        size_filled=10.0,
+        fill_price=0.60,
+    )
+    assert closed is not None
+    assert closed.closed_at is not None
+    assert closed.realized_pnl == pytest.approx(2.0, abs=1e-9)
+    total = await my_position_repo.sum_realized_pnl_virtual()
+    assert total == pytest.approx(2.0, abs=1e-9)
+
+
+async def test_upsert_virtual_sell_partial_leaves_pnl_null(
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Bug 1 : un SELL partiel (size restant > 0) ne doit PAS écrire realized_pnl."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.40,
+    )
+    partial = await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="SELL",
+        size_filled=3.0,
+        fill_price=0.60,
+    )
+    assert partial is not None
+    assert partial.closed_at is None
+    assert partial.size == pytest.approx(7.0, abs=1e-9)
+    assert partial.realized_pnl is None
+
+
+async def test_upsert_virtual_sell_oversell_matches_only_held_quantity(
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Bug 1 : un SELL > size détenue compte PnL sur la quantité réellement matchée."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="BUY",
+        size_filled=5.0,
+        fill_price=0.40,
+    )
+    closed = await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="SELL",
+        size_filled=12.0,  # oversell : 12 > 5 détenus
+        fill_price=0.60,
+    )
+    assert closed is not None
+    assert closed.closed_at is not None
+    # PnL sur 5 seulement (la portion réellement matchée), pas sur 12.
+    # 5 × (0.60 - 0.40) = 1.0
+    assert closed.realized_pnl == pytest.approx(1.0, abs=1e-9)
+
+
+async def test_upsert_virtual_sell_loss_sets_negative_realized_pnl(
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Bug 1 : un SELL en perte persiste un realized_pnl négatif."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.70,
+    )
+    closed = await my_position_repo.upsert_virtual(
+        condition_id="0xc",
+        asset_id="A",
+        side="SELL",
+        size_filled=10.0,
+        fill_price=0.50,
+    )
+    assert closed is not None
+    assert closed.closed_at is not None
+    # 10 × (0.50 - 0.70) = -2.0
+    assert closed.realized_pnl == pytest.approx(-2.0, abs=1e-9)
+
+
 async def test_unique_constraint_triple_rejects_duplicate_real(
     my_position_repo: MyPositionRepository,
 ) -> None:

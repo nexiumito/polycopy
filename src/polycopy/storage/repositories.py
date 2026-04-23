@@ -707,8 +707,18 @@ class MyPositionRepository:
                     ) / new_size
                 existing.size = new_size
             else:  # SELL
+                size_before = existing.size
+                entry_avg_price = existing.avg_price
                 existing.size -= size_filled
                 if existing.size <= 0:
+                    # Bug 1 fix : un SELL qui ferme la position persiste
+                    # realized_pnl sur la portion réellement matchée — un SELL
+                    # "oversell" (size_filled > size_before) ne compte que sur
+                    # la quantité effectivement détenue. Tant que la position
+                    # n'est pas entièrement fermée, realized_pnl reste NULL (v1
+                    # sans SELL partiels cumulés).
+                    closed_portion = min(size_filled, size_before)
+                    existing.realized_pnl = closed_portion * (fill_price - entry_avg_price)
                     existing.closed_at = datetime.now(tz=UTC)
             await session.commit()
             await session.refresh(existing)
