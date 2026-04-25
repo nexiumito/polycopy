@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from polycopy.discovery.dtos import RawPosition
-from polycopy.discovery.metrics_collector_v2 import _compute_zombie_ratio
+from polycopy.discovery.metrics_collector_v2 import _compute_brier, _compute_zombie_ratio
 
 
 def _position(
@@ -27,13 +29,20 @@ def _position(
     redeemable: bool = False,
     opened_at: datetime | None = None,
     asset: str = "0xasset",
+    avg_price: float = 0.5,
+    outcome_index: int | None = 0,
 ) -> RawPosition:
-    """Helper : construit un `RawPosition` avec defaults raisonnables."""
+    """Helper : construit un `RawPosition` avec defaults raisonnables.
+
+    `redeemable=False` par défaut → `is_resolved=False` (utile aux tests
+    zombie qui exigent positions non liquidées). Tests Brier passent
+    `redeemable=True` explicitement.
+    """
     return RawPosition(
         condition_id="0xcond",
         asset=asset,
         size=10.0,
-        avg_price=0.5,
+        avg_price=avg_price,
         initial_value=initial_value,
         current_value=current_value,
         cash_pnl=cash_pnl,
@@ -41,6 +50,7 @@ def _position(
         total_bought=initial_value,
         redeemable=redeemable,
         opened_at=opened_at,
+        outcome_index=outcome_index,
     )
 
 
@@ -117,3 +127,111 @@ def test_zombie_ratio_no_eligible_returns_zero() -> None:
         for i in range(5)
     ]
     assert _compute_zombie_ratio(recents, now=now) == 0.0
+
+
+# --- M14 MA.4 : Brier P(YES) (Gneiting-Raftery 2007) -------------------------
+
+
+def test_brier_computes_prob_yes_not_prob_side_bought() -> None:
+    """MA.4 : Brier sur P(YES) symétrique entre BUY YES et BUY NO.
+
+    Position 1 : BUY YES @ 0.40, YES gagne (cash_pnl > 0).
+      yes_at_entry = 0.40, yes_won = 1.0
+      sq_error = (1 - 0.40)² = 0.36
+
+    Position 2 : BUY NO @ 0.60, NO gagne (cash_pnl > 0 = side_won).
+      yes_at_entry = 1 - 0.60 = 0.40, yes_won = 0.0 (NO won = YES lost)
+      sq_error = (0 - 0.40)² = 0.16
+
+    Brier = mean([0.36, 0.16]) = 0.26.
+    """
+    positions = [
+        # Padding pour atteindre _BRIER_MIN_RESOLVED=5.
+        _position(asset="p3", avg_price=0.5, outcome_index=0, cash_pnl=1.0, redeemable=True),
+        _position(asset="p4", avg_price=0.5, outcome_index=0, cash_pnl=1.0, redeemable=True),
+        _position(asset="p5", avg_price=0.5, outcome_index=0, cash_pnl=1.0, redeemable=True),
+        # BUY YES @ 0.40, won.
+        _position(asset="p1", avg_price=0.40, outcome_index=0, cash_pnl=10.0, redeemable=True),
+        # BUY NO @ 0.60, won.
+        _position(asset="p2", avg_price=0.60, outcome_index=1, cash_pnl=10.0, redeemable=True),
+    ]
+    brier = _compute_brier(positions)
+    assert brier is not None
+    # 3 padding @ 0.5 (yes_won=1, yes_at=0.5 → 0.25 each), + 0.36 + 0.16
+    expected = (0.25 * 3 + 0.36 + 0.16) / 5
+    assert brier == pytest.approx(expected, abs=1e-6)
+
+
+def test_brier_symmetric_between_buy_yes_and_buy_no_at_equivalent_prob() -> None:
+    """MA.4 : un wallet BUY YES @ 0.30 et un wallet BUY NO @ 0.70 ont le même
+    Brier (probabilité YES équivalente côté marché)."""
+    # 5 positions BUY YES @ 0.30, YES gagne à chaque fois.
+    yes_positions = [
+        _position(
+            asset=f"yes_{i}",
+            avg_price=0.30,
+            outcome_index=0,
+            cash_pnl=1.0,  # side won
+            redeemable=True,
+        )
+        for i in range(5)
+    ]
+    # 5 positions BUY NO @ 0.70, NO gagne à chaque fois (= YES perd).
+    no_positions = [
+        _position(
+            asset=f"no_{i}",
+            avg_price=0.70,
+            outcome_index=1,
+            cash_pnl=1.0,  # side won (NO)
+            redeemable=True,
+        )
+        for i in range(5)
+    ]
+    brier_yes = _compute_brier(yes_positions)
+    brier_no = _compute_brier(no_positions)
+    # yes_positions : yes_at = 0.30, yes_won = 1.0 → sq_error = (1-0.30)² = 0.49
+    # no_positions : yes_at = 1-0.70 = 0.30, yes_won = 0.0 → sq_error = (0-0.30)² = 0.09
+    # Ils ne sont PAS égaux en valeur car les outcomes sont différents (YES gagne
+    # vs YES perd), mais ils sont sur la même échelle P(YES) — c'est ça l'invariant.
+    # Test plus pertinent : les 2 valeurs sont bien dérivées de la même formule
+    # P(YES_at_entry).
+    assert brier_yes == pytest.approx(0.49)
+    assert brier_no == pytest.approx(0.09)
+    # Invariant clé : pour 2 positions à P(YES_at_entry) = 0.30 ET résolution YES,
+    # les deux côtés (BUY YES + BUY NO) doivent donner exactement le même Brier.
+    sym_yes = [
+        _position(
+            asset="sym_y", avg_price=0.30, outcome_index=0, cash_pnl=1.0, redeemable=True,
+        ),
+    ] * 5
+    sym_no_yes_won = [
+        # BUY NO @ 0.70 → P(YES) = 0.30 ; YES gagne → cash_pnl < 0 (NO perd).
+        _position(
+            asset="sym_n", avg_price=0.70, outcome_index=1, cash_pnl=-1.0, redeemable=True,
+        ),
+    ] * 5
+    sym_brier_yes = _compute_brier(sym_yes)
+    sym_brier_no_yes_won = _compute_brier(sym_no_yes_won)
+    assert sym_brier_yes == pytest.approx(sym_brier_no_yes_won)
+
+
+def test_brier_skips_positions_with_missing_outcome_index() -> None:
+    """MA.4 : positions sans `outcome_index` (Data API legacy) → skip.
+
+    Si trop de positions sans outcome_index, le Brier devient None
+    (insuffisant).
+    """
+    positions = [
+        _position(asset=f"p{i}", outcome_index=None, cash_pnl=1.0, redeemable=True)
+        for i in range(10)
+    ]
+    assert _compute_brier(positions) is None
+
+
+def test_brier_returns_none_on_insufficient_resolved() -> None:
+    """MA.4 : moins de _BRIER_MIN_RESOLVED=5 positions résolues → None."""
+    positions = [
+        _position(asset=f"p{i}", avg_price=0.5, outcome_index=0, cash_pnl=1.0, redeemable=True)
+        for i in range(3)
+    ]
+    assert _compute_brier(positions) is None

@@ -166,6 +166,12 @@ class RawPosition(BaseModel):
     total_bought: float = Field(default=0.0, alias="totalBought")
     redeemable: bool = False
     opened_at: datetime | None = None  # M14 MA.6 — Data API ne fournit pas (yet)
+    # M14 MA.4 : `outcomeIndex` du payload Data API `/positions` — 0 ou 1 sur
+    # un marché binaire (0=YES, 1=NO selon convention Polymarket). Permet de
+    # calculer Brier sur P(YES) au lieu de P(side acheté). Pour un marché
+    # neg_risk, `outcome_index` reste 0/1 mais sur le sub-binary du candidat
+    # (chaque position neg_risk = 1 candidat = 1 sub-binary local).
+    outcome_index: int | None = Field(default=None, alias="outcomeIndex")
 
     @property
     def is_resolved(self) -> bool:

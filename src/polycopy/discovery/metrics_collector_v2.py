@@ -151,22 +151,54 @@ class MetricsCollectorV2:
 
 
 def _compute_brier(positions: list[RawPosition]) -> float | None:
-    """Brier score sur positions résolues (approximation §3.3).
+    """Brier score sur P(YES) (M14 MA.4 — Gneiting-Raftery 2007 strict propriety).
 
-    ``outcome = 1 if cash_pnl > 0 else 0`` (approximation YES-gagnante),
-    ``predicted_prob = avg_price``. Moins fiable sur neg_risk multi-outcome
-    — reportable v2.1 avec Gamma ``resolvedOutcome`` officiel.
+    Pour chaque position résolue :
 
-    Retourne None si < 5 positions résolues (données insuffisantes).
+    1. Convertir le prix payé en P(YES) au moment de l'entrée :
+       - `outcome_index == 0` (BUY YES) : ``yes_at_entry = avg_price``.
+       - `outcome_index == 1` (BUY NO) : ``yes_at_entry = 1 - avg_price``.
+    2. Déterminer si YES a effectivement gagné :
+       - `outcome_index == 0` AND `cash_pnl > 0` → YES a gagné.
+       - `outcome_index == 1` AND `cash_pnl > 0` → NO a gagné (= YES a perdu).
+       - `cash_pnl <= 0` → l'inverse.
+    3. Brier = mean((yes_won - yes_at_entry)²) — comparable cross-positions.
+
+    M14 vs M12 : la formule M12 utilisait ``outcome = (cash_pnl > 0)`` et
+    ``pred = avg_price`` — c'était "Brier of the side bought", pas P(YES).
+    Cette ambiguïté faisait que 2 wallets pariant l'un YES @ 0.40 et l'autre
+    NO @ 0.60 (probabilités YES équivalentes côté marché) avaient des Brier
+    différents (audit M-001, Claude C8, deep-search F04).
+
+    Cas particuliers :
+
+    - `outcome_index is None` (Data API legacy ou marché atypique) → skip
+      la position (on ne peut pas dériver P(YES) sans le side bought).
+    - Si après filtrage, < ``_BRIER_MIN_RESOLVED`` positions valides →
+      retourne None (données insuffisantes).
+
+    Cf. spec M14 §5.4 (MA.4) + Gneiting-Raftery 2007 JASA + audit M-001.
     """
     resolved = [p for p in positions if p.is_resolved]
-    if len(resolved) < _BRIER_MIN_RESOLVED:
-        return None
     sq_errors: list[float] = []
     for p in resolved:
-        outcome = 1.0 if float(p.cash_pnl) > 0 else 0.0
-        pred = float(p.avg_price)
-        sq_errors.append((outcome - pred) ** 2)
+        if p.outcome_index is None:
+            continue  # MA.4 : skip si on ne peut pas dériver P(YES)
+        side_won = float(p.cash_pnl) > 0
+        if p.outcome_index == 0:
+            # BUY YES : prix payé = P(YES_at_entry).
+            yes_at_entry = float(p.avg_price)
+            yes_won = 1.0 if side_won else 0.0
+        elif p.outcome_index == 1:
+            # BUY NO : prix payé = P(NO), donc P(YES) = 1 - prix.
+            yes_at_entry = 1.0 - float(p.avg_price)
+            yes_won = 0.0 if side_won else 1.0
+        else:
+            # Outcome index hors {0, 1} (rare, marché à >2 outcomes natifs) → skip.
+            continue
+        sq_errors.append((yes_won - yes_at_entry) ** 2)
+    if len(sq_errors) < _BRIER_MIN_RESOLVED:
+        return None
     return mean(sq_errors)
 
 

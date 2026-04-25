@@ -606,16 +606,23 @@ class DiscoveryOrchestrator:
         self,
         metrics_iter: object,  # Iterable[TraderMetricsV2] — évite import TYPE_CHECKING-only
     ) -> PoolContext:
-        """Agrège les valeurs brutes pool-wide + Brier baseline pool.
+        """Agrège les valeurs brutes pool-wide + Brier baseline pool dynamique.
 
-        Pour chaque facteur : collect les valeurs "raw" (pré-normalisation) en
-        ré-appelant les factors sur chaque metrics. Le :class:`PoolContext`
-        est consommé ensuite par :func:`apply_pool_normalization` dans
-        :func:`compute_score_v2`.
+        M14 MA.4 : la baseline Brier est calculée **dynamiquement** comme la
+        moyenne des `brier_90d` non-None du pool (un "wallet moyen" calibre
+        comme le pool). Floor `0.10` (vs M12 fallback 0.25 : pool trop
+        homogène = sentinel anti-divergence — fallback 0.20 ≈ Polymarket
+        native leaderboard moyen, cf. Perplexity §A2).
 
-        Brier baseline pool = moyenne des ``brier_90d`` non-None du pool
-        (approximation §3.3 simplifiée — un "wallet moyen" calibrerait comme
-        le pool). Fallback 0.25 si aucun brier disponible.
+        M14 MA.4 : suppression de la double normalisation (le code M12
+        appelait `compute_calibration` une 1ère fois avec baseline=0.25
+        pour bâtir le pool, puis `compute_score_v2` ré-appelait avec la vraie
+        baseline → biais systématique p5/p95 du pool décalé vs scoring final).
+        Désormais : on calcule le pool calibration **après** avoir établi
+        la baseline finale, et on l'utilise dans le pool de normalisation
+        et dans le scoring final.
+
+        Cf. spec M14 §5.4 (MA.4) + audit M-003.
         """
         from polycopy.discovery.scoring.v2.factors import (
             compute_calibration,
@@ -626,37 +633,42 @@ class DiscoveryOrchestrator:
             compute_timing_alpha,
         )
 
+        # Phase 1 : matérialiser la liste de metrics + collecter les brier raw
+        # pour calculer la baseline pool finale.
+        metrics_list: list[TraderMetricsV2] = [
+            m for m in metrics_iter if isinstance(m, TraderMetricsV2)  # type: ignore[attr-defined]
+        ]
+        brier_values = [
+            float(m.brier_90d) for m in metrics_list if m.brier_90d is not None
+        ]
+        if brier_values:
+            brier_baseline_pool = sum(brier_values) / len(brier_values)
+            # M14 MA.4 floor : pool trop homogène (baseline < 0.10) → fallback
+            # heuristique 0.20 (≈ Polymarket native leaderboard, Perplexity §A2).
+            if brier_baseline_pool < 0.10:
+                brier_baseline_pool = 0.20
+        else:
+            brier_baseline_pool = 0.25  # fallback Brier random binaire
+
+        # Phase 2 : avec la vraie baseline, calculer le pool de chaque facteur
+        # une seule fois (pas de double normalisation M12).
         risk_adjusted_pool: list[float] = []
         calibration_pool: list[float] = []
         timing_alpha_pool: list[float] = []
         specialization_pool: list[float] = []
         consistency_pool: list[float] = []
         discipline_pool: list[float] = []
-        brier_values: list[float] = []
 
-        for m in metrics_iter:  # type: ignore[attr-defined]
-            if not isinstance(m, TraderMetricsV2):
-                continue
-            if m.brier_90d is not None:
-                brier_values.append(float(m.brier_90d))
+        for m in metrics_list:
             risk_adjusted_pool.append(compute_risk_adjusted(m))
-            # Pour calibration : on calcule avec baseline provisoire (0.25)
-            # — la vraie baseline sera injectée dans compute_score_v2 après.
-            # Ici on collect le *raw brier* utile à la normalisation, pas la
-            # skill finale. On dérive skill avec baseline finale plus tard.
-            # Compromis : on stocke le pool de brier raw + la baseline
-            # séparément — la normalisation des calibrations finales se fait
-            # sur les *skill scores* finaux, mais on peut approximer avec
-            # un remap ici.
             calibration_pool.append(
-                compute_calibration(m, brier_baseline_pool=0.25),
+                compute_calibration(m, brier_baseline_pool=brier_baseline_pool),
             )
             timing_alpha_pool.append(compute_timing_alpha(m))
             specialization_pool.append(compute_specialization(m))
             consistency_pool.append(compute_consistency(m))
             discipline_pool.append(compute_discipline(m))
 
-        brier_baseline_pool = sum(brier_values) / len(brier_values) if brier_values else 0.25
         return PoolContext(
             risk_adjusted_pool=risk_adjusted_pool,
             calibration_pool=calibration_pool,
