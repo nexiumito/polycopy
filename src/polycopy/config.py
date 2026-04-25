@@ -798,13 +798,16 @@ class Settings(BaseSettings):
         ),
     )
     eviction_score_margin: float = Field(
-        0.15,
-        ge=0.05,
-        le=0.50,
+        0.10,  # M14 MA.7 : 0.15 → 0.10 (≈ 1σ empirique post-rank-transform v2.1)
+        ge=0.02,  # M14 MA.7 : 0.05 → 0.02 (autorise margin plus fin si pool calme)
+        le=0.30,  # M14 MA.7 : 0.50 → 0.30 (au-delà, eviction trop conservatrice)
         description=(
             "Delta minimum score(candidat) - score(worst_active) requis pour "
             "déclencher une eviction. Applique aussi à l'abort (T6) et au "
-            "rebond (T7) — même valeur pour les 3 directions."
+            "rebond (T7) — même valeur pour les 3 directions. Recalibrée v2.1 "
+            "(M14 MA.7) : 0.10 ≈ 1σ empirique du score distribution après "
+            "rank-transform (Claude §3.1). Re-mesurer empiriquement à J+7 "
+            "post-ship M14 et ajuster via H-EMP-2."
         ),
     )
     eviction_hysteresis_cycles: int = Field(

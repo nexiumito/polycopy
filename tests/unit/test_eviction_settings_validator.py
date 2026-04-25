@@ -54,16 +54,35 @@ def test_eviction_on_no_overlap_ok() -> None:
         eviction_enabled=True,
     )
     assert settings.eviction_enabled is True
-    assert settings.eviction_score_margin == 0.15
+    # M14 MA.7 : default recalibré 0.15 → 0.10 (≈ 1σ empirique post-rank-transform).
+    assert settings.eviction_score_margin == 0.10
     assert settings.eviction_hysteresis_cycles == 3
 
 
 def test_eviction_score_margin_range_validation() -> None:
-    """EVICTION_SCORE_MARGIN doit être ∈ [0.05, 0.50]."""
+    """M14 MA.7 : EVICTION_SCORE_MARGIN doit être ∈ [0.02, 0.30].
+
+    Bornes resserrées vs M5_bis (0.05 → 0.02 min, 0.50 → 0.30 max) pour
+    refléter la distribution post-rank-transform v2.1 (variance σ ≈ 0.05-0.10
+    vs σ ≈ 0.30 sur v2 winsorisée).
+    """
+    # Borne basse : 0.02 OK, 0.01 KO.
+    Settings(eviction_score_margin=0.02)
     with pytest.raises(ValueError, match="eviction_score_margin"):
-        Settings(eviction_score_margin=0.03)
+        Settings(eviction_score_margin=0.01)
+    # Borne haute : 0.30 OK, 0.31 KO.
+    Settings(eviction_score_margin=0.30)
     with pytest.raises(ValueError, match="eviction_score_margin"):
-        Settings(eviction_score_margin=0.60)
+        Settings(eviction_score_margin=0.31)
+
+
+# --- M14 MA.7 : new defaults --------------------------------------------------
+
+
+def test_eviction_score_margin_default_is_0_10_post_rank_transform() -> None:
+    """M14 MA.7 : default `EVICTION_SCORE_MARGIN=0.10` (1σ post-rank-transform)."""
+    settings = Settings()
+    assert settings.eviction_score_margin == 0.10
 
 
 def test_eviction_hysteresis_cycles_range_validation() -> None:
