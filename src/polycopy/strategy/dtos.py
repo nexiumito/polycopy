@@ -35,6 +35,15 @@ class MarketMetadata(BaseModel):
     outcomes: list[str] = Field(default_factory=list)
     outcome_prices: list[str] = Field(default_factory=list, alias="outcomePrices")
     neg_risk: bool = Field(default=False, alias="negRisk")
+    fee_type: str | None = Field(default=None, alias="feeType")
+    """M16 : type de fee Polymarket (ex: 'crypto_fees_v2', 'sports_fees_v2').
+    None / null pour les markets fee-free (vaste majorité Politics/Tech/Finance
+    pré-rollout). Mapping → params formule cf. PositionSizer._compute_effective_fee_rate."""
+    fees_enabled: bool | None = Field(default=None, alias="feesEnabled")
+    """M16 : flag Gamma indiquant si le marché a des fees actives. Optionnel
+    (null pour les markets pre-rollout March 30 2026). Présent en plus du fee_type
+    pour cohérence avec l'API Gamma — non utilisé par le PositionSizer (le filter
+    se base uniquement sur fee_type via la formule officielle)."""
 
     @field_validator("clob_token_ids", "outcomes", "outcome_prices", mode="before")
     @classmethod
@@ -92,6 +101,13 @@ class PipelineContext:
     midpoint: float | None = None
     my_size: float | None = None
     slippage_pct: float | None = None
+    # --- M16 : fee adjustment (defaults None pour backward-compat M2..M15) ---
+    fee_rate: float | None = None
+    """Effective fee rate appliqué (Decimal converti, range [0, 0.018])."""
+    fee_cost_usd: float | None = None
+    """Fee cost USD calculé (notional × fee_rate)."""
+    ev_after_fee_usd: float | None = None
+    """EV USD post-fee approximé (max_gain - fee_cost)."""
     filter_trace: list[dict[str, Any]] = field(default_factory=list)
 
     def record_filter(self, name: str, result: FilterResult) -> None:
@@ -115,6 +131,9 @@ class PipelineContext:
             "midpoint": self.midpoint,
             "my_size": self.my_size,
             "slippage_pct": self.slippage_pct,
+            "fee_rate": self.fee_rate,
+            "fee_cost_usd": self.fee_cost_usd,
+            "ev_after_fee_usd": self.ev_after_fee_usd,
             "market": (
                 self.market.model_dump(mode="json", by_alias=True)
                 if self.market is not None

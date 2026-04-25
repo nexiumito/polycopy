@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 
 import structlog
@@ -25,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.models import MyPosition, TargetTrader
 from polycopy.strategy.clob_read_client import ClobReadClient
-from polycopy.strategy.dtos import FilterResult, PipelineContext
+from polycopy.strategy.dtos import FilterResult, MarketMetadata, PipelineContext
 from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
@@ -193,10 +194,110 @@ class PositionSizer:
             return FilterResult(passed=False, reason="position_already_open")
         raw_size = ctx.trade.size * self._settings.copy_ratio
         cap_size = self._settings.max_position_usd / ctx.trade.price if ctx.trade.price > 0 else 0.0
-        ctx.my_size = min(raw_size, cap_size)
-        if ctx.my_size <= 0:
+        raw_my_size = min(raw_size, cap_size)
+        if raw_my_size <= 0:
             return FilterResult(passed=False, reason="size_zero")
+
+        # M16 : fee adjustment EV-aware (opt-in via STRATEGY_FEES_AWARE_ENABLED).
+        # Si flag off OU pas de fee_rate_client injecté → comportement strict
+        # M2..M15 préservé (rétrocompat tests).
+        if self._fee_rate_client is None or not self._settings.strategy_fees_aware_enabled:
+            ctx.my_size = raw_my_size
+            return FilterResult(passed=True)
+
+        # Fetch base_fee (cache 60s, single-flight, fallback 1.80% si réseau down).
+        # `base_fee` du endpoint est un FLAG binaire (cf. docstring FeeRateClient
+        # + spec §11.5) : >0 = fee-enabled, =0 = fee-free. Court-circuit propre
+        # si =0 — pas de calcul formule sur un marché sans fee.
+        base_fee_rate = await self._fee_rate_client.get_fee_rate(ctx.trade.asset_id)
+        if base_fee_rate == Decimal("0"):
+            ctx.fee_rate = 0.0
+            ctx.fee_cost_usd = 0.0
+            # Pas d'EV calculation côté polycopy si pas de fee — laisse passer.
+            ctx.my_size = raw_my_size
+            return FilterResult(passed=True)
+
+        # Marché fee-enabled : calcul effective rate via formule Polymarket
+        # officielle, paramétrée par `market.fee_type` Gamma.
+        effective_fee_rate = self._compute_effective_fee_rate(
+            price=Decimal(str(ctx.trade.price)),
+            market=ctx.market,
+        )
+
+        notional = Decimal(str(raw_my_size)) * Decimal(str(ctx.trade.price))
+        fee_cost = notional * effective_fee_rate
+        # Approximation EV polycopy (cf. spec §11.4 : choix simple vs Bayésien).
+        # `expected_max_gain` = payoff max si YES wins = my_size × (1 - price).
+        # C'est le plafond d'upside, pas une vraie EV Bayésienne. Couplé au seuil
+        # `STRATEGY_MIN_EV_USD_AFTER_FEE`, ça rejette les BUYs où l'upside max
+        # ne couvre même pas la fee + un slack minimal.
+        expected_max_gain = Decimal(str(raw_my_size)) * (
+            Decimal("1.0") - Decimal(str(ctx.trade.price))
+        )
+        ev_after_fee = expected_max_gain - fee_cost
+
+        ctx.fee_rate = float(effective_fee_rate)
+        ctx.fee_cost_usd = float(fee_cost)
+        ctx.ev_after_fee_usd = float(ev_after_fee)
+
+        if ev_after_fee < self._settings.strategy_min_ev_usd_after_fee:
+            log.debug(
+                "ev_negative_after_fees",
+                tx_hash=ctx.trade.tx_hash,
+                price=ctx.trade.price,
+                raw_my_size=raw_my_size,
+                effective_fee_rate=str(effective_fee_rate),
+                fee_cost=str(fee_cost),
+                ev_after_fee=str(ev_after_fee),
+                threshold=str(self._settings.strategy_min_ev_usd_after_fee),
+            )
+            return FilterResult(passed=False, reason="ev_negative_after_fees")
+
+        ctx.my_size = raw_my_size
         return FilterResult(passed=True)
+
+    @staticmethod
+    def _compute_effective_fee_rate(
+        *,
+        price: Decimal,
+        market: MarketMetadata | None,
+    ) -> Decimal:
+        """Calcule l'effective fee rate via formule Polymarket officielle.
+
+        ``fee = C × p × feeRate × (p × (1-p))^exponent`` →
+        ``effective_rate = feeRate × (p × (1-p))^exponent`` (ratio fee/notional).
+
+        Mapping ``market.fee_type`` → ``(feeRate_param, exponent)`` :
+
+        - ``crypto_fees_v2`` : (0.25, 2) — max 1.56 % à p=0.5
+        - ``sports_fees_v2`` (post-March 30 2026, doc Polymarket live) :
+          (0.03, 1) — peak 0.75 % à p=0.5. ``sports_fees_v1`` (NCAAB/Serie A
+          pré-rollout) : (0.0175, 1) — peak 0.44 %. On groupe tous via
+          ``startswith("sports_fees")`` avec params v2 (worst case).
+        - autre / unknown / market None : fallback **conservateur Crypto**
+          (0.25, 2). Mieux sur-estimer fee que l'inverse (asymétrie d'impact).
+
+        Si ``market`` est None ou ``fee_type`` est None / "" → fallback Crypto.
+
+        Note : on ne court-circuite PAS sur ``market.fees_enabled=False`` car
+        certains markets pré-rollout ont ``fees_enabled=null`` mais sont
+        fee-free en réalité. Le `base_fee=0` du `/fee-rate` endpoint sert
+        de short-circuit upstream (fee_rate=0 → fee_cost=0 → pas de rejet).
+        """
+        fee_type = (market.fee_type if market is not None else None) or ""
+        if fee_type == "crypto_fees_v2":
+            fee_rate_param, exponent = Decimal("0.25"), 2
+        elif fee_type.startswith("sports_fees"):
+            # Post-March 30 2026 rollout : feeRate=0.03 (vs 0.0175 pré-rollout
+            # NCAAB/Serie A). Source : docs Polymarket live 2026-04-25.
+            fee_rate_param, exponent = Decimal("0.03"), 1
+        else:
+            # Inconnu (politics_fees_v*, finance_fees_v*, etc. à venir) →
+            # conservateur (Crypto formula).
+            fee_rate_param, exponent = Decimal("0.25"), 2
+
+        p_one_minus_p = price * (Decimal("1") - price)
+        return fee_rate_param * (p_one_minus_p**exponent)
 
     async def _check_sell(self, ctx: PipelineContext) -> FilterResult:
         # Match fin (condition_id, asset_id) : un SELL YES ne ferme pas une
