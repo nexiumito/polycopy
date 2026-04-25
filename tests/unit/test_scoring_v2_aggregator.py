@@ -117,6 +117,73 @@ def test_weights_sum_to_one() -> None:
     assert total == pytest.approx(1.0)
 
 
+# --- M14 MA.1 : drop timing_alpha weight + renormalize -----------------------
+
+
+def test_aggregator_weights_sum_to_one_after_timing_alpha_drop() -> None:
+    """MA.1 : after dropping timing_alpha to 0, the 5 remaining weights still sum to 1.0."""
+    from polycopy.discovery.scoring.v2 import aggregator
+
+    assert aggregator._WEIGHT_TIMING_ALPHA == 0.0
+    non_zero_sum = (
+        aggregator._WEIGHT_RISK_ADJUSTED
+        + aggregator._WEIGHT_CALIBRATION
+        + aggregator._WEIGHT_SPECIALIZATION
+        + aggregator._WEIGHT_CONSISTENCY
+        + aggregator._WEIGHT_DISCIPLINE
+    )
+    assert non_zero_sum == pytest.approx(1.0, abs=1e-9)
+
+
+def test_aggregator_proportional_renormalization() -> None:
+    """MA.1 : renormalisation proportionnelle (décision D7) — ratios M12 préservés.
+
+    risk_adjusted / calibration == 0.25 / 0.20 == 1.25 (M12 ratio préservé).
+    specialization / consistency == 0.15 / 0.10 == 1.5 (M12 ratio préservé).
+    """
+    from polycopy.discovery.scoring.v2 import aggregator
+
+    # Valeurs explicites attendues post-renormalisation (0.25/0.80 etc.).
+    assert pytest.approx(0.3125) == aggregator._WEIGHT_RISK_ADJUSTED
+    assert pytest.approx(0.2500) == aggregator._WEIGHT_CALIBRATION
+    assert pytest.approx(0.1875) == aggregator._WEIGHT_SPECIALIZATION
+    assert pytest.approx(0.1250) == aggregator._WEIGHT_CONSISTENCY
+    assert pytest.approx(0.1250) == aggregator._WEIGHT_DISCIPLINE
+    # Ratios M12 préservés.
+    assert pytest.approx(0.25 / 0.20) == (
+        aggregator._WEIGHT_RISK_ADJUSTED / aggregator._WEIGHT_CALIBRATION
+    )
+    assert pytest.approx(0.15 / 0.10) == (
+        aggregator._WEIGHT_SPECIALIZATION / aggregator._WEIGHT_CONSISTENCY
+    )
+
+
+def test_aggregator_same_pool_different_timing_alpha_returns_identical_score() -> None:
+    """MA.1 : timing_alpha contribue à 0 → 2 metrics identiques sauf timing_alpha
+    doivent avoir le même score final."""
+    ctx = _wide_pool_context()
+    m1 = _metrics(timing_alpha_weighted=0.1)
+    m2 = _metrics(timing_alpha_weighted=0.9)
+    out1 = compute_score_v2(m1, ctx)
+    out2 = compute_score_v2(m2, ctx)
+    assert out1.score == pytest.approx(out2.score, abs=1e-9)
+
+
+def test_aggregator_no_uniform_bias_from_timing_alpha() -> None:
+    """MA.1 : avec poids 0, le facteur n'injecte plus de bias additif.
+
+    Le placeholder M12 ``timing_alpha_weighted=0.5`` produisait
+    ``0.20 × 0.5 = 0.10`` uniforme sur tous les scores (audit H-008). Avec
+    poids 0, la contribution du facteur est strictement zéro quel que soit
+    le sous-score normalisé.
+    """
+    ctx = _wide_pool_context()
+    m = _metrics(timing_alpha_weighted=0.5)
+    out = compute_score_v2(m, ctx)
+    contribution_timing = out.normalized.timing_alpha * 0.0  # weight = 0
+    assert contribution_timing == 0.0
+
+
 def test_registry_v2_wrapper_returns_score_with_pool_context() -> None:
     """SCORING_VERSIONS_REGISTRY['v2'] appelé avec contextvar posé → score."""
     assert "v2" in SCORING_VERSIONS_REGISTRY

@@ -39,13 +39,50 @@ from polycopy.discovery.scoring.v2.pool_context import _CURRENT_POOL_CONTEXT
 
 log = structlog.get_logger(__name__)
 
-# Pondérations figées §3.1 — somme = 1.0. Vérifié par test.
-_WEIGHT_RISK_ADJUSTED: float = 0.25
-_WEIGHT_CALIBRATION: float = 0.20
-_WEIGHT_TIMING_ALPHA: float = 0.20
-_WEIGHT_SPECIALIZATION: float = 0.15
-_WEIGHT_CONSISTENCY: float = 0.10
-_WEIGHT_DISCIPLINE: float = 0.10
+# Pondérations figées (M14 MA.1 — renormalisées proportionnellement après drop
+# de ``timing_alpha`` à 0). Somme = 1.0, vérifiée par assert au load + test.
+#
+# Justification : le placeholder ``timing_alpha=0.5`` documenté en M12 décision
+# D3 produisait p5==p95==0.5 → pool normalization renvoyait 0.5 sentinel pour
+# tous → contribution 0.20×0.5 = +0.10 uniforme sur chaque score (audit H-008,
+# synthèse F01 3/3 sources). Drop strictement préférable per Daniele et al.
+# adaptive lasso : "uninformative factors with non-zero weight monotonically
+# degrade out-of-sample estimation error".
+#
+# Renormalisation proportionnelle (décision D7 M14 §14.2) : chaque facteur
+# garde son ratio relatif M12 (Sortino+Calmar > Brier > HHI > consistency =
+# discipline). On divise par 0.80 (somme post-drop) pour ramener à 1.0.
+#
+#   risk_adjusted   : 0.25 / 0.80 = 0.3125
+#   calibration     : 0.20 / 0.80 = 0.2500
+#   specialization  : 0.15 / 0.80 = 0.1875
+#   consistency     : 0.10 / 0.80 = 0.1250
+#   discipline      : 0.10 / 0.80 = 0.1250
+#   timing_alpha    : 0.0       (conservé pour re-enable v2.2 / via RTDS, MG)
+_WEIGHT_RISK_ADJUSTED: float = 0.3125
+_WEIGHT_CALIBRATION: float = 0.2500
+_WEIGHT_TIMING_ALPHA: float = 0.0
+_WEIGHT_SPECIALIZATION: float = 0.1875
+_WEIGHT_CONSISTENCY: float = 0.1250
+_WEIGHT_DISCIPLINE: float = 0.1250
+
+# Garde-fou : la somme doit être exactement 1.0 ± epsilon. Vérifié au load
+# (raise ImportError si jamais une futur modif casse l'invariant) + par
+# `test_aggregator_weights_sum_to_one`.
+_WEIGHTS_SUM_TOLERANCE: float = 1e-6
+_WEIGHTS_SUM: float = (
+    _WEIGHT_RISK_ADJUSTED
+    + _WEIGHT_CALIBRATION
+    + _WEIGHT_TIMING_ALPHA
+    + _WEIGHT_SPECIALIZATION
+    + _WEIGHT_CONSISTENCY
+    + _WEIGHT_DISCIPLINE
+)
+if abs(_WEIGHTS_SUM - 1.0) > _WEIGHTS_SUM_TOLERANCE:  # pragma: no cover
+    raise ImportError(
+        f"Pondérations scoring v2.1 ne somment pas à 1.0 : {_WEIGHTS_SUM} "
+        "(check src/polycopy/discovery/scoring/v2/aggregator.py)"
+    )
 
 
 def compute_score_v2(
