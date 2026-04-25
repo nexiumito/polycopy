@@ -118,24 +118,34 @@ def test_timing_alpha_clips_to_unit_interval() -> None:
     assert compute_timing_alpha(_metrics_v2(timing_alpha_weighted=-0.3)) == 0.0
 
 
-# --- specialization ------------------------------------------------------
+# --- specialization (M14 MA.5 — flip HHI signal) -------------------------
 
 
-def test_specialization_is_one_minus_hhi() -> None:
-    m = _metrics_v2(hhi_categories=0.3)
-    assert compute_specialization(m) == pytest.approx(0.7)
+def test_specialization_now_rewards_high_hhi() -> None:
+    """MA.5 : HHI direct (pas inversé) — concentration = signal positif."""
+    m = _metrics_v2(hhi_categories=0.85)
+    # HHI=0.85 (forte concentration insider-like) → specialization=0.85.
+    assert compute_specialization(m) == pytest.approx(0.85)
 
 
-def test_specialization_max_concentration_returns_zero() -> None:
-    """HHI=1.0 (tout sur 1 catégorie) → specialization=0."""
+def test_specialization_diversified_wallet_gets_lower_score() -> None:
+    """MA.5 : un wallet diversifié (HHI bas) reçoit un score bas (pas haut comme M12)."""
+    m = _metrics_v2(hhi_categories=0.20)
+    assert compute_specialization(m) == pytest.approx(0.20)
+
+
+def test_specialization_max_concentration_returns_one() -> None:
+    """MA.5 : HHI=1.0 (tout sur 1 catégorie) → specialization=1.0 (Mitts-Ofir reward)."""
     m = _metrics_v2(hhi_categories=1.0)
-    assert compute_specialization(m) == pytest.approx(0.0)
+    assert compute_specialization(m) == pytest.approx(1.0)
 
 
 def test_specialization_clips_to_unit_interval() -> None:
-    # HHI en dehors de [0, 1] (impossible théoriquement, défense en profondeur)
+    """HHI hors [0, 1] (théoriquement impossible, défense en profondeur)."""
     m = _metrics_v2(hhi_categories=1.5)
-    assert compute_specialization(m) == 0.0
+    assert compute_specialization(m) == 1.0
+    m_low = _metrics_v2(hhi_categories=-0.5)
+    assert compute_specialization(m_low) == 0.0
 
 
 # --- consistency ---------------------------------------------------------
