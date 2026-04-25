@@ -688,12 +688,13 @@ class Settings(BaseSettings):
     # Discipline identique BLACKLISTED_WALLETS : CSV ou JSON array, lowercase.
     # Auto-detection wash cluster reportée M17+ (§14.6 spec M12).
     wash_cluster_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    scoring_version: Literal["v1", "v2"] = Field(
+    scoring_version: Literal["v1", "v2.1"] = Field(
         "v1",
         description=(
             "Version de la formule de scoring. Loggée + écrite avec chaque score "
-            "pour reproductibilité (cf. §7.6 spec). M12 : promu à Literal pour "
-            "rejet boot des valeurs invalides."
+            "pour reproductibilité (cf. §7.6 spec). M14 : v2 (M12) remplacé par "
+            "v2.1-ROBUST. v1 (M5) reste en fallback. Append-only versioning : "
+            "chaque row trader_scores porte sa version, jamais réécrite."
         ),
     )
     scoring_min_closed_markets: int = Field(

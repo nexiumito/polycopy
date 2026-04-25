@@ -100,7 +100,7 @@ async def test_scoring_comparison_query_with_v1_and_v2(
                 target_trader_id=t.id,
                 wallet_address=wallet,
                 score=s2,
-                scoring_version="v2",
+                scoring_version="v2.1",
                 low_confidence=False,
                 metrics_snapshot={},
             ),
@@ -144,7 +144,7 @@ async def test_scoring_comparison_aggregates_spearman_computed(
                 target_trader_id=t.id,
                 wallet_address=wallet,
                 score=s2,
-                scoring_version="v2",
+                scoring_version="v2.1",
                 low_confidence=False,
                 metrics_snapshot={},
             ),
@@ -279,7 +279,7 @@ async def test_spearman_uses_intersection_ranks_not_pool_ranks(
                 target_trader_id=t.id,
                 wallet_address=wallet,
                 score=s2,
-                scoring_version="v2",
+                scoring_version="v2.1",
                 low_confidence=False,
                 metrics_snapshot={},
             ),
@@ -327,7 +327,7 @@ async def test_shadow_days_elapsed_calculated_from_first_v2_row(
             target_trader_id=t.id,
             wallet_address="0xabc",
             score=0.6,
-            scoring_version="v2",
+            scoring_version="v2.1",
             low_confidence=False,
             metrics_snapshot={},
         ),
@@ -336,7 +336,7 @@ async def test_shadow_days_elapsed_calculated_from_first_v2_row(
     old = datetime.now(tz=UTC) - timedelta(days=5)
     async with session_factory() as session:
         await session.execute(
-            update(TraderScore).where(TraderScore.scoring_version == "v2").values(cycle_at=old),
+            update(TraderScore).where(TraderScore.scoring_version == "v2.1").values(cycle_at=old),
         )
         await session.commit()
 

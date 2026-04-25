@@ -72,7 +72,7 @@ def test_compute_score_v2_returns_breakdown_with_all_fields() -> None:
     assert isinstance(out, ScoreV2Breakdown)
     assert out.wallet_address == "0xabc"
     assert 0.0 <= out.score <= 1.0
-    assert out.scoring_version == "v2"
+    assert out.scoring_version == "v2.1"
     assert out.brier_baseline_pool == pytest.approx(0.25)
     # 6 sous-scores bruts + 6 normalisés présents.
     for attr in (
@@ -169,6 +169,34 @@ def test_aggregator_same_pool_different_timing_alpha_returns_identical_score() -
     assert out1.score == pytest.approx(out2.score, abs=1e-9)
 
 
+# --- M14 MA.8 : ship SCORING_VERSION="v2.1" --------------------------------
+
+
+def test_scoring_v2_1_registered_in_registry() -> None:
+    """MA.8 : registry contient v1 ET v2.1 (v2 retiré post reset DB)."""
+    assert "v1" in SCORING_VERSIONS_REGISTRY
+    assert "v2.1" in SCORING_VERSIONS_REGISTRY
+
+
+def test_score_breakdown_carries_v2_1_version() -> None:
+    """MA.8 : ScoreV2Breakdown.scoring_version == "v2.1"."""
+    m = _metrics()
+    ctx = _wide_pool_context()
+    out = compute_score_v2(m, ctx)
+    assert out.scoring_version == "v2.1"
+
+
+def test_settings_scoring_version_literal_accepts_v1_and_v2_1() -> None:
+    """MA.8 : Settings.scoring_version Literal["v1", "v2.1"] uniquement."""
+    from polycopy.config import Settings
+
+    Settings(scoring_version="v1")
+    Settings(scoring_version="v2.1")
+    # "v2" (M12) n'est plus accepté — DB reset post-M14, code remplacé in-place.
+    with pytest.raises(ValueError, match="scoring_version"):
+        Settings(scoring_version="v2")
+
+
 def test_aggregator_no_uniform_bias_from_timing_alpha() -> None:
     """MA.1 : avec poids 0, le facteur n'injecte plus de bias additif.
 
@@ -186,11 +214,11 @@ def test_aggregator_no_uniform_bias_from_timing_alpha() -> None:
 
 def test_registry_v2_wrapper_returns_score_with_pool_context() -> None:
     """SCORING_VERSIONS_REGISTRY['v2'] appelé avec contextvar posé → score."""
-    assert "v2" in SCORING_VERSIONS_REGISTRY
+    assert "v2.1" in SCORING_VERSIONS_REGISTRY
     m = _metrics()
     ctx = _wide_pool_context()
     with bind_pool_context(ctx):
-        score = SCORING_VERSIONS_REGISTRY["v2"](m)
+        score = SCORING_VERSIONS_REGISTRY["v2.1"](m)
     assert isinstance(score, float)
     assert 0.0 <= score <= 1.0
 
@@ -198,7 +226,7 @@ def test_registry_v2_wrapper_returns_score_with_pool_context() -> None:
 def test_registry_v2_wrapper_returns_zero_without_pool_context() -> None:
     """Appel hors contextvar (test v1 qui touche le registry v2 par erreur) → 0.0."""
     m = _metrics()
-    score = SCORING_VERSIONS_REGISTRY["v2"](m)
+    score = SCORING_VERSIONS_REGISTRY["v2.1"](m)
     assert score == 0.0
 
 
@@ -219,7 +247,7 @@ def test_registry_v2_wrapper_returns_zero_for_wrong_metrics_type() -> None:
     )
     ctx = _wide_pool_context()
     with bind_pool_context(ctx):
-        score = SCORING_VERSIONS_REGISTRY["v2"](base)
+        score = SCORING_VERSIONS_REGISTRY["v2.1"](base)
     assert score == 0.0
 
 

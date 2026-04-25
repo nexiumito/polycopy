@@ -76,7 +76,7 @@ async def test_v2_shadow_active_returns_false_when_expired(
             target_trader_id=trader.id,
             wallet_address="0xabc",
             score=0.5,
-            scoring_version="v2",
+            scoring_version="v2.1",
             low_confidence=False,
             metrics_snapshot={},
         ),
@@ -121,7 +121,7 @@ async def test_should_compute_v2_returns_true_when_v2_pilot(
 
     orchestrator = DiscoveryOrchestrator(
         session_factory,
-        _settings(scoring_version="v2"),
+        _settings(scoring_version="v2.1"),
     )
     assert await orchestrator._should_compute_v2() is True
 
@@ -247,7 +247,7 @@ async def test_gate_rejected_event_persistence(
             from_status="shadow",
             to_status="shadow",
             score_at_event=None,
-            scoring_version="v2",
+            scoring_version="v2.1",
             reason="zombie_ratio:0.52 >= 0.40",
             event_metadata={
                 "gate": "zombie_ratio_max",
@@ -259,6 +259,6 @@ async def test_gate_rejected_event_persistence(
     events = await trader_event_repo.list_recent(limit=10)
     assert len(events) == 1
     assert events[0].event_type == "gate_rejected"
-    assert events[0].scoring_version == "v2"
+    assert events[0].scoring_version == "v2.1"
     assert events[0].event_metadata is not None
     assert events[0].event_metadata["gate"] == "zombie_ratio_max"

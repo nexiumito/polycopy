@@ -270,7 +270,7 @@ class DiscoveryOrchestrator:
 
         # M12 — décide si v2 doit être calculé (pilote OU shadow actif).
         compute_v2 = await self._should_compute_v2()
-        is_v2_pilot = self._settings.scoring_version == "v2"
+        is_v2_1_pilot = self._settings.scoring_version == "v2.1"
 
         # M12 — pre-build PoolContext si v2 impliqué (1 appel MetricsCollectorV2
         # par wallet × fetch metrics, puis agrégation pool-wide).
@@ -320,7 +320,7 @@ class DiscoveryOrchestrator:
                 # Si v2 est pilote ET gate rejected → skip scoring complet
                 # (pas de row trader_scores, pas de decision_engine). v1
                 # continue seulement si v2 n'est pas pilote (shadow mode).
-                if is_v2_pilot and gate_rejected:
+                if is_v2_1_pilot and gate_rejected:
                     log.debug("gate_rejected_pilot_skip", wallet=wallet)
                     continue
 
@@ -332,8 +332,8 @@ class DiscoveryOrchestrator:
 
                 # Version pilote = écrire target_traders.score (colonne
                 # overwrite M5) + la row trader_scores pilote.
-                pilot_score = score_v2_value if is_v2_pilot else score_v1_value
-                pilot_version = "v2" if is_v2_pilot else "v1"
+                pilot_score = score_v2_value if is_v2_1_pilot else score_v1_value
+                pilot_version = "v2.1" if is_v2_1_pilot else "v1"
                 # Cas limite : v2 pilote ET pas de score (e.g. compute_v2=False
                 # si shadow=0 + scoring_version=v2 + first cycle without
                 # pool_context). On fallback au score v1 comme filet de
@@ -368,7 +368,7 @@ class DiscoveryOrchestrator:
                                 target_trader_id=current.id,
                                 wallet_address=wallet,
                                 score=score_v2_value,
-                                scoring_version="v2",
+                                scoring_version="v2.1",
                                 low_confidence=False,
                                 metrics_snapshot={
                                     "base": metrics.model_dump(mode="json"),
@@ -558,7 +558,7 @@ class DiscoveryOrchestrator:
         - Sinon → pas de compute v2 (pur M5).
         """
         cfg = self._settings
-        if cfg.scoring_version == "v2":
+        if cfg.scoring_version == "v2.1":
             return True
         if cfg.scoring_v2_shadow_days <= 0:
             return False
@@ -575,7 +575,7 @@ class DiscoveryOrchestrator:
         cfg = self._settings
         async with self._sf() as session:
             stmt = select(func.min(TraderScore.cycle_at)).where(
-                TraderScore.scoring_version == "v2",
+                TraderScore.scoring_version == "v2.1",
             )
             first_v2_cycle = (await session.execute(stmt)).scalar_one_or_none()
         if first_v2_cycle is None:
@@ -704,7 +704,7 @@ class DiscoveryOrchestrator:
                 from_status=current_status,
                 to_status=current_status,
                 score_at_event=None,
-                scoring_version="v2",
+                scoring_version="v2.1",
                 reason=str(failed.reason)[:128],
                 event_metadata={
                     "gate": str(failed.gate_name),

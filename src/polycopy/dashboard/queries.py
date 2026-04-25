@@ -1358,7 +1358,7 @@ async def list_scoring_comparison(
                 TraderScore.wallet_address,
                 func.max(TraderScore.cycle_at).label("max_cycle_at"),
             )
-            .where(TraderScore.scoring_version == "v2")
+            .where(TraderScore.scoring_version == "v2.1")
             .group_by(TraderScore.wallet_address)
             .subquery()
         )
@@ -1369,7 +1369,7 @@ async def list_scoring_comparison(
                 (TraderScore.wallet_address == latest_v2_subq.c.wallet_address)
                 & (TraderScore.cycle_at == latest_v2_subq.c.max_cycle_at),
             )
-            .where(TraderScore.scoring_version == "v2")
+            .where(TraderScore.scoring_version == "v2.1")
         )
         v2_rows = list((await session.execute(v2_stmt)).scalars().all())
 
@@ -1473,7 +1473,7 @@ async def scoring_comparison_aggregates(
         first_v2_cycle = (
             await session.execute(
                 select(func.min(TraderScore.cycle_at)).where(
-                    TraderScore.scoring_version == "v2",
+                    TraderScore.scoring_version == "v2.1",
                 ),
             )
         ).scalar_one_or_none()

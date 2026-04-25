@@ -103,7 +103,7 @@ class ScoreV2Breakdown(BaseModel):
     raw: RawSubscores
     normalized: ScoringNormalizedSubscores
     brier_baseline_pool: float
-    scoring_version: Literal["v2"] = "v2"
+    scoring_version: Literal["v2.1"] = "v2.1"
 
 
 class PoolContext(BaseModel):
