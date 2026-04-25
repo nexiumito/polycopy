@@ -103,6 +103,25 @@ def sample_clob_midpoint() -> dict[str, str]:
 
 
 @pytest.fixture
+def sample_fee_rate_crypto() -> dict[str, int]:
+    """Réponse CLOB /fee-rate capturée 2026-04-25 sur un crypto market réel
+    (bitcoin-up-or-down-on-april-25-2026, feeType=crypto_fees_v2)."""
+    payload: dict[str, int] = json.loads(
+        (_FIXTURES_DIR / "clob_fee_rate_crypto_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
+def sample_fee_rate_zero() -> dict[str, int]:
+    """Réponse CLOB /fee-rate pour un marché fee-free (base_fee=0)."""
+    payload: dict[str, int] = json.loads(
+        (_FIXTURES_DIR / "clob_fee_rate_zero_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
 def sample_tick_size() -> dict[str, float]:
     """Réponse CLOB /tick-size capturée."""
     payload: dict[str, float] = json.loads(
