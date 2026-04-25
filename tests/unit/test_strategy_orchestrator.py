@@ -161,6 +161,122 @@ async def test_orchestrator_pipeline_exception_persists_error(
     assert any(d.reason == "pipeline_error" for d in recent)
 
 
+async def test_orchestrator_instantiates_fee_rate_client_when_flag_on(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M16 MC.5 : le FeeRateClient est instancié au boot quand le flag est on."""
+
+    async def _gamma(self: object, condition_id: str) -> MarketMetadata | None:
+        del self, condition_id
+        return _market_ok()
+
+    async def _clob(self: object, token_id: str) -> float | None:
+        del self, token_id
+        return 0.0805
+
+    monkeypatch.setattr("polycopy.strategy.gamma_client.GammaApiClient.get_market", _gamma)
+    monkeypatch.setattr("polycopy.strategy.clob_read_client.ClobReadClient.get_midpoint", _clob)
+
+    instantiations: list[dict[str, object]] = []
+
+    from polycopy.executor import fee_rate_client as frc_module
+
+    original_init = frc_module.FeeRateClient.__init__
+
+    def _spy_init(
+        instance: object,
+        http_client: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        instantiations.append({"http": http_client, **kwargs})
+        original_init(instance, http_client, **kwargs)
+
+    monkeypatch.setattr(frc_module.FeeRateClient, "__init__", _spy_init)
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        copy_ratio=0.01,
+        max_position_usd=100.0,
+        min_market_liquidity_usd=1000.0,
+        min_hours_to_expiry=1.0,
+        max_slippage_pct=5.0,
+        risk_available_capital_usd_stub=1000.0,
+        strategy_clob_ws_enabled=False,  # évite retry réseau lent
+        strategy_fees_aware_enabled=True,
+        strategy_fee_rate_cache_max=42,
+    )
+
+    in_q: asyncio.Queue[DetectedTradeDTO] = asyncio.Queue()
+    out_q: asyncio.Queue[OrderApproved] = asyncio.Queue()
+    stop_event = asyncio.Event()
+    orchestrator = StrategyOrchestrator(session_factory, settings, in_q, out_q)
+    await asyncio.gather(
+        orchestrator.run_forever(stop_event),
+        _stop_after(stop_event, 0.2),
+    )
+    assert len(instantiations) == 1, (
+        f"Expected 1 FeeRateClient instantiation, got {len(instantiations)}"
+    )
+    assert instantiations[0]["cache_max"] == 42
+
+
+async def test_orchestrator_skips_fee_rate_client_when_flag_off(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M16 MC.5 régression guard : flag=false → aucune instanciation FeeRateClient."""
+
+    async def _gamma(self: object, condition_id: str) -> MarketMetadata | None:
+        del self, condition_id
+        return _market_ok()
+
+    async def _clob(self: object, token_id: str) -> float | None:
+        del self, token_id
+        return 0.0805
+
+    monkeypatch.setattr("polycopy.strategy.gamma_client.GammaApiClient.get_market", _gamma)
+    monkeypatch.setattr("polycopy.strategy.clob_read_client.ClobReadClient.get_midpoint", _clob)
+
+    instantiations: list[Any] = []
+
+    from polycopy.executor import fee_rate_client as frc_module
+
+    original_init = frc_module.FeeRateClient.__init__
+
+    def _spy_init(
+        instance: object,
+        http_client: Any,  # noqa: ANN401
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        instantiations.append((http_client, kwargs))
+        original_init(instance, http_client, **kwargs)
+
+    monkeypatch.setattr(frc_module.FeeRateClient, "__init__", _spy_init)
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        copy_ratio=0.01,
+        max_position_usd=100.0,
+        min_market_liquidity_usd=1000.0,
+        min_hours_to_expiry=1.0,
+        max_slippage_pct=5.0,
+        risk_available_capital_usd_stub=1000.0,
+        strategy_clob_ws_enabled=False,  # évite retry réseau lent
+        strategy_fees_aware_enabled=False,
+    )
+
+    in_q: asyncio.Queue[DetectedTradeDTO] = asyncio.Queue()
+    out_q: asyncio.Queue[OrderApproved] = asyncio.Queue()
+    stop_event = asyncio.Event()
+    orchestrator = StrategyOrchestrator(session_factory, settings, in_q, out_q)
+    await asyncio.gather(
+        orchestrator.run_forever(stop_event),
+        _stop_after(stop_event, 0.2),
+    )
+    assert len(instantiations) == 0
+
+
 async def test_orchestrator_executor_queue_full_logs_warning(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

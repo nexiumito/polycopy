@@ -18,6 +18,7 @@ import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.executor.fee_rate_client import FeeRateClient
 from polycopy.storage.dtos import DetectedTradeDTO, StrategyDecisionDTO
 from polycopy.storage.repositories import (
     StrategyDecisionRepository,
@@ -71,10 +72,26 @@ class StrategyOrchestrator:
             available_capital_stub=self._settings.risk_available_capital_usd_stub,
             ws_enabled=self._settings.strategy_clob_ws_enabled,
             latency_instrumentation=self._settings.latency_instrumentation_enabled,
+            fees_aware=self._settings.strategy_fees_aware_enabled,
         )
         async with httpx.AsyncClient() as http_client:
             gamma_client = GammaApiClient(http_client, settings=self._settings)
             clob_client = ClobReadClient(http_client)
+            # M16 : FeeRateClient opt-in via STRATEGY_FEES_AWARE_ENABLED.
+            # Partage le httpx.AsyncClient (read-only public no-auth, pas de
+            # cred touché). Co-lancement Strategy (pas Executor) car le fee
+            # check vit pre-POST dans PositionSizer (décision D2).
+            fee_rate_client: FeeRateClient | None = None
+            if self._settings.strategy_fees_aware_enabled:
+                fee_rate_client = FeeRateClient(
+                    http_client,
+                    cache_max=self._settings.strategy_fee_rate_cache_max,
+                    settings=self._settings,
+                )
+                log.info(
+                    "fee_rate_client_instantiated",
+                    cache_max=self._settings.strategy_fee_rate_cache_max,
+                )
             if self._settings.strategy_clob_ws_enabled:
                 self._ws_client = ClobMarketWSClient(self._settings)
 
@@ -85,7 +102,7 @@ class StrategyOrchestrator:
                         name="clob_ws_client",
                     )
                 tg.create_task(
-                    self._consume_loop(stop_event, gamma_client, clob_client),
+                    self._consume_loop(stop_event, gamma_client, clob_client, fee_rate_client),
                     name="strategy_consumer",
                 )
         log.info("strategy_stopped")
@@ -95,6 +112,7 @@ class StrategyOrchestrator:
         stop_event: asyncio.Event,
         gamma_client: GammaApiClient,
         clob_client: ClobReadClient,
+        fee_rate_client: FeeRateClient | None = None,
     ) -> None:
         while not stop_event.is_set():
             try:
@@ -107,7 +125,7 @@ class StrategyOrchestrator:
             except asyncio.CancelledError:
                 raise
             try:
-                await self._handle_trade(trade, gamma_client, clob_client)
+                await self._handle_trade(trade, gamma_client, clob_client, fee_rate_client)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -119,6 +137,7 @@ class StrategyOrchestrator:
         trade: DetectedTradeDTO,
         gamma_client: GammaApiClient,
         clob_client: ClobReadClient,
+        fee_rate_client: FeeRateClient | None = None,
     ) -> None:
         # M11 : (re)bind trade_id contextvar côté strategy pour propager dans
         # tous les logs de cette task asyncio.
@@ -136,6 +155,7 @@ class StrategyOrchestrator:
                 settings=self._settings,
                 ws_client=self._ws_client,
                 latency_repo=self._latency_repo,
+                fee_rate_client=fee_rate_client,
             )
         finally:
             if instrumented and trade.trade_id is not None:

@@ -30,6 +30,7 @@ from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.executor.fee_rate_client import FeeRateClient
     from polycopy.storage.repositories import TradeLatencyRepository
     from polycopy.strategy.clob_ws_client import ClobMarketWSClient
 
@@ -159,15 +160,22 @@ class PositionSizer:
     asset_id)`` pour autoriser la fermeture de la position exacte — sinon
     les SELL copiés restent bloqués indéfiniment et le capital ne se libère
     jamais en dry-run (cf. spec M13 §5.1).
+
+    M16 : accepte un ``fee_rate_client`` optionnel pour le calcul EV
+    post-fee dans ``_check_buy``. Si ``None`` ou si
+    ``settings.strategy_fees_aware_enabled=False`` → comportement strict
+    M13 (pas de fee adjustment). La logique réelle est branchée en MC.2.
     """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        fee_rate_client: FeeRateClient | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
+        self._fee_rate_client = fee_rate_client
 
     async def check(self, ctx: PipelineContext) -> FilterResult:
         if ctx.trade.side == "BUY":
@@ -293,6 +301,7 @@ async def run_pipeline(
     settings: Settings,
     ws_client: ClobMarketWSClient | None = None,
     latency_repo: TradeLatencyRepository | None = None,
+    fee_rate_client: FeeRateClient | None = None,
 ) -> tuple[Literal["APPROVED", "REJECTED"], str | None, PipelineContext]:
     """Exécute les 4 filtres en séquence. Premier rejet = arrêt.
 
@@ -301,13 +310,17 @@ async def run_pipeline(
     ``strategy_sized_ms`` / ``strategy_risk_checked_ms`` quand
     ``settings.latency_instrumentation_enabled=True`` ET
     ``trade.trade_id is not None``.
+
+    M16 : ``fee_rate_client`` (opt-in via ``STRATEGY_FEES_AWARE_ENABLED``)
+    alimente ``PositionSizer._check_buy`` pour le calcul EV post-fee.
+    Si ``None`` → comportement strict M2..M15 (pas de fee adjustment).
     """
     ctx = PipelineContext(trade=trade)
     filters = (
         ("TraderLifecycleFilter", TraderLifecycleFilter(session_factory, settings)),
         ("MarketFilter", MarketFilter(gamma_client, settings)),
         ("EntryPriceFilter", EntryPriceFilter(settings)),
-        ("PositionSizer", PositionSizer(session_factory, settings)),
+        ("PositionSizer", PositionSizer(session_factory, settings, fee_rate_client)),
         ("SlippageChecker", SlippageChecker(clob_client, settings, ws_client)),
         ("RiskManager", RiskManager(session_factory, settings)),
     )
