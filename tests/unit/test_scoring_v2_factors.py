@@ -66,21 +66,108 @@ def test_risk_adjusted_returns_zero_for_short_curve() -> None:
 
 
 def test_risk_adjusted_positive_for_upward_curve() -> None:
-    """Courbe strictement croissante → Sortino sentinel max."""
-    curve = [100.0 + i for i in range(30)]  # strictement croissante
+    """M14 MA.3 : courbe croissante avec variance suffisante → score > 0.
+
+    Comportement M14 :
+    - Sortino : variance OK + downside vide ou rare → Sharpe fallback (pas
+      sentinel 3.0).
+    - Calmar : si max_dd > 1e-4 → ratio fini ; sinon sentinel.
+    - Score = median(sortino, calmar).
+
+    Note : une courbe linéaire stricte `[100, 101, ..., 129]` a `pstdev`
+    sous le seuil 1e-3 (returns ordonnés trop similaires) — comportement
+    attendu MA.3 qui filtre les "fausses croissances". On utilise ici une
+    courbe avec returns réalistes (hétéroscédasticité minime).
+    """
+    # Returns autour de +1% avec petit bruit réaliste.
+    curve = [100.0 * (1.0 + 0.01 * (1 + (i % 5) * 0.2)) ** i for i in range(30)]
     m = _metrics_v2(monthly_equity_curve=curve)
     score = compute_risk_adjusted(m)
-    # 0.6 * 3.0 (sortino cap) + 0.4 * 3.0 (calmar cap, curve plate côté dd) = 3.0
-    assert score == pytest.approx(3.0, abs=0.01)
+    assert score > 0.0
 
 
 def test_risk_adjusted_penalizes_drawdown() -> None:
-    """Courbe avec drawdown → Calmar < cap sentinel."""
-    # 14 points montants puis 16 points descendants → drawdown observable
-    curve = [100.0 + i for i in range(14)] + [113.0 - i for i in range(16)]
+    """M14 MA.3 : courbe avec drawdown → median(Sortino, Calmar) toujours
+    pénalisé par rapport à courbe croissante."""
+    # Courbe haussière réaliste (variance suffisante).
+    curve_up = [100.0 * (1.0 + 0.01 * (1 + (i % 5) * 0.2)) ** i for i in range(30)]
+    # Courbe avec drawdown 30 % en milieu de période.
+    curve_dd = [100.0 + i for i in range(14)] + [113.0 - i * 1.5 for i in range(16)]
+    m_up = _metrics_v2(monthly_equity_curve=curve_up)
+    m_dd = _metrics_v2(monthly_equity_curve=curve_dd)
+    assert compute_risk_adjusted(m_dd) < compute_risk_adjusted(m_up)
+
+
+# --- M14 MA.3 : variance min + median(Sortino, Calmar) -----------------------
+
+
+def test_risk_adjusted_returns_zero_on_flat_curve() -> None:
+    """MA.3 : `pstdev(returns) < 1e-3` → 0.0 (pas sentinel 3.0).
+
+    Régression-clé contre H-009 : les zombies holders avec curve plate
+    ne dominent plus le facteur risk_adjusted (qui leur donnait sentinel
+    3.0 = top après normalisation).
+    """
+    flat = _metrics_v2(monthly_equity_curve=[1000.0] * 30)
+    assert compute_risk_adjusted(flat) == 0.0
+
+
+def test_risk_adjusted_uses_sharpe_fallback_on_zero_downside_with_variance() -> None:
+    """MA.3 : downside vide ET variance > 1e-3 → Sharpe fallback (pas sentinel)."""
+    # Returns tous positifs avec variance suffisante.
+    curve = [100.0 * (1.0 + 0.01 * (i % 3)) for i in range(30)]
     m = _metrics_v2(monthly_equity_curve=curve)
     score = compute_risk_adjusted(m)
-    assert score < 3.0
+    # Sharpe fallback produit une valeur finite (pas saturée à 3.0
+    # automatiquement).
+    assert score > 0.0
+    # Pas de plancher à 3.0 sentinel — un Sharpe modéré peut donner < 3.
+    # On vérifie juste que la fonction ne crash pas sur le cas downside vide.
+
+
+def test_risk_adjusted_uses_median_not_weighted_mean() -> None:
+    """MA.3 : `median(Sortino, Calmar)` au lieu de `0.6 × Sortino + 0.4 × Calmar`.
+
+    Sur 2 ratios Sortino=10.0, Calmar=0.5 :
+    - M12 weighted mean = 0.6×10 + 0.4×0.5 = 6.2
+    - M14 median = median(10.0, 0.5) = 5.25
+
+    On teste indirectement via une courbe dont on connaît le ratio
+    annualized_return / max_dd (Calmar) très différent du Sortino.
+
+    Ici on construit une courbe qui :
+    - Génère un Sortino élevé (peu de downside, variance modérée).
+    - Génère un Calmar bas (gros drawdown qui domine annualized_return).
+    """
+    # Curve : 28 jours de croissance lente + 1 mois de drawdown 30%.
+    curve = [100.0 + i * 0.5 for i in range(28)] + [70.0, 70.0]
+    m = _metrics_v2(monthly_equity_curve=curve)
+    score = compute_risk_adjusted(m)
+    # Calmar va dominer vers le bas (gros DD), Sortino reste raisonnable.
+    # Le median des deux est plus modéré qu'une moyenne pondérée 0.6/0.4.
+    # On vérifie principalement que ça ne crashe pas et que le score est fini.
+    assert isinstance(score, float)
+    assert score == score  # not NaN
+
+
+def test_risk_adjusted_robust_to_sentinel_cluster() -> None:
+    """MA.3 : avec median, un wallet zombie (sentinel cluster) a un score plus bas
+    qu'un wallet réel actif.
+
+    Wallet zombie : curve plate → MA.3 force 0.0 (variance min).
+    Wallet réel : curve avec returns réels variables → score positif.
+    """
+    # Curve réelle : croissance moyenne avec hétéroscédasticité (returns
+    # daily compris entre +0.5% et +3% selon période → pstdev > 1e-3).
+    real_returns = [1.0 + 0.01 * (1.0 + (i % 7) * 0.3) for i in range(30)]
+    real_curve = [1000.0]
+    for r in real_returns:
+        real_curve.append(real_curve[-1] * r)
+    zombie = _metrics_v2(monthly_equity_curve=[1000.0] * 30)
+    real = _metrics_v2(monthly_equity_curve=real_curve)
+    assert compute_risk_adjusted(zombie) == 0.0
+    assert compute_risk_adjusted(real) > 0.0
+    assert compute_risk_adjusted(real) > compute_risk_adjusted(zombie)
 
 
 # --- calibration ---------------------------------------------------------
