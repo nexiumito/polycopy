@@ -170,18 +170,48 @@ def _compute_brier(positions: list[RawPosition]) -> float | None:
     return mean(sq_errors)
 
 
-def _compute_zombie_ratio(positions: list[RawPosition]) -> float:
+def _compute_zombie_ratio(
+    positions: list[RawPosition],
+    *,
+    now: datetime | None = None,
+) -> float:
     """``zombie_ratio`` (Gemini §1.1) — proportion capital immobilisé.
 
     - Position "zombie" : ``current_value / initial_value < 2%`` ET
       ``is_resolved=False`` (jamais liquidée).
-    - Excluded du dénominateur : positions ouvertes depuis < 30 j (§3.7).
+    - **Excluded du dénominateur** : positions ouvertes depuis < 30 j
+      *quand l'info est disponible* (M14 MA.6 — fix audit H-014).
+
+    M14 MA.6 — implémentation du filtre temporel <30j :
+
+    - Si ``p.opened_at != None`` ET ``p.opened_at > now - 30d`` →
+      position trop récente, exclue (ne pas pénaliser un wallet qui vient
+      d'ouvrir une nouvelle position).
+    - Si ``p.opened_at is None`` (Data API ne fournit pas le timestamp,
+      cas par défaut 2026-04-25) → position **incluse** (fallback
+      comportement M12, dégradation gracieuse). À durcir dès qu'une source
+      de timestamp est branchée (Goldsky subgraph M16, `detected_trades`
+      proxy MB).
+
+    ``now`` est injectable pour test reproductibilité.
+
+    Cf. spec M14 §5.6 (MA.6) + audit H-014.
     """
-    # Sans ``opened_at`` sur RawPosition, on s'appuie sur ``initialValue > 0``
-    # comme heuristique (positions actives mesurables). Le filtre temporel
-    # strict < 30j nécessiterait une source de timestamp par position
-    # (reportable v2.1 via /activity TRADE agrégé par conditionId).
-    eligible = [p for p in positions if float(p.initial_value) > 0]
+    if now is None:
+        now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(days=_ZOMBIE_MIN_AGE_DAYS)
+
+    eligible: list[RawPosition] = []
+    for p in positions:
+        if float(p.initial_value) <= 0:
+            continue
+        # M14 MA.6 : filtre temporel uniquement quand l'info est disponible.
+        # Fallback safe : opened_at=None → on inclut (ne pas sous-estimer
+        # zombie_ratio à 0 partout sur les wallets sans data).
+        if p.opened_at is not None and p.opened_at > cutoff:
+            continue  # position trop récente, exclue du dénominateur
+        eligible.append(p)
+
     if not eligible:
         return 0.0
     capital_total = sum(float(p.initial_value) for p in eligible)

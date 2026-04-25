@@ -145,6 +145,12 @@ class RawPosition(BaseModel):
 
     Les nombres sont renvoyés en string par l'API ; `mode='before'` du Pydantic
     v2 les convertit automatiquement en float grâce au typage.
+
+    M14 (MA.6) : ajout `opened_at` (optionnel). Data API `/positions` actuelle
+    n'expose pas ce champ (vérifié 2026-04-25 sur fixture sample) — laissé
+    `None` par le collector. Permet aux futures sources (Goldsky subgraph,
+    `detected_trades` first-trade proxy) d'alimenter le filtre temporel
+    `_compute_zombie_ratio` <30j sans nouvelle migration DTO.
     """
 
     model_config = ConfigDict(frozen=True, populate_by_name=True, extra="ignore")
@@ -159,6 +165,7 @@ class RawPosition(BaseModel):
     realized_pnl: float = Field(default=0.0, alias="realizedPnl")
     total_bought: float = Field(default=0.0, alias="totalBought")
     redeemable: bool = False
+    opened_at: datetime | None = None  # M14 MA.6 — Data API ne fournit pas (yet)
 
     @property
     def is_resolved(self) -> bool:
