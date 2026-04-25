@@ -216,6 +216,41 @@ async def test_count_strategy_reasons(
 
 
 @pytest.mark.asyncio
+async def test_count_strategy_reasons_surfaces_ev_negative_after_fees(
+    session_factory: async_sessionmaker[AsyncSession],
+    strategy_decision_repo: StrategyDecisionRepository,
+) -> None:
+    """M16 MC.4 : la nouvelle reason ev_negative_after_fees apparaît
+    automatiquement dans le compteur via GROUP BY reason — sans modif code
+    côté query.
+
+    Cohérent avec les autres reasons (slippage_exceeded, liquidity_too_low,
+    position_already_open, etc.) qui sont rendues dynamiquement.
+    """
+    seed_reasons = (
+        "ev_negative_after_fees",
+        "ev_negative_after_fees",
+        "ev_negative_after_fees",
+        "slippage_exceeded",
+        "position_already_open",
+    )
+    for i, reason in enumerate(seed_reasons):
+        await strategy_decision_repo.insert(
+            StrategyDecisionDTO(
+                detected_trade_id=0,
+                tx_hash=f"0xtx_m16_{i}",
+                decision="REJECTED",
+                reason=reason,
+                pipeline_state={},
+            ),
+        )
+    counts = await queries.count_strategy_reasons(session_factory)
+    assert counts.get("ev_negative_after_fees") == 3
+    assert counts.get("slippage_exceeded") == 1
+    assert counts.get("position_already_open") == 1
+
+
+@pytest.mark.asyncio
 async def test_list_orders_filter_invalid_status_ignored(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
