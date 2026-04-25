@@ -8,6 +8,7 @@ import ipaddress
 import json
 import re
 import socket
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -633,6 +634,41 @@ class Settings(BaseSettings):
             "M11 : active l'instrumentation latence globale (6 stages + "
             "insert DB). Si false → pipeline tourne sans latence loggée "
             "(secours si surcharge CPU)."
+        ),
+    )
+
+    # --- Dynamic taker fees (M16, opt-in fortement recommandé) -----------
+    strategy_fees_aware_enabled: bool = Field(
+        True,
+        description=(
+            "M16 : active le fee adjustment dans PositionSizer._check_buy. "
+            "Quand True, instancie un FeeRateClient au boot Strategy et "
+            "rejette les BUY EV-négatifs post-fees Polymarket March 2026 "
+            "(crypto_fees_v2 + sports_fees_v2). Si False → pipeline strict "
+            "M2..M15 (pas de fetch /fee-rate, pas de soustraction fee, pas "
+            "de reason ev_negative_after_fees généré). Désactivable pour "
+            "debug ou A/B test."
+        ),
+    )
+    strategy_min_ev_usd_after_fee: Decimal = Field(
+        Decimal("0.05"),
+        ge=Decimal("0.01"),
+        le=Decimal("10.0"),
+        description=(
+            "M16 : seuil EV USD minimum post-fees pour PASS BUY. Si "
+            "EV - fee_cost < seuil → REJECT ev_negative_after_fees. Default "
+            "0.05 = 5¢ (cohérent micro-trades polycopy capital $50-200, "
+            "= 0.025-0.10% du notional). Range [0.01, 10.0] USD."
+        ),
+    )
+    strategy_fee_rate_cache_max: int = Field(
+        500,
+        ge=10,
+        le=10_000,
+        description=(
+            "M16 : cap LRU du cache FeeRateClient (TTL 60s appliqué auto). "
+            "Cohérent avec M8 orderbook + M11 WS subscriptions. "
+            "Range [10, 10000]."
         ),
     )
 

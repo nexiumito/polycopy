@@ -67,3 +67,53 @@ def test_risk_capital_stub_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RISK_AVAILABLE_CAPITAL_USD_STUB", "2500")
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.risk_available_capital_usd_stub == 2500.0
+
+
+# ---------------------------------------------------------------------------
+# M16 — Dynamic taker fees settings (cf. spec §9.3)
+# ---------------------------------------------------------------------------
+
+
+def test_m16_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defaults : flag=True, seuil=0.05$, cache cap=500."""
+    from decimal import Decimal
+
+    _isolated(monkeypatch)
+    for var in (
+        "STRATEGY_FEES_AWARE_ENABLED",
+        "STRATEGY_MIN_EV_USD_AFTER_FEE",
+        "STRATEGY_FEE_RATE_CACHE_MAX",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.strategy_fees_aware_enabled is True
+    assert settings.strategy_min_ev_usd_after_fee == Decimal("0.05")
+    assert settings.strategy_fee_rate_cache_max == 500
+
+
+def test_m16_strategy_min_ev_validator_lower_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STRATEGY_MIN_EV_USD_AFTER_FEE < 0.01 → ValidationError."""
+    from pydantic import ValidationError
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("STRATEGY_MIN_EV_USD_AFTER_FEE", "0.005")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_m16_strategy_min_ev_validator_upper_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STRATEGY_MIN_EV_USD_AFTER_FEE > 10.0 → ValidationError."""
+    from pydantic import ValidationError
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("STRATEGY_MIN_EV_USD_AFTER_FEE", "15.0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_m16_strategy_fees_aware_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flag opt-out vérifiable (debug / A/B test)."""
+    _isolated(monkeypatch)
+    monkeypatch.setenv("STRATEGY_FEES_AWARE_ENABLED", "false")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.strategy_fees_aware_enabled is False
