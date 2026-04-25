@@ -34,7 +34,7 @@ from polycopy.discovery.scoring.v2.factors import (
     compute_specialization,
     compute_timing_alpha,
 )
-from polycopy.discovery.scoring.v2.normalization import apply_pool_normalization
+from polycopy.discovery.scoring.v2.normalization import rank_normalize_one
 from polycopy.discovery.scoring.v2.pool_context import _CURRENT_POOL_CONTEXT
 
 log = structlog.get_logger(__name__)
@@ -110,27 +110,27 @@ def compute_score_v2(
         discipline=compute_discipline(metrics),
     )
     normalized = ScoringNormalizedSubscores(
-        risk_adjusted=apply_pool_normalization(
+        risk_adjusted=rank_normalize_one(
             raw.risk_adjusted,
             pool_context.risk_adjusted_pool,
         ),
-        calibration=apply_pool_normalization(
+        calibration=rank_normalize_one(
             raw.calibration,
             pool_context.calibration_pool,
         ),
-        timing_alpha=apply_pool_normalization(
+        timing_alpha=rank_normalize_one(
             raw.timing_alpha,
             pool_context.timing_alpha_pool,
         ),
-        specialization=apply_pool_normalization(
+        specialization=rank_normalize_one(
             raw.specialization,
             pool_context.specialization_pool,
         ),
-        consistency=apply_pool_normalization(
+        consistency=rank_normalize_one(
             raw.consistency,
             pool_context.consistency_pool,
         ),
-        discipline=apply_pool_normalization(
+        discipline=rank_normalize_one(
             raw.discipline,
             pool_context.discipline_pool,
         ),
