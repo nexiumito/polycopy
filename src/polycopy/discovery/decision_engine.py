@@ -19,7 +19,7 @@ Toutes les décisions sont retournées en `DiscoveryDecision` — le caller
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
@@ -31,8 +31,15 @@ from polycopy.storage.repositories import TargetTraderRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.storage.repositories import MyPositionRepository
 
 log = structlog.get_logger(__name__)
+
+# M15 MB.8 — fenêtre observation auto-blacklist (cohérent MB.1 internal_pnl).
+_AUTO_BLACKLIST_WINDOW_DAYS: int = 30
+# M15 MB.8 — seuil dur win_rate (séparé du Pydantic Settings pour rester
+# pure dans le helper).
+_AUTO_BLACKLIST_WIN_RATE_FLOOR: float = 0.25
 
 
 class DecisionEngine:
@@ -43,10 +50,15 @@ class DecisionEngine:
         target_repo: TargetTraderRepository,
         settings: Settings,
         alerts_queue: asyncio.Queue[Alert] | None = None,
+        my_positions_repo: MyPositionRepository | None = None,
     ) -> None:
         self._target_repo = target_repo
         self._settings = settings
         self._alerts = alerts_queue
+        # M15 MB.8 : repo MyPosition pour l'auto-blacklist (consomme
+        # sum_realized_pnl_by_source_wallet + count_wins_losses_*).
+        # Optional pour rétrocompat tests M5/M5_bis qui n'injectent pas.
+        self._my_positions_repo = my_positions_repo
 
     async def decide(
         self,
@@ -228,6 +240,12 @@ class DecisionEngine:
             # days_active ≥ 30). Aucun effet si pas en probation ou si
             # metrics non fournis (rétrocompat M5).
             await self._maybe_release_probation(current, trade_count_90d, days_active)
+            # M15 MB.8 : avant le ranking, vérifier les seuils auto-blacklist.
+            # Si fire → court-circuit + transition `active → blacklisted` +
+            # alerte Telegram. Sinon path standard ranking (MB.3).
+            auto_bl = await self._maybe_auto_blacklist(current, score, version)
+            if auto_bl is not None:
+                return auto_bl
             return await self._decide_active(current, score, version)
 
         if current.status == "sell_only":
@@ -541,6 +559,159 @@ class DecisionEngine:
                 trade_count_90d=trade_count_90d,
                 days_active=days_active,
             )
+
+    async def _maybe_auto_blacklist(
+        self,
+        current: TargetTrader,
+        score: float,
+        version: str,
+    ) -> DiscoveryDecision | None:
+        """M15 MB.8 — auto-blacklist si critères PnL ou WR violation.
+
+        Critères (OU logique) :
+
+        - ``cumulative_observed_pnl_30d < AUTO_BLACKLIST_PNL_THRESHOLD_USD``
+          (default −$5)
+        - ``observed_position_count_30d ≥ AUTO_BLACKLIST_MIN_POSITIONS_FOR_WR``
+          (default 30) AND ``observed_win_rate < 0.25``
+
+        Idempotence :
+
+        - Wallet déjà ``status='blacklisted'`` (cas race) → no-op.
+        - ``MyPositionRepository`` non injecté → no-op (rétrocompat tests M5
+          qui ne testent pas l'auto-blacklist).
+        - Cooldown alert via ``cooldown_key=f"auto_blacklist_{wallet}"``
+          empêche le re-fire dans la fenêtre digest (M7 dispatcher).
+
+        Calcul break-even : ``observed_win_rate = wins / (wins + losses)``
+        où break-even (`realized_pnl == 0`) sont **exclus du dénominateur**
+        (cf. spec §14.3). ``decided=0`` → ``observed_win_rate=None`` →
+        critère WR ne tire pas (neutre, pas mauvais).
+
+        Returns : ``DiscoveryDecision`` si fire, ``None`` sinon.
+
+        Cf. spec M15 §5.8 + §9.8 + §8.4 (réversibilité).
+        """
+        if self._my_positions_repo is None:
+            return None
+        cfg = self._settings
+        wallet = current.wallet_address.lower()
+
+        # Filtre simulated cohérent MB.1 (live → simulated=False, dry/sim
+        # → simulated=True).
+        simulated_flag = cfg.execution_mode != "live"
+        cutoff = datetime.now(tz=UTC) - timedelta(days=_AUTO_BLACKLIST_WINDOW_DAYS)
+
+        try:
+            pnl_sum, count = await self._my_positions_repo.sum_realized_pnl_by_source_wallet(
+                wallet_address=wallet,
+                since=cutoff,
+                simulated=simulated_flag,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "auto_blacklist_repository_error",
+                wallet=wallet,
+                error=str(exc),
+            )
+            return None
+
+        if count == 0:
+            # Pas de copy data observable → pas de signal.
+            return None
+
+        try:
+            wins, losses = await self._my_positions_repo.count_wins_losses_by_source_wallet(
+                wallet_address=wallet,
+                since=cutoff,
+                simulated=simulated_flag,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "auto_blacklist_repository_error",
+                wallet=wallet,
+                error=str(exc),
+            )
+            return None
+
+        decided = wins + losses
+        observed_wr = (wins / decided) if decided > 0 else None
+
+        fires_pnl = pnl_sum < float(cfg.auto_blacklist_pnl_threshold_usd)
+        fires_wr = (
+            observed_wr is not None
+            and decided >= cfg.auto_blacklist_min_positions_for_wr
+            and observed_wr < _AUTO_BLACKLIST_WIN_RATE_FLOOR
+        )
+
+        if not fires_pnl and not fires_wr:
+            return None
+
+        reason_code = "pnl_threshold" if fires_pnl else "win_rate_floor"
+
+        # Transition active → blacklisted via le path unsafe (cohérent
+        # M5_bis reconcile_blacklist : transitions T10/T11/T12 piloted
+        # par status DB, pas via env update).
+        await self._target_repo.transition_status_unsafe(
+            wallet_address=wallet,
+            new_status="blacklisted",
+        )
+        log.warning(
+            "trader_auto_blacklisted",
+            wallet=wallet,
+            reason_code=reason_code,
+            observed_pnl=round(pnl_sum, 4),
+            observed_wr=(round(observed_wr, 4) if observed_wr is not None else None),
+            observed_position_count=count,
+            score_at_event=score,
+        )
+
+        # Alerte Telegram MarkdownV2 (template trader_auto_blacklisted.md.j2).
+        # Le body contient les stats user-facing — escape via filter
+        # `telegram_md_escape` dans le template.
+        if self._alerts is not None:
+            wr_str = f"{observed_wr:.1%}" if observed_wr is not None else "N/A"
+            body = (
+                f"Wallet : `{wallet[:10]}…{wallet[-4:]}`. "
+                f"Raison : {reason_code} (PnL observé "
+                f"{pnl_sum:.2f} USD sur 30j, win-rate {wr_str} "
+                f"sur {decided} positions décidées). "
+                f"Status : active → blacklisted."
+            )
+            try:
+                self._alerts.put_nowait(
+                    Alert(
+                        level="WARNING",
+                        event="trader_auto_blacklisted",
+                        body=body,
+                        cooldown_key=f"auto_blacklist_{wallet}",
+                    ),
+                )
+            except asyncio.QueueFull:
+                log.warning(
+                    "alerts_queue_full_dropped",
+                    event="trader_auto_blacklisted",
+                    wallet=wallet,
+                )
+
+        return DiscoveryDecision(
+            wallet_address=wallet,
+            decision="keep",  # M5 DecisionKind ne contient pas auto_blacklist
+            from_status="active",
+            to_status="blacklisted",
+            score_at_event=score,
+            scoring_version=version,
+            reason=f"auto_blacklist:{reason_code}",
+            event_metadata={
+                "auto_blacklist": True,
+                "reason_code": reason_code,
+                "observed_pnl_30d": round(pnl_sum, 4),
+                "observed_position_count_30d": count,
+                "observed_win_rate_30d": (
+                    round(observed_wr, 4) if observed_wr is not None else None
+                ),
+            },
+        )
 
     async def _do_demote(
         self,

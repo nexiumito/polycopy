@@ -1,0 +1,10 @@
+_\[{{ mode_badge | telegram_md_escape }}\]_
+{{ machine_emoji }} *{{ machine_id | telegram_md_escape }}*
+🚫 *\[trader\_auto\_blacklisted\]* WARNING
+
+{{ body | telegram_md_escape }}
+
+_Discovery M15 MB\.8 — auto\-blacklist sur PnL ou win\-rate observé\. Réversibilité : ajouter\/retirer le wallet de_ `BLACKLISTED_WALLETS` _env\._
+{% if dashboard_url %}
+[📊 Dashboard]({{ dashboard_url }})
+{% endif %}

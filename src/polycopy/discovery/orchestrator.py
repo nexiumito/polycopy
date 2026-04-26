@@ -139,7 +139,13 @@ class DiscoveryOrchestrator:
             # M15 MB.1 : repo MyPosition pour le collecteur internal_pnl
             # (lecture seule sur my_positions.realized_pnl).
             my_positions_repo = MyPositionRepository(self._sf)
-            decision_engine = DecisionEngine(target_repo, cfg, self._alerts)
+            decision_engine = DecisionEngine(
+                target_repo,
+                cfg,
+                self._alerts,
+                # M15 MB.8 : injecte le repo MyPosition pour l'auto-blacklist.
+                my_positions_repo=my_positions_repo,
+            )
 
             # M5_bis Phase C : EvictionScheduler opt-in strict.
             eviction_scheduler: EvictionScheduler | None = None

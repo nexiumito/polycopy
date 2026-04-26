@@ -468,3 +468,171 @@ async def test_decide_active_pool_sub_cap_no_demote(
     assert decision.event_metadata["ranking_basis"] == "top_n"
     cur = await target_trader_repo.get("0xa5")
     assert cur is not None and cur.consecutive_low_score_cycles == 0
+
+
+# --- M15 MB.8 : auto-blacklist sur PnL/WR observé (3 tests §9.8) -----------
+
+
+async def _seed_my_position(
+    my_position_repo,  # type: ignore[no-untyped-def]
+    *,
+    source_wallet: str,
+    realized_pnl: float,
+    closed_at: datetime,
+    asset_id: str,
+    condition_id: str,
+    simulated: bool = True,
+) -> None:
+    """Insert direct d'une MyPosition closed via la session pour contrôle
+    précis de closed_at + realized_pnl + source_wallet_address.
+    """
+    from polycopy.storage.models import MyPosition
+
+    async with my_position_repo._session_factory() as session:  # noqa: SLF001
+        position = MyPosition(
+            condition_id=condition_id,
+            asset_id=asset_id,
+            size=0.0,
+            avg_price=0.5,
+            simulated=simulated,
+            closed_at=closed_at,
+            realized_pnl=realized_pnl,
+            source_wallet_address=source_wallet.lower(),
+        )
+        session.add(position)
+        await session.commit()
+
+
+async def test_auto_blacklist_fires_on_pnl_threshold(
+    target_trader_repo: TargetTraderRepository,
+    my_position_repo,  # type: ignore[no-untyped-def]
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.8 §9.8 #25 — wallet ACTIVE avec PnL cumulé < -$5 → auto-blacklist."""
+    wallet = "0xtoxic"
+    await _seed_active_with_score(target_trader_repo, wallet, 0.55)
+    # 15 closed positions cumulant -$8.50 sur 30j (>>−$5 threshold).
+    now = datetime.now(tz=UTC)
+    for i in range(15):
+        await _seed_my_position(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=-0.567,
+            closed_at=now - timedelta(days=i),
+            asset_id=f"0xa{i}",
+            condition_id=f"0xc{i}",
+        )
+
+    settings = _settings(
+        execution_mode="dry_run",
+        auto_blacklist_pnl_threshold_usd="-5.0",
+        auto_blacklist_min_positions_for_wr=30,
+    )
+    engine = DecisionEngine(
+        target_trader_repo,
+        settings,
+        alerts_queue,
+        my_positions_repo=my_position_repo,
+    )
+    cur = await target_trader_repo.get(wallet)
+    decision = await engine.decide(_scoring(wallet, 0.55), cur, active_count=1)
+
+    assert decision.event_metadata.get("auto_blacklist") is True
+    assert decision.event_metadata["reason_code"] == "pnl_threshold"
+    assert decision.to_status == "blacklisted"
+
+    after = await target_trader_repo.get(wallet)
+    assert after is not None and after.status == "blacklisted"
+
+    # Alerte Telegram émise.
+    alert = alerts_queue.get_nowait()
+    assert alert.event == "trader_auto_blacklisted"
+    assert alert.level == "WARNING"
+
+
+async def test_auto_blacklist_fires_on_win_rate_floor(
+    target_trader_repo: TargetTraderRepository,
+    my_position_repo,  # type: ignore[no-untyped-def]
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.8 §9.8 #26 — wallet avec 30+ positions et WR<25% → auto-blacklist
+    par critère win_rate_floor (PnL non sous threshold).
+    """
+    wallet = "0xpoorwr"
+    await _seed_active_with_score(target_trader_repo, wallet, 0.55)
+    now = datetime.now(tz=UTC)
+    # 6 wins (PnL +0.10) + 29 losses (PnL -0.05) → WR=6/35=0.171 < 0.25.
+    # PnL total = 6*0.10 + 29*(-0.05) = 0.60 - 1.45 = -0.85 (au-dessus de -$5).
+    for i in range(6):
+        await _seed_my_position(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=0.10,
+            closed_at=now - timedelta(days=i),
+            asset_id=f"0xwin{i}",
+            condition_id=f"0xcwin{i}",
+        )
+    for i in range(29):
+        await _seed_my_position(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=-0.05,
+            closed_at=now - timedelta(days=i),
+            asset_id=f"0xlos{i}",
+            condition_id=f"0xclos{i}",
+        )
+
+    settings = _settings(
+        execution_mode="dry_run",
+        auto_blacklist_pnl_threshold_usd="-5.0",
+        auto_blacklist_min_positions_for_wr=30,
+    )
+    engine = DecisionEngine(
+        target_trader_repo,
+        settings,
+        alerts_queue,
+        my_positions_repo=my_position_repo,
+    )
+    cur = await target_trader_repo.get(wallet)
+    decision = await engine.decide(_scoring(wallet, 0.55), cur, active_count=1)
+
+    assert decision.event_metadata.get("auto_blacklist") is True
+    assert decision.event_metadata["reason_code"] == "win_rate_floor"
+    assert decision.to_status == "blacklisted"
+
+
+async def test_auto_blacklist_idempotent_when_already_blacklisted(
+    target_trader_repo: TargetTraderRepository,
+    my_position_repo,  # type: ignore[no-untyped-def]
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.8 §9.8 #27 — wallet déjà blacklisted → no path through MB.8.
+
+    Le path `_decide_active` n'est pas atteint pour un wallet déjà
+    blacklisted (filtré en amont par `decide()` via la branche
+    `current.status == "blacklisted"`).
+    """
+    wallet = "0xalreadybl"
+    await target_trader_repo.insert_shadow(wallet)
+    await target_trader_repo.transition_status_unsafe(
+        wallet,
+        new_status="blacklisted",
+    )
+
+    settings = _settings(execution_mode="dry_run")
+    engine = DecisionEngine(
+        target_trader_repo,
+        settings,
+        alerts_queue,
+        my_positions_repo=my_position_repo,
+    )
+    cur = await target_trader_repo.get(wallet)
+    decision = await engine.decide(_scoring(wallet, 0.99), cur, active_count=1)
+
+    # Branche blacklisted — keep, pas auto_blacklist.
+    assert decision.decision == "keep"
+    assert decision.from_status == "blacklisted"
+    assert decision.to_status == "blacklisted"
+    assert "auto_blacklist" not in decision.event_metadata
+    # Pas d'alerte Telegram.
+    assert alerts_queue.empty()

@@ -111,3 +111,64 @@ def test_alert_renderer_escapes_machine_id_special_chars() -> None:
     rendered = renderer.render_alert(alert)
     # MarkdownV2 échappe - et _
     assert r"PC\-1\_A" in rendered
+
+
+# --- M15 MB.8 : trader_auto_blacklisted template (1 test §9.8) -------------
+
+
+def test_template_auto_blacklisted_renders_safely() -> None:
+    """MB.8 §9.8 #28 — render trader_auto_blacklisted, assert MarkdownV2
+    propre + aucun secret leaké."""
+    template = _TEMPLATES_DIR / "trader_auto_blacklisted.md.j2"
+    assert template.is_file()
+    content = template.read_text(encoding="utf-8")
+    # Référence aux variables M10 + M12_bis.
+    assert "mode_badge" in content
+    assert "machine_id" in content
+    assert "machine_emoji" in content
+    assert "body" in content
+    assert "dashboard_url" in content
+    # Pas de secret marker hardcodé.
+    forbidden = [
+        "polymarket_private_key",
+        "telegram_bot_token",
+        "POLYMARKET_PRIVATE_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "api_secret",
+        "api_passphrase",
+        "0x" + "0" * 62,
+    ]
+    for token in forbidden:
+        assert token not in content
+
+    # Render avec un Alert fake — pas de crash, sortie MarkdownV2 cohérente.
+    renderer = AlertRenderer(
+        project_root=Path(__file__).resolve().parents[2],
+        mode="dry_run",
+        machine_id="TESTPC",
+        machine_emoji="🖥️",
+    )
+    alert = Alert(
+        level="WARNING",
+        event="trader_auto_blacklisted",
+        body=(
+            "Wallet : `0x21ffd2b7…0d71`. Raison : pnl_threshold "
+            "(PnL observé -0.55 USD sur 30j, win-rate 19.0% sur 52 "
+            "positions décidées). Status : active → blacklisted."
+        ),
+        cooldown_key="auto_blacklist_0x21ffd2b7d6a40d71",
+    )
+    rendered = renderer.render_alert(alert)
+    assert "🚫" in rendered
+    assert "*TESTPC*" in rendered
+    assert "trader" in rendered  # 'trader\\_auto\\_blacklisted' tag
+    assert "active" in rendered
+    assert "blacklisted" in rendered
+    # Pas de secret leak dans le rendu final.
+    for token in (
+        "POLYMARKET_PRIVATE_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "polymarket_private_key",
+        "api_secret",
+    ):
+        assert token not in rendered
