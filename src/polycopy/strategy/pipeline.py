@@ -202,6 +202,8 @@ class PositionSizer:
         # Si flag off OU pas de fee_rate_client injecté → comportement strict
         # M2..M15 préservé (rétrocompat tests).
         if self._fee_rate_client is None or not self._settings.strategy_fees_aware_enabled:
+            # M15 MB.6 : probation 0.25× kick in même si M16 fees off.
+            raw_my_size = self._apply_probation_multiplier(raw_my_size, ctx)
             ctx.my_size = raw_my_size
             return FilterResult(passed=True)
 
@@ -253,8 +255,33 @@ class PositionSizer:
             )
             return FilterResult(passed=False, reason="ev_negative_after_fees")
 
+        # M15 MB.6 : probation 0.25× appliqué APRÈS le fee/EV check (la
+        # probation est un sizing layer, pas un EV gate — on ne re-rejette
+        # pas un trade probation pour fee insuffisant relatif à la size
+        # 0.25×, le check EV s'applique à la raw size).
+        raw_my_size = self._apply_probation_multiplier(raw_my_size, ctx)
+
         ctx.my_size = raw_my_size
         return FilterResult(passed=True)
+
+    def _apply_probation_multiplier(
+        self,
+        raw_my_size: float,
+        ctx: PipelineContext,
+    ) -> float:
+        """M15 MB.6 — multiplie ``raw_my_size`` par
+        ``probation_size_multiplier`` (default 0.25) si
+        ``ctx.trade.is_source_probation == True``.
+
+        Pure (lit ``self._settings`` + ``ctx.trade.is_source_probation`` ;
+        retourne le size probationné). Wallet non-probation → no-op
+        (multiplier = 1.0 mathématiquement, court-circuit explicite pour
+        clarity).
+        """
+        if not ctx.trade.is_source_probation:
+            return raw_my_size
+        multiplier = float(self._settings.probation_size_multiplier)
+        return raw_my_size * multiplier
 
     @staticmethod
     def _compute_effective_fee_rate(

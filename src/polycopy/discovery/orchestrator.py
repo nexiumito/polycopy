@@ -417,10 +417,20 @@ class DiscoveryOrchestrator:
                 )
                 scores_by_wallet[wallet.lower()] = pilot_score
 
+                # M15 MB.6 : passer trade_count_90d + days_active si v2 metrics
+                # disponibles → DecisionEngine peut détecter probation candidate
+                # (insertion shadow `is_probation=True`) et auto-release au gate
+                # full. Si v2 off (cold-start v1 strict) → None → no-op MB.6.
+                trade_count_90d = (
+                    int(metrics_v2.trade_count_90d) if metrics_v2 is not None else None
+                )
+                days_active = int(metrics_v2.days_active) if metrics_v2 is not None else None
                 decision = await decision_engine.decide(
                     scoring,
                     current,
                     active_count=active_count,
+                    trade_count_90d=trade_count_90d,
+                    days_active=days_active,
                 )
                 await self._persist_event(
                     event_repo,

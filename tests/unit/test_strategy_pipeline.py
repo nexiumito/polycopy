@@ -23,18 +23,25 @@ from polycopy.strategy.pipeline import (
 )
 
 
-def _trade(price: float = 0.08, size: float = 100.0) -> DetectedTradeDTO:
+def _trade(
+    price: float = 0.08,
+    size: float = 100.0,
+    *,
+    side: str = "BUY",
+    is_source_probation: bool = False,
+) -> DetectedTradeDTO:
     return DetectedTradeDTO(
         tx_hash="0xtx",
         target_wallet="0xw",
         condition_id="0xc",
         asset_id="123",
-        side="BUY",
+        side=side,  # type: ignore[arg-type]
         size=size,
         usdc_size=size * price,
         price=price,
         timestamp=datetime.now(tz=UTC),
         raw_json={},
+        is_source_probation=is_source_probation,
     )
 
 
@@ -633,3 +640,225 @@ async def test_full_pipeline_rejects_first_failing_filter(
     assert ctx.filter_trace[0]["passed"] is True
     assert ctx.filter_trace[1]["filter"] == "MarketFilter"
     assert ctx.filter_trace[1]["passed"] is False
+
+
+# --- M15 MB.6 : probation 0.25× sizing (4 tests §9.6) ----------------------
+
+
+async def test_probation_wallet_sized_quarter_kelly(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """MB.6 §9.6 #17 — wallet probation → my_size *= 0.25 (default).
+
+    Setup : `is_source_probation=True`, BUY size=100 @ 0.50, copy_ratio=0.01,
+    max_position_usd=200 (cap_size = 200/0.50 = 400, raw_size = 100*0.01 =
+    1.0 ≤ cap → raw_my_size = 1.0). M16 fees off.
+
+    Expected : `ctx.my_size = 1.0 × 0.25 = 0.25`.
+    """
+    f = PositionSizer(
+        session_factory,
+        _settings(
+            copy_ratio=0.01,
+            max_position_usd=200.0,
+            probation_size_multiplier="0.25",
+            strategy_fees_aware_enabled=False,
+        ),
+    )
+    ctx = PipelineContext(
+        trade=_trade(price=0.50, size=100.0, is_source_probation=True),
+    )
+    result = await f.check(ctx)
+    assert result.passed is True
+    assert ctx.my_size == pytest.approx(0.25, abs=1e-6)
+
+
+async def test_non_probation_wallet_sized_normally(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """MB.6 — wallet non-probation → multiplier=1.0 (no-op).
+
+    Régression check : un trade `is_source_probation=False` (default)
+    ne doit PAS subir la division par 4.
+    """
+    f = PositionSizer(
+        session_factory,
+        _settings(
+            copy_ratio=0.01,
+            max_position_usd=200.0,
+            probation_size_multiplier="0.25",
+            strategy_fees_aware_enabled=False,
+        ),
+    )
+    ctx = PipelineContext(
+        trade=_trade(price=0.50, size=100.0, is_source_probation=False),
+    )
+    result = await f.check(ctx)
+    assert result.passed is True
+    assert ctx.my_size == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.fixture
+def alerts_queue():  # type: ignore[no-untyped-def]
+    """Queue Alert minimaliste pour les tests MB.6."""
+    import asyncio as _asyncio
+
+    from polycopy.monitoring.dtos import Alert as _Alert
+
+    return _asyncio.Queue[_Alert](maxsize=10)
+
+
+async def test_probation_release_when_full_gate_satisfied(
+    target_trader_repo,  # type: ignore[no-untyped-def]
+    alerts_queue,  # type: ignore[no-untyped-def]
+) -> None:
+    """MB.6 §9.6 #19 — wallet probation passé full gate → flag flip à False.
+
+    Setup : ACTIVE wallet ``is_probation=True``. On invoke
+    ``decision_engine.decide(...)`` avec ``trade_count_90d=51`` et
+    ``days_active=32`` (≥ probation_full_*).
+    """
+    from polycopy.config import Settings
+    from polycopy.discovery.decision_engine import DecisionEngine
+    from polycopy.discovery.dtos import ScoringResult, TraderMetrics
+
+    cfg = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        target_wallets="0xdummy",
+        scoring_promotion_threshold=0.65,
+        max_active_traders=10,
+        probation_full_trades=50,
+        probation_full_days=30,
+    )
+    await target_trader_repo.insert_shadow("0xprob", is_probation=True)
+    await target_trader_repo.transition_status("0xprob", new_status="active")
+    await target_trader_repo.update_score("0xprob", score=0.70, scoring_version="v2.1.1")
+
+    engine = DecisionEngine(target_trader_repo, cfg, alerts_queue)
+    scoring = ScoringResult(
+        wallet_address="0xprob",
+        score=0.70,
+        scoring_version="v2.1.1",
+        low_confidence=False,
+        metrics=TraderMetrics(wallet_address="0xprob", fetched_at=datetime.now(tz=UTC)),
+        cycle_at=datetime.now(tz=UTC),
+    )
+    cur = await target_trader_repo.get("0xprob")
+    await engine.decide(
+        scoring,
+        cur,
+        active_count=1,
+        trade_count_90d=55,
+        days_active=35,
+    )
+    after = await target_trader_repo.get("0xprob")
+    assert after is not None
+    assert after.is_probation is False  # Released by _maybe_release_probation
+
+
+def test_walletpoller_resolver_propagates_probation_flag() -> None:
+    """MB.6 §9.6 #20 — WalletPoller resolver propagate is_probation au DTO.
+
+    Pure unit test : on builde un WalletPoller avec un resolver qui
+    retourne True pour un wallet donné, et on vérifie que `_to_dto`
+    set `is_source_probation=True` dans le DTO produit.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from polycopy.watcher.dtos import TradeActivity
+    from polycopy.watcher.wallet_poller import WalletPoller
+
+    # Resolver fixed → True pour le wallet test.
+    def resolver(_wallet: str) -> bool:
+        return True
+
+    poller = WalletPoller(
+        wallet_address="0xprob",
+        client=MagicMock(),
+        repo=AsyncMock(),
+        interval_seconds=1,
+        probation_resolver=resolver,
+    )
+    activity = TradeActivity(
+        proxyWallet="0xprob",
+        transactionHash="0xtx",
+        timestamp=int(datetime.now(tz=UTC).timestamp()),
+        conditionId="0xc",
+        asset="0xa",
+        side="BUY",
+        size=1.0,
+        price=0.5,
+        usdcSize=0.5,
+        type="TRADE",
+        outcomeIndex=0,
+        title=None,
+        outcome=None,
+        slug=None,
+    )
+    dto = poller._to_dto(activity, trade_id=None)
+    assert dto.is_source_probation is True
+
+    # Resolver False → flag False.
+    poller_neg = WalletPoller(
+        wallet_address="0xother",
+        client=MagicMock(),
+        repo=AsyncMock(),
+        interval_seconds=1,
+        probation_resolver=lambda _w: False,
+    )
+    dto_neg = poller_neg._to_dto(activity, trade_id=None)
+    assert dto_neg.is_source_probation is False
+
+    # Resolver absent (default None) → flag False (rétrocompat).
+    poller_no_resolver = WalletPoller(
+        wallet_address="0xany",
+        client=MagicMock(),
+        repo=AsyncMock(),
+        interval_seconds=1,
+    )
+    dto_default = poller_no_resolver._to_dto(activity, trade_id=None)
+    assert dto_default.is_source_probation is False
+
+
+async def test_probation_candidate_inserted_with_flag(
+    target_trader_repo,  # type: ignore[no-untyped-def]
+    alerts_queue,  # type: ignore[no-untyped-def]
+) -> None:
+    """MB.6 §9.6 #20 — wallet absent + 10≤trades<50 + days≥7 → insert
+    shadow avec ``is_probation=True``.
+    """
+    from polycopy.config import Settings
+    from polycopy.discovery.decision_engine import DecisionEngine
+    from polycopy.discovery.dtos import ScoringResult, TraderMetrics
+
+    cfg = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        target_wallets="0xdummy",
+        scoring_promotion_threshold=0.50,
+        max_active_traders=10,
+        probation_min_trades=10,
+        probation_full_trades=50,
+        probation_min_days=7,
+        probation_full_days=30,
+    )
+    engine = DecisionEngine(target_trader_repo, cfg, alerts_queue)
+    scoring = ScoringResult(
+        wallet_address="0xprob",
+        score=0.65,
+        scoring_version="v2.1.1",
+        low_confidence=False,
+        metrics=TraderMetrics(wallet_address="0xprob", fetched_at=datetime.now(tz=UTC)),
+        cycle_at=datetime.now(tz=UTC),
+    )
+    decision = await engine.decide(
+        scoring,
+        None,  # absent
+        active_count=0,
+        trade_count_90d=25,  # in probation window [10, 50)
+        days_active=10,  # ≥ probation_min_days=7
+    )
+    assert decision.decision == "discovered_shadow"
+    assert decision.event_metadata.get("is_probation") is True
+    inserted = await target_trader_repo.get("0xprob")
+    assert inserted is not None
+    assert inserted.is_probation is True

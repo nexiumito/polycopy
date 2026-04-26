@@ -13,6 +13,12 @@ class DetectedTradeDTO(BaseModel):
     cross-queue (`structlog.contextvars.bind_contextvars`). Nullable pour
     backward-compat tests M1..M10 ; généré par le `WalletPoller` au moment
     de l'insertion quand l'instrumentation est active (cf. spec M11 §5.1).
+
+    M15 MB.6 : ``is_source_probation`` propage le flag
+    ``TargetTrader.is_probation`` au pipeline strategy. Quand ``True``,
+    ``PositionSizer._check_buy`` multiplie ``my_size`` par
+    ``probation_size_multiplier`` (default 0.25). Default ``False`` —
+    propagation rétro-compatible avec les chemins M1..M14.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -30,6 +36,7 @@ class DetectedTradeDTO(BaseModel):
     slug: str | None = None
     raw_json: dict[str, Any]
     trade_id: str | None = None
+    is_source_probation: bool = False
 
 
 class StrategyDecisionDTO(BaseModel):
@@ -138,6 +145,10 @@ TraderEventType = Literal[
     "blacklist_removed",
     # M5_bis Phase C (prépare le rewrite DecisionEngine demote) :
     "demoted_to_shadow",
+    # M15 MB.6 — probation auto-release.
+    "probation_released",
+    # M15 MB.8 — auto-blacklist sur seuil PnL ou WR observé.
+    "auto_blacklisted",
 ]
 
 

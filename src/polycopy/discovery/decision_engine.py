@@ -54,12 +54,26 @@ class DecisionEngine:
         current: TargetTrader | None,
         *,
         active_count: int,
+        trade_count_90d: int | None = None,
+        days_active: int | None = None,
     ) -> DiscoveryDecision:
         """Applique les règles. ``active_count`` = nb `status='active'` live.
 
         Le caller doit passer un compteur frais ; l'engine ne promeut que si
         ``active_count < MAX_ACTIVE_TRADERS``. En cas de `skip_cap`, l'alerte
         `discovery_cap_reached` est poussée ici.
+
+        M15 MB.6 : ``trade_count_90d`` + ``days_active`` (optionnels — issus
+        du scoring v2.1+) permettent au DecisionEngine de :
+
+        1. Détecter un wallet candidat en **probation** (10 ≤ trade_count
+           < 50 ET days_active ≥ 7) à l'insertion shadow → flag
+           ``is_probation=True``.
+        2. Auto-release un wallet ACTIVE déjà en probation quand
+           ``trade_count_90d ≥ 50 ET days_active ≥ 30``.
+
+        Si ``None`` (M5 callers, tests legacy) → aucune logique probation
+        (rétrocompat strict M5/M14 préservée).
         """
         wallet = scoring.wallet_address.lower()
         score = scoring.score
@@ -129,7 +143,52 @@ class DecisionEngine:
                     reason=f"shadow_bypass + score {score:.2f} >= threshold",
                     event_metadata={"bypass_shadow": True},
                 )
-            # Default : insert shadow
+            # M15 MB.6 : path probation pour wallets [10, 50) trades.
+            #
+            # Si l'orchestrator nous a passé `trade_count_90d` + `days_active`
+            # ET que le wallet est dans la fenêtre probation MAIS sous le
+            # gate full M14 (>=50 trades / >=30 jours), on l'insère shadow
+            # avec `is_probation=True`. Sinon path standard.
+            #
+            # Les autres gates (cash_pnl, not_blacklisted, not_wash_cluster,
+            # not_arbitrage_bot, zombie_ratio) restent stricts — appliqués
+            # par `gates.check_all_gates` côté orchestrator avant scoring.
+            # MB.6 ne relax que `trade_count` (≥10 vs ≥50) et `days_active`
+            # (≥7 vs ≥30). Cf. spec §5.6 + §8.5.
+            is_probation_candidate = self._is_probation_candidate(
+                trade_count_90d=trade_count_90d,
+                days_active=days_active,
+            )
+            if is_probation_candidate:
+                await self._target_repo.insert_shadow(wallet, is_probation=True)
+                log.info(
+                    "trader_discovered_probation",
+                    wallet=wallet,
+                    score=score,
+                    trade_count_90d=trade_count_90d,
+                    days_active=days_active,
+                    to_status="shadow",
+                )
+                return DiscoveryDecision(
+                    wallet_address=wallet,
+                    decision="discovered_shadow",
+                    from_status="absent",
+                    to_status="shadow",
+                    score_at_event=score,
+                    scoring_version=version,
+                    reason=(
+                        f"probation: trades={trade_count_90d}, "
+                        f"days={days_active}, sized "
+                        f"{cfg.probation_size_multiplier}× until full gate"
+                    ),
+                    event_metadata={
+                        "is_probation": True,
+                        "trade_count_90d": trade_count_90d,
+                        "days_active": days_active,
+                    },
+                )
+
+            # Default : insert shadow (M5 path standard)
             await self._target_repo.insert_shadow(wallet)
             log.info(
                 "trader_discovered",
@@ -164,6 +223,11 @@ class DecisionEngine:
             return await self._decide_shadow(current, score, version, active_count)
 
         if current.status == "active":
+            # M15 MB.6 : avant le ranking, tenter le release probation si
+            # le wallet a passé le gate full (trade_count_90d ≥ 50 ET
+            # days_active ≥ 30). Aucun effet si pas en probation ou si
+            # metrics non fournis (rétrocompat M5).
+            await self._maybe_release_probation(current, trade_count_90d, days_active)
             return await self._decide_active(current, score, version)
 
         if current.status == "sell_only":
@@ -411,6 +475,72 @@ class DecisionEngine:
                 "ranking_basis": "top_n",
             },
         )
+
+    def _is_probation_candidate(
+        self,
+        *,
+        trade_count_90d: int | None,
+        days_active: int | None,
+    ) -> bool:
+        """M15 MB.6 — wallet absent éligible à l'insertion ``is_probation=True``.
+
+        Retourne ``True`` si :
+
+        - ``trade_count_90d`` dans ``[probation_min_trades, probation_full_trades)``
+          (default ``[10, 50)``).
+        - ``days_active >= probation_min_days`` (default ``≥7``).
+
+        Si ``None`` (M5 caller) → ``False`` (rétrocompat).
+        """
+        if trade_count_90d is None or days_active is None:
+            return False
+        cfg = self._settings
+        return (
+            cfg.probation_min_trades <= trade_count_90d < cfg.probation_full_trades
+            and days_active >= cfg.probation_min_days
+        )
+
+    async def _maybe_release_probation(
+        self,
+        current: TargetTrader,
+        trade_count_90d: int | None,
+        days_active: int | None,
+    ) -> None:
+        """M15 MB.6 — auto-release ``is_probation=False`` si gate full satisfait.
+
+        Conditions de release strictes :
+
+        - ``current.is_probation == True`` (sinon no-op).
+        - ``trade_count_90d ≥ probation_full_trades`` (default 50).
+        - ``days_active ≥ probation_full_days`` (default 30).
+
+        Persiste la transition via
+        :meth:`TargetTraderRepository.set_probation` + écrit l'event
+        ``trader_events.event_type='probation_released'`` dans la prochaine
+        version (l'orchestrator écrit l'event via ``_persist_event`` à
+        partir de ``DiscoveryDecision`` — ici on ne touche que la DB pour
+        garder ``decide()`` idempotent dans son retour).
+
+        Aucun retour : c'est un side-effect pré-decide qui n'altère pas la
+        décision retournée. Si le release tire ce cycle, le ``current``
+        en mémoire n'est pas re-fetched — peu grave car le path
+        downstream (`_decide_active`) ne lit pas `is_probation` directement
+        (le sizer côté `PositionSizer` refresh via `WalletPoller`
+        resolver).
+        """
+        if not current.is_probation:
+            return
+        if trade_count_90d is None or days_active is None:
+            return
+        cfg = self._settings
+        if trade_count_90d >= cfg.probation_full_trades and days_active >= cfg.probation_full_days:
+            await self._target_repo.set_probation(current.wallet_address, on=False)
+            log.info(
+                "trader_probation_released",
+                wallet=current.wallet_address,
+                trade_count_90d=trade_count_90d,
+                days_active=days_active,
+            )
 
     async def _do_demote(
         self,

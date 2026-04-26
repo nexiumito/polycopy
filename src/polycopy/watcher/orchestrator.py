@@ -74,6 +74,10 @@ class WatcherOrchestrator:
         )
         interval = self._settings.watcher_reload_interval_seconds
         pollers_by_wallet: dict[str, asyncio.Task[None]] = {}
+        # M15 MB.6 : map partagée wallet→is_probation, rafraîchie à chaque
+        # cycle reload. WalletPoller lookup ce dict via une closure (resolver
+        # sync, 0 query par trade détecté).
+        probation_map: dict[str, bool] = {}
         log.info(
             "watcher_started",
             poll_interval=self._settings.poll_interval_seconds,
@@ -92,6 +96,7 @@ class WatcherOrchestrator:
                         stop_event=stop_event,
                         pollers_by_wallet=pollers_by_wallet,
                         interval=interval,
+                        probation_map=probation_map,
                     )
             except* asyncio.CancelledError:
                 pass
@@ -108,7 +113,15 @@ class WatcherOrchestrator:
         stop_event: asyncio.Event,
         pollers_by_wallet: dict[str, asyncio.Task[None]],
         interval: int,
+        probation_map: dict[str, bool],
     ) -> None:
+        # M15 MB.6 : closure resolver — lookup sync dans `probation_map`
+        # qui est rafraîchi à chaque cycle reload. Default False si wallet
+        # absent (wallet vient d'être ajouté entre 2 reloads, mais le poller
+        # va se relancer au prochain reload avec la bonne valeur).
+        def probation_resolver(wallet_address: str) -> bool:
+            return probation_map.get(wallet_address.lower(), False)
+
         while not stop_event.is_set():
             try:
                 desired_traders = await target_repo.list_wallets_to_poll(
@@ -125,6 +138,12 @@ class WatcherOrchestrator:
             to_add = desired - current
             to_remove = current - desired
 
+            # M15 MB.6 : refresh la map probation depuis le snapshot courant.
+            probation_map.clear()
+            probation_map.update(
+                {t.wallet_address.lower(): bool(t.is_probation) for t in desired_traders},
+            )
+
             if to_remove:
                 await _cancel_pollers(pollers_by_wallet, to_remove)
 
@@ -139,6 +158,9 @@ class WatcherOrchestrator:
                     out_queue=self._out_queue,
                     latency_repo=latency_repo,
                     instrumentation_enabled=self._settings.latency_instrumentation_enabled,
+                    # M15 MB.6 : closure resolver injectée — chaque trade
+                    # détecté lookup le flag à publish-time.
+                    probation_resolver=probation_resolver,
                 )
                 pollers_by_wallet[wallet] = tg.create_task(
                     poller.run(stop_event),

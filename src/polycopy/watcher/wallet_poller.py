@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -27,12 +28,25 @@ if TYPE_CHECKING:
 _BACKOFF_AFTER_ERROR_SECONDS: float = 5.0
 _INITIAL_LOOKBACK_HOURS = 1
 
+# M15 MB.6 : sync callable signature pour le resolver probation.
+# Le map est rafraîchi par le ``WatcherOrchestrator`` à chaque
+# ``watcher_reload_interval_seconds`` (5min default), donc un sync lookup
+# dans un dict partagé est suffisant — pas besoin d'awaitable / N+1 query.
+ProbationResolver = Callable[[str], bool]
+
 
 class WalletPoller:
     """Poll en boucle un wallet et persiste les trades nouveaux.
 
     Si une `out_queue` est fournie, push chaque `DetectedTradeDTO` nouvellement
     inséré (consommé par la strategy à M2). Compatible M1 (queue optionnelle).
+
+    M15 MB.6 : ``probation_resolver`` (optionnel) lookup le flag
+    ``TargetTrader.is_probation`` pour le wallet polled. Quand fourni, le
+    flag est propagé dans ``DetectedTradeDTO.is_source_probation`` →
+    ``PositionSizer._check_buy`` multiplie ``my_size`` par
+    ``probation_size_multiplier`` (default 0.25). Default ``None`` →
+    flag reste ``False`` (rétro-compat M1..M5_ter).
     """
 
     def __init__(
@@ -44,6 +58,7 @@ class WalletPoller:
         out_queue: asyncio.Queue[DetectedTradeDTO] | None = None,
         latency_repo: TradeLatencyRepository | None = None,
         instrumentation_enabled: bool = True,
+        probation_resolver: ProbationResolver | None = None,
     ) -> None:
         self._wallet = wallet_address.lower()
         self._client = client
@@ -52,6 +67,7 @@ class WalletPoller:
         self._out_queue = out_queue
         self._latency_repo = latency_repo
         self._instrumentation_enabled = instrumentation_enabled
+        self._probation_resolver = probation_resolver
         self._log = structlog.get_logger(__name__).bind(wallet=self._wallet)
 
     async def run(self, stop_event: asyncio.Event) -> None:
@@ -140,6 +156,14 @@ class WalletPoller:
         *,
         trade_id: str | None = None,
     ) -> DetectedTradeDTO:
+        # M15 MB.6 : lookup flag probation via le resolver partagé (sync,
+        # 0 query — le map est rafraîchi par WatcherOrchestrator chaque
+        # cycle reload). Default False si resolver absent.
+        is_source_probation = (
+            self._probation_resolver(self._wallet)
+            if self._probation_resolver is not None
+            else False
+        )
         return DetectedTradeDTO(
             tx_hash=trade.transaction_hash,
             target_wallet=self._wallet,
@@ -154,6 +178,7 @@ class WalletPoller:
             slug=trade.slug,
             raw_json=trade.model_dump(by_alias=True),
             trade_id=trade_id,
+            is_source_probation=is_source_probation,
         )
 
     @staticmethod
