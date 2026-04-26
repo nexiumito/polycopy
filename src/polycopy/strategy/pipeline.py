@@ -184,10 +184,17 @@ class PositionSizer:
         return await self._check_sell(ctx)
 
     async def _check_buy(self, ctx: PipelineContext) -> FilterResult:
+        # M17 MD.1 : ségrégation live ↔ virtual sur (closed_at IS NULL).
+        # Sans ce filtre, un flip dry_run → live hérite des positions virtuelles
+        # M13 traînantes → tous les BUY live sont rejetés `position_already_open`
+        # (audit C-001). Le pattern strict copié de `MyPositionRepository.get_open`
+        # / `list_open_virtual` (qui filtrent déjà simulated).
+        simulated_value = self._settings.execution_mode != "live"
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
                 MyPosition.condition_id == ctx.trade.condition_id,
                 MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(simulated_value),
             )
             existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing is not None:
@@ -330,11 +337,14 @@ class PositionSizer:
         # Match fin (condition_id, asset_id) : un SELL YES ne ferme pas une
         # position NO. Sizing proportional capé à ``existing.size`` (on ne
         # vend jamais plus qu'on détient). ``max_position_usd`` N/A en SELL.
+        # M17 MD.1 : filtre simulated cohérent avec _check_buy (audit C-001).
+        simulated_value = self._settings.execution_mode != "live"
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
                 MyPosition.condition_id == ctx.trade.condition_id,
                 MyPosition.asset_id == ctx.trade.asset_id,
                 MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(simulated_value),
             )
             existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing is None:
@@ -399,8 +409,16 @@ class RiskManager:
     async def check(self, ctx: PipelineContext) -> FilterResult:
         if ctx.my_size is None or ctx.midpoint is None:
             return FilterResult(passed=False, reason="risk_inputs_missing")
+        # M17 MD.1 : exposition calculée uniquement sur les positions du mode
+        # courant (audit C-001). Sans ce filtre, le live additionne les
+        # positions virtuelles M13 dans le calcul d'exposition → faux-positif
+        # `capital_exceeded` au flip.
+        simulated_value = self._settings.execution_mode != "live"
         async with self._session_factory() as session:
-            stmt = select(MyPosition).where(MyPosition.closed_at.is_(None))
+            stmt = select(MyPosition).where(
+                MyPosition.closed_at.is_(None),
+                MyPosition.simulated.is_(simulated_value),
+            )
             open_positions = list((await session.execute(stmt)).scalars().all())
         current_exposure = sum((p.size or 0.0) * (p.avg_price or 0.0) for p in open_positions)
         prospective_cost = ctx.my_size * ctx.midpoint

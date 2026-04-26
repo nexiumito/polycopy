@@ -195,9 +195,16 @@ async def test_entry_price_filter_disabled_at_100pct() -> None:
 async def test_position_sizer_position_already_open(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    # Default settings = execution_mode="dry_run" → simulated=True attendu.
     async with session_factory() as session:
         session.add(
-            MyPosition(condition_id="0xc", asset_id="123", size=1.0, avg_price=0.5),
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=1.0,
+                avg_price=0.5,
+                simulated=True,
+            ),
         )
         await session.commit()
     f = PositionSizer(session_factory, _settings())
@@ -583,6 +590,107 @@ async def test_risk_manager_pass(
     ctx.my_size = 1.0
     ctx.midpoint = 0.5
     result = await f.check(ctx)
+    assert result.passed is True
+
+
+# --- M17 MD.1 : ségrégation simulated ↔ live (audit C-001) ------------------
+
+
+async def test_position_sizer_check_buy_filters_simulated_in_live_mode(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Live mode ignore les positions virtuelles M13 traînantes."""
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=1.0,
+                avg_price=0.5,
+                simulated=True,  # position virtuelle M13 traînante
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings(execution_mode="live"))
+    ctx = PipelineContext(trade=_trade())
+    result = await f.check(ctx)
+    # En live, la position virtuelle est invisible → check passe.
+    assert result.passed is True
+
+
+async def test_position_sizer_check_sell_filters_simulated_in_live_mode(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Live mode ne voit pas une position virtuelle quand un SELL live arrive."""
+    async with session_factory() as session:
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=10.0,
+                avg_price=0.4,
+                simulated=True,
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings(execution_mode="live"))
+    trade = _trade(price=0.6, size=1000.0)
+    trade = DetectedTradeDTO(**{**trade.model_dump(), "side": "SELL"})
+    result = await f.check(PipelineContext(trade=trade))
+    # En live, la position virtuelle n'existe pas pour le _check_sell.
+    assert result.passed is False
+    assert result.reason == "sell_without_position"
+
+
+async def test_risk_manager_check_filters_simulated_in_live_mode(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """L'exposition live n'inclut pas les positions virtuelles."""
+    async with session_factory() as session:
+        # 5 positions virtuelles à $100 chacune = $500 d'exposition virtuelle.
+        for i in range(5):
+            session.add(
+                MyPosition(
+                    condition_id=f"0xv{i}",
+                    asset_id=str(i),
+                    size=200.0,
+                    avg_price=0.5,
+                    simulated=True,
+                ),
+            )
+        await session.commit()
+    f = RiskManager(
+        session_factory,
+        _settings(execution_mode="live", risk_available_capital_usd_stub=200.0),
+    )
+    ctx = PipelineContext(trade=_trade())
+    ctx.my_size = 100.0
+    ctx.midpoint = 0.5  # cost = 50 USD
+    result = await f.check(ctx)
+    # En live l'exposition = 0, capital_dispo = 200, cost = 50 → pass.
+    assert result.passed is True
+
+
+async def test_dry_run_still_sees_only_virtual_positions(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """En dry_run, les positions live ne polluent pas les checks pipeline."""
+    async with session_factory() as session:
+        # Position live (cas hypothétique : flip live → dry_run après cleanup
+        # incomplet). MD.1 garantit que dry_run ne la voit pas.
+        session.add(
+            MyPosition(
+                condition_id="0xc",
+                asset_id="123",
+                size=1.0,
+                avg_price=0.5,
+                simulated=False,  # position live
+            ),
+        )
+        await session.commit()
+    f = PositionSizer(session_factory, _settings(execution_mode="dry_run"))
+    result = await f.check(PipelineContext(trade=_trade()))
+    # En dry_run, la position live est invisible → check passe.
     assert result.passed is True
 
 
