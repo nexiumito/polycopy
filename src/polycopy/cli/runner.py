@@ -25,7 +25,11 @@ from polycopy.cli.status_screen import (
     render_status_screen,
 )
 from polycopy.cli.version import get_version
-from polycopy.config import legacy_dry_run_detected, settings
+from polycopy.config import (
+    legacy_dry_run_detected,
+    legacy_virtual_capital_rerouted,
+    settings,
+)
 from polycopy.monitoring.dtos import Alert
 from polycopy.remote_control.sentinel import SentinelFile
 from polycopy.storage.dtos import DetectedTradeDTO
@@ -249,6 +253,19 @@ def main(argv: list[str] | None = None) -> int:
         log.warning(
             "cli_deprecation_dry_run_flag",
             message="--dry-run is deprecated; use --execution-mode=dry_run",
+        )
+    # M17 MD.5 : warning si DRY_RUN_VIRTUAL_CAPITAL_USD legacy a été rerouté.
+    rerouted = legacy_virtual_capital_rerouted()
+    if rerouted is not None:
+        log.warning(
+            "config_deprecation_dry_run_virtual_capital_env",
+            message=(
+                "DRY_RUN_VIRTUAL_CAPITAL_USD is deprecated since M17. "
+                "Use DRY_RUN_INITIAL_CAPITAL_USD instead. "
+                "Will be removed in M18+."
+            ),
+            value=rerouted,
+            redirected_to="dry_run_initial_capital_usd",
         )
 
     # Écran rich uniquement si silent ET pas en mode daemon (--no-cli).

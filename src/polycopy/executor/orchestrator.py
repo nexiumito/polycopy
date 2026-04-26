@@ -105,9 +105,17 @@ class ExecutorOrchestrator:
                     self._settings,
                     alerts_queue=self._alerts,
                 )
+                # M17 MD.5 : log la valeur effective (post-reroute legacy)
+                # via `dry_run_initial_capital_usd` ; fallback explicit pour
+                # tracer ce qui pilote le PnL virtuel.
+                effective_virtual_capital = (
+                    self._settings.dry_run_initial_capital_usd
+                    if self._settings.dry_run_initial_capital_usd is not None
+                    else self._settings.risk_available_capital_usd_stub
+                )
                 log.warning(
                     "dry_run_realistic_fill_enabled",
-                    virtual_capital=self._settings.dry_run_virtual_capital_usd,
+                    virtual_capital=effective_virtual_capital,
                     cache_ttl_s=self._settings.dry_run_book_cache_ttl_seconds,
                     poll_minutes=self._settings.dry_run_resolution_poll_minutes,
                     allow_partial=self._settings.dry_run_allow_partial_book,

@@ -59,7 +59,16 @@ class VirtualWalletStateReader:
             unrealized += current_value - pos.size * pos.avg_price
             exposure += current_value
         realized = await self._positions_repo.sum_realized_pnl_virtual()
-        total_usdc = self._settings.dry_run_virtual_capital_usd + realized + unrealized
+        # M17 MD.5 : source unique post-deprecation. Le validator Pydantic
+        # MD.5 reroute `DRY_RUN_VIRTUAL_CAPITAL_USD` legacy vers
+        # `dry_run_initial_capital_usd` au boot — un seul setting consommé ici.
+        # Fallback `risk_available_capital_usd_stub` si ni l'un ni l'autre set.
+        initial = float(
+            self._settings.dry_run_initial_capital_usd
+            if self._settings.dry_run_initial_capital_usd is not None
+            else self._settings.risk_available_capital_usd_stub
+        )
+        total_usdc = initial + realized + unrealized
         # PnlSnapshotWriter._tick fait `total = pos_value + capital`. Pour
         # rester compat M4 sans refactor : on encode `pos_value=exposure`
         # (current mid-value) et `capital=total_usdc - exposure` afin que

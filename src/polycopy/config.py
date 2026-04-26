@@ -28,6 +28,12 @@ _LEGACY_DRY_RUN_DETECTED: bool = False
 # après `configure_logging` (cf. spec M12_bis §3.1).
 _MACHINE_ID_SOURCE: str = "env"
 
+# M17 MD.5 : flag module-level positionné par `_migrate_legacy_virtual_capital`
+# quand `DRY_RUN_VIRTUAL_CAPITAL_USD` est rerouté vers
+# `DRY_RUN_INITIAL_CAPITAL_USD`. Lu par `cli/runner.py` pour émettre un log
+# unique au boot (audit H-004 + cohérence pattern M10).
+_LEGACY_VIRTUAL_CAPITAL_REROUTED: float | None = None
+
 
 class Settings(BaseSettings):
     """Settings du bot, validées au démarrage."""
@@ -318,9 +324,11 @@ class Settings(BaseSettings):
         ge=10.0,
         le=1_000_000.0,
         description=(
-            "Capital initial virtuel pour le PnL dry-run M8. Remplace "
-            "RISK_AVAILABLE_CAPITAL_USD_STUB uniquement dans les snapshots "
-            "is_dry_run=true. Ne pilote PAS le RiskManager M2."
+            "[DEPRECATED M17] Utiliser DRY_RUN_INITIAL_CAPITAL_USD à la place. "
+            "Si seul l'ancien est set, validator MD.5 reroute la valeur avec "
+            "warning `config_deprecation_dry_run_virtual_capital_env`. "
+            "Sera retiré en M18+. Capital initial virtuel pour le PnL "
+            "dry-run M8 (legacy). Ne pilote PAS le RiskManager M2."
         ),
     )
     dry_run_book_cache_ttl_seconds: int = Field(
@@ -1078,6 +1086,39 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_legacy_virtual_capital(cls, data: Any) -> Any:
+        """M17 MD.5 — `DRY_RUN_VIRTUAL_CAPITAL_USD` deprecated → reroute vers
+        `DRY_RUN_INITIAL_CAPITAL_USD` si le nouveau n'est pas set.
+
+        Pattern strict copié de ``_migrate_legacy_dry_run`` (M10) : on
+        capture la valeur legacy, on logge un flag module-level pour que
+        ``cli/runner.py`` émette le warning structlog après le boot de la
+        chaîne logging, on reroute la valeur. Si les deux sont set,
+        ``DRY_RUN_INITIAL_CAPITAL_USD`` gagne sans warning. Audit H-004.
+        """
+        global _LEGACY_VIRTUAL_CAPITAL_REROUTED
+        if not isinstance(data, dict):
+            return data
+        # Sources possibles : kwarg test direct OU env var legacy.
+        legacy_value: object | None = data.get("dry_run_virtual_capital_usd")
+        if legacy_value is None:
+            legacy_value = data.get("DRY_RUN_VIRTUAL_CAPITAL_USD")
+        explicit_value: object | None = data.get("dry_run_initial_capital_usd")
+        if explicit_value is None:
+            explicit_value = data.get("DRY_RUN_INITIAL_CAPITAL_USD")
+        if legacy_value is not None and explicit_value is None:
+            try:
+                rerouted = float(legacy_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                # Valeur legacy non parseable → laisse la validation Pydantic
+                # remonter une erreur claire (ne pas masquer le bug).
+                return data
+            data["dry_run_initial_capital_usd"] = rerouted
+            _LEGACY_VIRTUAL_CAPITAL_REROUTED = rerouted
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_legacy_dry_run(cls, data: Any) -> Any:
         """Backward-compat M10 : traduit legacy ``DRY_RUN`` en ``execution_mode``.
 
@@ -1251,6 +1292,16 @@ def machine_id_source() -> str:
     une fois la chaîne structlog configurée (cf. spec M12_bis §3.1).
     """
     return _MACHINE_ID_SOURCE
+
+
+def legacy_virtual_capital_rerouted() -> float | None:
+    """M17 MD.5 — retourne la valeur legacy reroutée, ou ``None``.
+
+    Flag lu par ``cli/runner.py`` pour émettre
+    ``config_deprecation_dry_run_virtual_capital_env`` une fois la chaîne
+    structlog configurée (audit H-004).
+    """
+    return _LEGACY_VIRTUAL_CAPITAL_REROUTED
 
 
 settings = Settings()
