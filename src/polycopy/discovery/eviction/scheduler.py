@@ -21,7 +21,8 @@ Surface publique :
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from statistics import pstdev
 from typing import TYPE_CHECKING, Literal, cast
 
 import structlog
@@ -39,7 +40,7 @@ from polycopy.discovery.eviction.state_machine import (
     reconcile_blacklist_decisions,
 )
 from polycopy.monitoring.dtos import Alert
-from polycopy.storage.models import MyPosition
+from polycopy.storage.models import MyPosition, TargetTrader, TraderScore
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,6 +49,73 @@ if TYPE_CHECKING:
     from polycopy.storage.repositories import TargetTraderRepository
 
 log = structlog.get_logger(__name__)
+
+
+# M15 MB.5 — fenêtre observation et seuil min samples pour la recommandation.
+_MARGIN_RECOMMENDATION_WINDOW_DAYS: int = 7
+_MARGIN_RECOMMENDATION_MIN_SAMPLES: int = 10
+_MARGIN_RECOMMENDATION_VERSIONS: tuple[str, ...] = ("v2.1", "v2.1.1")
+
+
+async def _log_empirical_margin_recommendation(
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Mesure ``pstdev(active_scores)`` sur les 7 derniers jours et log la
+    recommandation 1σ pour ``EVICTION_SCORE_MARGIN`` (M15 MB.5).
+
+    No-op si :
+
+    - ``EVICTION_ENABLED=false`` (le helper n'est jamais appelé non plus
+      par l'orchestrator dans ce cas, mais double-check défensif).
+    - ``< 10`` samples ``trader_scores`` (versions ``v2.1`` / ``v2.1.1``)
+      cycle_at > now-7d sur les wallets ``status='active'`` (boot frais
+      ou shadow period juste démarrée).
+
+    Aucun auto-ajustement — décision humaine via tweak ``.env``. Le helper
+    informe à 1σ ± 20% comme range recommandé. Hypothèse H-EMP-2 (M14) :
+    variance réduite post-rank-transform → std attendue ~0.06.
+
+    Cf. spec M15 §5.5 + §9.5 + Claude §3.1.
+    """
+    if not settings.eviction_enabled:
+        return
+
+    cutoff = datetime.now(tz=UTC) - timedelta(days=_MARGIN_RECOMMENDATION_WINDOW_DAYS)
+    async with session_factory() as session:
+        stmt = (
+            select(TraderScore.score)
+            .join(
+                TargetTrader,
+                TraderScore.target_trader_id == TargetTrader.id,
+            )
+            .where(
+                TraderScore.cycle_at > cutoff,
+                TraderScore.scoring_version.in_(_MARGIN_RECOMMENDATION_VERSIONS),
+                TargetTrader.status == "active",
+            )
+        )
+        scores = list((await session.execute(stmt)).scalars().all())
+
+    if len(scores) < _MARGIN_RECOMMENDATION_MIN_SAMPLES:
+        log.info(
+            "eviction_margin_empirical_recommendation_insufficient_data",
+            samples=len(scores),
+            min_required=_MARGIN_RECOMMENDATION_MIN_SAMPLES,
+            current_margin=settings.eviction_score_margin,
+        )
+        return
+
+    sigma = float(pstdev(scores))
+    log.info(
+        "eviction_margin_empirical_recommendation",
+        samples=len(scores),
+        current_margin=settings.eviction_score_margin,
+        empirical_1_sigma=round(sigma, 4),
+        recommended_min=round(sigma * 0.8, 4),
+        recommended_max=round(sigma * 1.2, 4),
+        delta_vs_current=round(sigma - settings.eviction_score_margin, 4),
+    )
 
 
 class EvictionScheduler:

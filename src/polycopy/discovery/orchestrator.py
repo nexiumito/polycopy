@@ -156,6 +156,14 @@ class DiscoveryOrchestrator:
                 boot_decisions = await eviction_scheduler.reconcile_blacklist()
                 for decision in boot_decisions:
                     await self._persist_eviction_event(event_repo, decision, cfg)
+                # M15 MB.5 : observe std empirique des active_scores 7j et
+                # log la recommandation 1σ pour EVICTION_SCORE_MARGIN.
+                # Aucun auto-ajustement — décision humaine via .env.
+                from polycopy.discovery.eviction.scheduler import (
+                    _log_empirical_margin_recommendation,
+                )
+
+                await _log_empirical_margin_recommendation(cfg, self._sf)
                 log.info(
                     "eviction_scheduler_started",
                     boot_reconcile_decisions=len(boot_decisions),
