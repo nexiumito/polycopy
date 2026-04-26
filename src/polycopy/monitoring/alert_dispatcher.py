@@ -115,7 +115,13 @@ class AlertDispatcher:
     # ------------------------------------------------------------------
 
     async def _handle(self, alert: Alert) -> None:
-        """Applique cooldown → digest → rendu → envoi Telegram."""
+        """Applique cooldown → digest → rendu → envoi Telegram.
+
+        M17 MD.2 : si ``alert.level == "CRITICAL"`` → bypass DIGEST (envoi
+        immédiat, jamais batché — audit C-002 + M-009). Le cooldown 60s par
+        ``cooldown_key`` reste appliqué pour préserver l'idempotence
+        anti-flood (cf. spec M17 §11.4).
+        """
         self._counts_since_boot[alert.event] += 1
         if alert.level in _CRITICAL_LEVELS:
             self._last_critical_at = self._now()
@@ -128,9 +134,24 @@ class AlertDispatcher:
                     "alert_throttled",
                     cooldown_key=alert.cooldown_key,
                     alert_event=alert.event,
+                    level=alert.level,
                 )
                 return
             self._last_sent[alert.cooldown_key] = now
+
+        # M17 MD.2 : bypass digest pour CRITICAL — envoi immédiat. ERROR
+        # reste digestible (cf. spec §5.2 — un ``executor_pipeline_error``
+        # non-bloquant ne doit pas court-circuiter la fenêtre digest).
+        if alert.level == "CRITICAL":
+            formatted = self._renderer.render_alert(alert)
+            sent = await self._telegram.send(formatted)
+            log.info(
+                "alert_sent_critical_bypass_digest",
+                alert_event=alert.event,
+                level=alert.level,
+                sent=sent,
+            )
+            return
 
         decision = self._digest.register(alert, self._now())
 

@@ -128,3 +128,105 @@ async def test_m4_cooldown_non_regression() -> None:
     stop = asyncio.Event()
     await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.1))
     assert tg.send.await_count == 1
+
+
+# --- M17 MD.2 : bypass digest pour CRITICAL (audit C-002 + M-009) ----------
+
+
+@pytest.mark.asyncio
+async def test_critical_alert_bypasses_digest_window() -> None:
+    """CRITICAL en rafale → toutes envoyées immédiatement (pas batchées)."""
+    q: asyncio.Queue[Alert] = asyncio.Queue()
+    # 6 CRITICAL identiques sans cooldown → toutes émises (pas de batch).
+    for i in range(6):
+        q.put_nowait(
+            Alert(
+                level="CRITICAL",
+                event="kill_switch_triggered",
+                body=f"drawdown {i}",
+                cooldown_key=None,
+            ),
+        )
+    tg = _fake_telegram()
+    dispatcher = AlertDispatcher(
+        q,
+        tg,
+        _settings(telegram_digest_threshold=3, alert_cooldown_seconds=0),
+        renderer=AlertRenderer(),
+    )
+    stop = asyncio.Event()
+    await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.2))
+    # Sans bypass digest, seulement 5 sends (4 immédiats + 1 digest au seuil).
+    # Avec bypass MD.2 : 6 sends individuels (jamais de digest pour CRITICAL).
+    assert tg.send.await_count == 6
+    for call in tg.send.await_args_list:
+        body = call.args[0]
+        assert "Digest alertes polycopy" not in body
+
+
+@pytest.mark.asyncio
+async def test_critical_alert_respects_cooldown() -> None:
+    """CRITICAL bypass digest mais cooldown 60s reste appliqué (anti-flood §11.4)."""
+    q: asyncio.Queue[Alert] = asyncio.Queue()
+    # 2 CRITICAL avec même cooldown_key → la 2ᵉ doit être throttlée.
+    q.put_nowait(
+        Alert(
+            level="CRITICAL",
+            event="kill_switch_triggered",
+            body="first",
+            cooldown_key="kill_switch",
+        ),
+    )
+    q.put_nowait(
+        Alert(
+            level="CRITICAL",
+            event="kill_switch_triggered",
+            body="second",
+            cooldown_key="kill_switch",
+        ),
+    )
+    tg = _fake_telegram()
+    dispatcher = AlertDispatcher(q, tg, _settings(alert_cooldown_seconds=60))
+    stop = asyncio.Event()
+    await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.1))
+    # Cooldown préservé malgré le bypass digest.
+    assert tg.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_non_critical_alert_still_digested() -> None:
+    """WARNING / INFO : digest logic préservée (non-régression M7)."""
+    q: asyncio.Queue[Alert] = asyncio.Queue()
+    # Threshold = 3, on en envoie 3 → digest émis.
+    for i in range(3):
+        q.put_nowait(Alert(level="WARNING", event="drawdown_warning", body=f"w{i}"))
+    tg = _fake_telegram()
+    dispatcher = AlertDispatcher(
+        q,
+        tg,
+        _settings(telegram_digest_threshold=3, alert_cooldown_seconds=0),
+        renderer=AlertRenderer(),
+    )
+    stop = asyncio.Event()
+    await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.15))
+    # 3ᵉ alerte → digest message.
+    assert tg.send.await_count == 3
+    last_body = tg.send.await_args_list[-1].args[0]
+    assert "Digest alertes polycopy" in last_body
+
+
+@pytest.mark.asyncio
+async def test_critical_alert_telegram_disabled_no_crash() -> None:
+    """telegram_client.send retourne False → pas de raise, log + return."""
+    q: asyncio.Queue[Alert] = asyncio.Queue()
+    q.put_nowait(
+        Alert(level="CRITICAL", event="kill_switch_triggered", body="x"),
+    )
+    tg = AsyncMock()
+    tg.enabled = False
+    tg.send = AsyncMock(return_value=False)
+    dispatcher = AlertDispatcher(q, tg, _settings(), renderer=AlertRenderer())
+    stop = asyncio.Event()
+    await asyncio.gather(dispatcher.run(stop), _stop_after(stop, 0.1))
+    # send appelé une fois (bypass digest), mais retourne False → pas de crash.
+    assert tg.send.await_count == 1
