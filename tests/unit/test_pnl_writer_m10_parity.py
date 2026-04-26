@@ -55,7 +55,18 @@ async def _run_once(writer: PnlSnapshotWriter, timeout: float = 0.3) -> None:  #
     await asyncio.gather(writer.run(stop), _stop_later())
 
 
-async def _seed_max_ever(repo: PnlSnapshotRepository, *, is_dry_run: bool) -> None:
+async def _seed_max_ever(
+    repo: PnlSnapshotRepository,
+    *,
+    is_dry_run: bool,
+    execution_mode: str | None = None,
+) -> None:
+    """Seed un snapshot baseline.
+
+    M17 MD.3 : ``execution_mode`` permet de seed un mode tri-state strict
+    (``simulation`` / ``dry_run`` / ``live``). Si non fourni, dérive de
+    ``is_dry_run`` (rétrocompat).
+    """
     await repo.insert(
         PnlSnapshotDTO(
             total_usdc=1000.0,
@@ -65,6 +76,7 @@ async def _seed_max_ever(repo: PnlSnapshotRepository, *, is_dry_run: bool) -> No
             open_positions_count=0,
             cash_pnl_total=None,
             is_dry_run=is_dry_run,
+            execution_mode=execution_mode,  # type: ignore[arg-type]
         ),
     )
 
@@ -91,9 +103,15 @@ async def test_kill_switch_fires_in_dry_run_mode(
 async def test_kill_switch_fires_in_simulation_mode(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """SIMULATION réutilise la colonne ``is_dry_run`` (agrégée) pour le max-ever."""
+    """M17 MD.3 : SIMULATION lit son propre bucket (plus de pollution SIM+DRY).
+
+    Avant MD.3, SIMULATION agrégeait avec DRY_RUN via ``is_dry_run=True`` —
+    ce qui causait le bug C-003 (un backtest SIM à $50k polluait la baseline
+    DRY_RUN à $1k → faux-positif kill switch). Post-MD.3, chaque mode lit
+    sa propre baseline strict.
+    """
     repo = PnlSnapshotRepository(session_factory)
-    await _seed_max_ever(repo, is_dry_run=True)
+    await _seed_max_ever(repo, is_dry_run=True, execution_mode="simulation")
     queue: asyncio.Queue[Alert] = asyncio.Queue()
     writer = PnlSnapshotWriter(
         session_factory,

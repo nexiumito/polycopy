@@ -962,7 +962,11 @@ class PnlSnapshotRepository:
         self._session_factory = session_factory
 
     async def insert(self, dto: PnlSnapshotDTO) -> PnlSnapshot:
-        """Persiste un snapshot et retourne l'instance avec son ``id``."""
+        """Persiste un snapshot et retourne l'instance avec son ``id``.
+
+        M17 MD.3 : écrit ``execution_mode`` + ``is_dry_run`` en parallèle.
+        ``is_dry_run`` conservé 1 version pour rétrocompat lecture (drop M18+).
+        """
         record = PnlSnapshot(
             total_usdc=dto.total_usdc,
             realized_pnl=dto.realized_pnl,
@@ -971,6 +975,7 @@ class PnlSnapshotRepository:
             open_positions_count=dto.open_positions_count,
             cash_pnl_total=dto.cash_pnl_total,
             is_dry_run=dto.is_dry_run,
+            execution_mode=dto.execution_mode,
         )
         async with self._session_factory() as session:
             session.add(record)
@@ -978,22 +983,47 @@ class PnlSnapshotRepository:
             await session.refresh(record)
             return record
 
-    async def get_max_total_usdc(self, *, only_real: bool = True) -> float | None:
-        """Retourne le max historique de ``total_usdc`` (pour drawdown all-time-high)."""
+    async def get_max_total_usdc(
+        self,
+        *,
+        only_real: bool | None = None,
+        execution_mode: Literal["simulation", "dry_run", "live"] | None = None,
+    ) -> float | None:
+        """Retourne le max historique de ``total_usdc`` (pour drawdown all-time-high).
+
+        M17 MD.3 : nouveau paramètre ``execution_mode`` strict (filtre
+        ``WHERE execution_mode = ?``). Quand fourni, prime sur ``only_real``.
+        Si ``only_real`` est utilisé seul, comportement legacy préservé
+        avec un mapping ``True → execution_mode='live'`` (cf. spec §11.3).
+        """
+        # M17 MD.3 : compat legacy. only_real=True ⇒ live, only_real=False ⇒ no filter
+        # (équivalent du bucket SIM+DRY+LIVE pré-MD.3 — préserve les tests M4..M16).
+        if execution_mode is None and only_real is True:
+            execution_mode = "live"
         async with self._session_factory() as session:
             stmt = select(func.max(PnlSnapshot.total_usdc))
-            if only_real:
-                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            if execution_mode is not None:
+                stmt = stmt.where(PnlSnapshot.execution_mode == execution_mode)
             result = await session.execute(stmt)
             value = result.scalar_one_or_none()
             return float(value) if value is not None else None
 
-    async def get_latest(self, *, only_real: bool = True) -> PnlSnapshot | None:
-        """Retourne le snapshot le plus récent, ou ``None`` si vide."""
+    async def get_latest(
+        self,
+        *,
+        only_real: bool | None = None,
+        execution_mode: Literal["simulation", "dry_run", "live"] | None = None,
+    ) -> PnlSnapshot | None:
+        """Retourne le snapshot le plus récent, ou ``None`` si vide.
+
+        M17 MD.3 : ``execution_mode`` strict prime sur ``only_real``.
+        """
+        if execution_mode is None and only_real is True:
+            execution_mode = "live"
         async with self._session_factory() as session:
             stmt = select(PnlSnapshot).order_by(PnlSnapshot.timestamp.desc()).limit(1)
-            if only_real:
-                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            if execution_mode is not None:
+                stmt = stmt.where(PnlSnapshot.execution_mode == execution_mode)
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
@@ -1001,13 +1031,19 @@ class PnlSnapshotRepository:
         self,
         since: datetime,
         *,
-        only_real: bool = True,
+        only_real: bool | None = None,
+        execution_mode: Literal["simulation", "dry_run", "live"] | None = None,
     ) -> list[PnlSnapshot]:
-        """Retourne les snapshots depuis ``since`` (timestamp ascendant)."""
+        """Retourne les snapshots depuis ``since`` (timestamp ascendant).
+
+        M17 MD.3 : ``execution_mode`` strict prime sur ``only_real``.
+        """
+        if execution_mode is None and only_real is True:
+            execution_mode = "live"
         async with self._session_factory() as session:
             stmt = select(PnlSnapshot).where(PnlSnapshot.timestamp >= since)
-            if only_real:
-                stmt = stmt.where(PnlSnapshot.is_dry_run.is_(False))
+            if execution_mode is not None:
+                stmt = stmt.where(PnlSnapshot.execution_mode == execution_mode)
             stmt = stmt.order_by(PnlSnapshot.timestamp.asc())
             result = await session.execute(stmt)
             return list(result.scalars().all())

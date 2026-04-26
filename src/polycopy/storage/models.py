@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -283,7 +285,12 @@ class MyPosition(Base):
 
 
 class PnlSnapshot(Base):
-    """Snapshot PnL périodique écrit par le ``PnlSnapshotWriter`` (M4)."""
+    """Snapshot PnL périodique écrit par le ``PnlSnapshotWriter`` (M4).
+
+    M17 MD.3 : ``execution_mode`` ajouté pour ségréger les baselines
+    drawdown par mode (audit C-003). ``is_dry_run`` conservé 1 version
+    pour rétrocompat tests M4..M16 (drop programmé M18+).
+    """
 
     __tablename__ = "pnl_snapshots"
 
@@ -300,7 +307,23 @@ class PnlSnapshot(Base):
     drawdown_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     open_positions_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cash_pnl_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # [DEPRECATED M17] conservé 1 version pour rétrocompat. Drop M18+.
     is_dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # M17 MD.3 : tri-state baseline par mode. Default ``"live"`` cohérent
+    # avec le default M3 (avant M10). Backfill 0010 dérive depuis is_dry_run.
+    execution_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="live",
+        server_default=text("'live'"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "execution_mode IN ('simulation', 'dry_run', 'live')",
+            name="ck_pnl_snapshots_execution_mode",
+        ),
+    )
 
 
 class TradeLatencySample(Base):
@@ -374,7 +397,13 @@ class TraderEvent(Base):
     __tablename__ = "trader_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    wallet_address: Mapped[str] = mapped_column(String(42), index=True, nullable=False)
+    # M17 MD.7 : nullable=True autorise les events système (kill_switch)
+    # qui ne sont pas attachés à un wallet spécifique. Migration 0010.
+    wallet_address: Mapped[str | None] = mapped_column(
+        String(42),
+        index=True,
+        nullable=True,
+    )
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -96,14 +96,14 @@ class PnlSnapshotWriter:
             return
         total = state.total_position_value_usd + state.available_capital_usd
 
-        # Le drawdown all-time-high est calculé sur la même "bucket" (real vs
-        # simulé) pour éviter de mélanger des stubs et des vraies valeurs.
-        # M10 : la colonne DB `is_dry_run` reste binaire (agrège SIM+DRY_RUN).
-        only_real = self._settings.execution_mode == "live"
-        max_ever = await self._repo.get_max_total_usdc(only_real=only_real)
+        # M17 MD.3 : ségrégation stricte par mode (plus de pollution
+        # cross-mode SIM/DRY/LIVE — audit C-003). Le drawdown se calcule
+        # contre le max historique du **même** mode uniquement.
+        mode = self._settings.execution_mode
+        max_ever = await self._repo.get_max_total_usdc(execution_mode=mode)
         drawdown_pct = self._compute_drawdown_pct(max_ever, total)
 
-        is_simulated = self._settings.execution_mode != "live"
+        is_simulated = mode != "live"
         # M17 MD.6 : peuple realized + unrealized avec les vraies valeurs (au
         # lieu de 0.0 hardcodé — audit H-002). `unrealized = total - initial -
         # realized_cumulative` cohérent avec la formule `/home` PnL latent
@@ -126,6 +126,7 @@ class PnlSnapshotWriter:
             open_positions_count=state.open_positions_count,
             cash_pnl_total=None,
             is_dry_run=is_simulated,
+            execution_mode=mode,
         )
         await self._repo.insert(dto)
         log.info(
@@ -133,7 +134,7 @@ class PnlSnapshotWriter:
             total_usdc=total,
             drawdown_pct=drawdown_pct,
             open_positions_count=state.open_positions_count,
-            mode=self._settings.execution_mode,
+            mode=mode,
             is_dry_run=is_simulated,
         )
         await self._maybe_trigger_alerts(total, drawdown_pct, stop_event)

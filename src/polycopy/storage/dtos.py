@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DetectedTradeDTO(BaseModel):
@@ -55,7 +55,13 @@ class StrategyDecisionDTO(BaseModel):
 
 
 class PnlSnapshotDTO(BaseModel):
-    """Snapshot PnL prêt pour insertion en base. Écrit par le ``PnlSnapshotWriter`` (M4)."""
+    """Snapshot PnL prêt pour insertion en base. Écrit par le ``PnlSnapshotWriter`` (M4).
+
+    M17 MD.3 : ``execution_mode`` ajouté (tri-state SIM/DRY/LIVE).
+    Si non fourni explicitement, dérive de ``is_dry_run`` (rétrocompat 1
+    version : ``True → "dry_run"``, ``False → "live"``). Drop ``is_dry_run``
+    programmé M18+.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -66,6 +72,23 @@ class PnlSnapshotDTO(BaseModel):
     open_positions_count: int
     cash_pnl_total: float | None
     is_dry_run: bool
+    execution_mode: Literal["simulation", "dry_run", "live"] | None = None
+
+    @model_validator(mode="after")
+    def _derive_execution_mode(self) -> "PnlSnapshotDTO":
+        """M17 MD.3 — dérive ``execution_mode`` depuis ``is_dry_run`` si non set.
+
+        Rétrocompat lecture pour les outils externes (tests M4..M16,
+        scripts ad-hoc) qui passent uniquement ``is_dry_run``. Drop
+        programmé M18+ — le DTO post-drop exigera ``execution_mode`` set.
+        """
+        if self.execution_mode is None:
+            object.__setattr__(
+                self,
+                "execution_mode",
+                "dry_run" if self.is_dry_run else "live",
+            )
+        return self
 
 
 class MyOrderDTO(BaseModel):
