@@ -20,11 +20,11 @@
 >
 > Ce code est un prototype personnel. Aucune garantie sur le fonctionnement, la sécurité, la rentabilité ni la conformité juridique. Les bugs peuvent coûter du capital réel. **Reste en `EXECUTION_MODE=dry_run` tant que tu n'as pas lu et compris l'intégralité du code et de la documentation.**
 >
-> Depuis **M10**, le dry-run est un **miroir fidèle** du live : kill switch actif, alertes Telegram identiques (seul un badge visuel distingue 🟢 `DRY-RUN` de 🔴 `LIVE`), snapshots PnL persistés. Seule la signature CLOB (POST ordre réel) est désactivée. Lis l'[Avertissement](#avertissement) avant tout usage.
+> Lis l'[Avertissement](#avertissement) avant tout usage.
 
 ---
 
-Documentation complète et claire disponible dès que le developpement sera terminé.
+### **Documentation complète et claire disponible dès que le developpement sera terminé.**
 
 ---
 
