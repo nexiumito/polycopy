@@ -36,6 +36,7 @@ from polycopy.monitoring.pnl_writer import PnlSnapshotWriter
 from polycopy.monitoring.startup_notifier import StartupNotifier
 from polycopy.monitoring.telegram_client import TelegramClient
 from polycopy.remote_control.sentinel import SentinelFile
+from polycopy.storage.repositories import TraderEventRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -120,12 +121,16 @@ class MonitoringOrchestrator:
             # PnlSnapshotWriter touche halt.flag avant stop_event.set() sur
             # kill switch pour que le respawn superviseur retombe en paused.
             sentinel = SentinelFile(self._settings.remote_control_sentinel_path)
+            # M17 MD.7 : kill switch écrit un TraderEvent system-level
+            # AVANT push_alert AVANT touch_sentinel AVANT stop_event.set().
+            events_repo = TraderEventRepository(self._session_factory)
             writer = PnlSnapshotWriter(
                 self._session_factory,
                 self._settings,
                 wallet_reader,
                 self._alerts,
                 sentinel=sentinel,
+                events_repo=events_repo,
             )
             log.info(
                 "monitoring_started",

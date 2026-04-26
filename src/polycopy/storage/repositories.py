@@ -1137,9 +1137,13 @@ class TraderEventRepository:
         self._session_factory = session_factory
 
     async def insert(self, dto: TraderEventDTO) -> TraderEvent:
-        """Persiste un événement (non effacé même après demote/remove)."""
+        """Persiste un événement (non effacé même après demote/remove).
+
+        M17 MD.7 : ``wallet_address=None`` autorisé pour les events système
+        (``kill_switch``). Le ``.lower()`` est protégé par ``None``-safe.
+        """
         record = TraderEvent(
-            wallet_address=dto.wallet_address.lower(),
+            wallet_address=(dto.wallet_address.lower() if dto.wallet_address is not None else None),
             event_type=dto.event_type,
             from_status=dto.from_status,
             to_status=dto.to_status,

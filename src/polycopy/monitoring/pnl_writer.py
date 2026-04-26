@@ -22,8 +22,12 @@ from polycopy.executor.exceptions import MidpointUnavailableError
 from polycopy.executor.virtual_wallet_reader import VirtualWalletStateReader
 from polycopy.executor.wallet_state_reader import WalletStateReader
 from polycopy.monitoring.dtos import Alert
-from polycopy.storage.dtos import PnlSnapshotDTO
-from polycopy.storage.repositories import MyPositionRepository, PnlSnapshotRepository
+from polycopy.storage.dtos import PnlSnapshotDTO, TraderEventDTO
+from polycopy.storage.repositories import (
+    MyPositionRepository,
+    PnlSnapshotRepository,
+    TraderEventRepository,
+)
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -46,6 +50,7 @@ class PnlSnapshotWriter:
         alerts_queue: asyncio.Queue[Alert],
         *,
         sentinel: SentinelFile | None = None,
+        events_repo: TraderEventRepository | None = None,
     ) -> None:
         self._repo = PnlSnapshotRepository(session_factory)
         # M17 MD.6 : agrège `MyPosition.realized_pnl` par mode pour peupler
@@ -58,6 +63,11 @@ class PnlSnapshotWriter:
         # `stop_event.set()` sur kill switch. Optionnel pour compat
         # ascendante + tests unitaires qui n'ont pas de filesystem.
         self._sentinel: SentinelFile | None = sentinel
+        # M17 MD.7 : si injecté, le kill switch écrit un TraderEvent
+        # `kill_switch` (system-level, wallet_address=None) AVANT push_alert
+        # AVANT touch sentinel AVANT stop_event.set() — ordre strict.
+        # Optionnel pour compat ascendante + tests existants M4..M16.
+        self._events_repo: TraderEventRepository | None = events_repo
 
     async def run(self, stop_event: asyncio.Event) -> None:
         """Boucle principale : snapshot → kill-switch check → sleep."""
@@ -137,12 +147,13 @@ class PnlSnapshotWriter:
             mode=mode,
             is_dry_run=is_simulated,
         )
-        await self._maybe_trigger_alerts(total, drawdown_pct, stop_event)
+        await self._maybe_trigger_alerts(total, drawdown_pct, max_ever, stop_event)
 
     async def _maybe_trigger_alerts(
         self,
         total: float,
         drawdown_pct: float,
+        max_ever: float | None,
         stop_event: asyncio.Event,
     ) -> None:
         """Kill switch + drawdown warning — **identique dans les 3 modes** (M10).
@@ -152,6 +163,13 @@ class PnlSnapshotWriter:
         Telegram distingue les modes (injecté par ``AlertRenderer``). En
         SIMULATION, ``stop_event`` est local au backtest (réduit la simulation
         en cours), pas global — la sémantique "stop" reste portée par le caller.
+
+        M17 MD.7 : ordre strict côté kill switch :
+            1. ``insert_event(kill_switch)``  — audit trail DB (best-effort)
+            2. ``push_alert(CRITICAL)``       — Telegram queue (non-bloquant)
+            3. ``touch sentinel``             — respawn superviseur paused
+            4. ``stop_event.set()``           — **strictement la dernière étape**
+        Cf. CLAUDE.md §Sécurité M12_bis Phase D.
         """
         threshold = self._settings.kill_switch_drawdown_pct
         mode = self._settings.execution_mode
@@ -163,6 +181,31 @@ class PnlSnapshotWriter:
                 threshold=threshold,
                 total_usdc=total,
             )
+            # M17 MD.7 (étape 1) : audit trail AVANT alerte/sentinel/stop.
+            # Try/except large — si la DB est lockée le kill switch fire
+            # quand même (Telegram + sentinel + stop_event restent).
+            if self._events_repo is not None:
+                try:
+                    await self._events_repo.insert(
+                        TraderEventDTO(
+                            wallet_address=None,
+                            event_type="kill_switch",
+                            event_metadata={
+                                "drawdown_pct": drawdown_pct,
+                                "total_usdc": total,
+                                "max_total_usdc": max_ever,
+                                "execution_mode": mode,
+                                "threshold": threshold,
+                            },
+                        ),
+                    )
+                    log.info("kill_switch_event_recorded")
+                except Exception:
+                    log.exception("kill_switch_event_insert_failed")
+            else:
+                log.warning("kill_switch_event_repo_missing")
+
+            # M17 MD.7 (étape 2) : alerte Telegram (push non-bloquant).
             self._push_alert(
                 Alert(
                     level="CRITICAL",
@@ -175,13 +218,14 @@ class PnlSnapshotWriter:
                     cooldown_key="kill_switch",
                 ),
             )
-            # M12_bis Phase D §4.6 : touch sentinel AVANT stop_event.set().
-            # Ordre critique — si crash entre les deux (kill -9), le respawn
-            # superviseur trouvera le sentinel posé → mode paused correct.
-            # Inverse (stop_event set avant touch) = mode normal au respawn
-            # malgré un drawdown = unsafe.
+            # M12_bis Phase D §4.6 (étape 3) : touch sentinel AVANT
+            # stop_event.set(). Ordre critique — si crash entre les deux
+            # (kill -9), le respawn superviseur trouvera le sentinel posé
+            # → mode paused correct. Inverse (stop_event set avant touch) =
+            # mode normal au respawn malgré un drawdown = unsafe.
             if self._sentinel is not None:
                 self._sentinel.touch(reason="kill_switch")
+            # M12_bis Phase D (étape 4) : stop_event.set() = dernière étape.
             stop_event.set()
             return
         warning_threshold = _DRAWDOWN_WARNING_RATIO * threshold

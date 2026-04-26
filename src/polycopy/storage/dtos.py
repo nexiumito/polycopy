@@ -172,6 +172,8 @@ TraderEventType = Literal[
     "probation_released",
     # M15 MB.8 — auto-blacklist sur seuil PnL ou WR observé.
     "auto_blacklisted",
+    # M17 MD.7 — kill switch (system-level, wallet_address=None).
+    "kill_switch",
 ]
 
 
@@ -189,11 +191,17 @@ class TraderScoreDTO(BaseModel):
 
 
 class TraderEventDTO(BaseModel):
-    """DTO append pour `TraderEventRepository.insert` (audit trail discovery)."""
+    """DTO append pour `TraderEventRepository.insert` (audit trail discovery).
+
+    M17 MD.7 : ``wallet_address`` devient ``str | None``. Default ``None``
+    réservé aux events système (``event_type="kill_switch"``) qui ne sont
+    pas attachés à un wallet spécifique. Migration 0010 relâche la
+    contrainte DB en parallèle.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    wallet_address: str
+    wallet_address: str | None = None
     event_type: TraderEventType
     from_status: str | None = None
     to_status: str | None = None
