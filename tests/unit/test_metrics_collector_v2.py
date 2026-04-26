@@ -13,6 +13,7 @@ Couverture M14 :
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -85,10 +86,13 @@ def test_zombie_ratio_excludes_positions_opened_within_30d() -> None:
         initial_value=1000.0,
         current_value=600.0,
     )
-    assert _compute_zombie_ratio(
-        [recent_zombie, old_zombie, old_healthy],
-        now=now,
-    ) == 0.5
+    assert (
+        _compute_zombie_ratio(
+            [recent_zombie, old_zombie, old_healthy],
+            now=now,
+        )
+        == 0.5
+    )
 
 
 def test_zombie_ratio_fallback_inclusion_on_missing_opened_at() -> None:
@@ -201,13 +205,21 @@ def test_brier_symmetric_between_buy_yes_and_buy_no_at_equivalent_prob() -> None
     # les deux côtés (BUY YES + BUY NO) doivent donner exactement le même Brier.
     sym_yes = [
         _position(
-            asset="sym_y", avg_price=0.30, outcome_index=0, cash_pnl=1.0, redeemable=True,
+            asset="sym_y",
+            avg_price=0.30,
+            outcome_index=0,
+            cash_pnl=1.0,
+            redeemable=True,
         ),
     ] * 5
     sym_no_yes_won = [
         # BUY NO @ 0.70 → P(YES) = 0.30 ; YES gagne → cash_pnl < 0 (NO perd).
         _position(
-            asset="sym_n", avg_price=0.70, outcome_index=1, cash_pnl=-1.0, redeemable=True,
+            asset="sym_n",
+            avg_price=0.70,
+            outcome_index=1,
+            cash_pnl=-1.0,
+            redeemable=True,
         ),
     ] * 5
     sym_brier_yes = _compute_brier(sym_yes)
@@ -235,3 +247,203 @@ def test_brier_returns_none_on_insufficient_resolved() -> None:
         for i in range(3)
     ]
     assert _compute_brier(positions) is None
+
+
+# --- M15 MB.1 : _compute_internal_pnl_score sigmoid (4 tests §9.1) ----------
+
+
+def _build_collector_with_repo(
+    my_position_repo: Any,  # MyPositionRepository
+    *,
+    execution_mode: str = "dry_run",
+    min_positions: int = 10,
+    scale_usd: str = "10.0",
+):
+    """Helper : construit un MetricsCollectorV2 minimaliste pour tester
+    `_compute_internal_pnl_score` isolément. Tous les autres deps sont des
+    mocks AsyncMock car la méthode ne les touche pas."""
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock
+
+    from polycopy.config import Settings
+    from polycopy.discovery.metrics_collector_v2 import MetricsCollectorV2
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        execution_mode=execution_mode,
+        scoring_internal_min_positions=min_positions,
+        scoring_internal_pnl_scale_usd=Decimal(scale_usd),
+    )
+    return MetricsCollectorV2(
+        base_collector=MagicMock(),
+        daily_pnl_repo=AsyncMock(),
+        data_api=AsyncMock(),
+        category_resolver=AsyncMock(),
+        settings=settings,
+        my_positions_repo=my_position_repo,
+    )
+
+
+async def _seed_my_position_closed(
+    my_position_repo,
+    *,
+    source_wallet: str,
+    realized_pnl: float,
+    closed_at: datetime,
+    simulated: bool = True,
+    asset_id: str | None = None,
+    condition_id: str | None = None,
+) -> None:
+    """Insère une position closed avec ``realized_pnl`` + ``source_wallet_address``.
+
+    On passe par le repo public ``upsert_virtual`` pour BUY puis SELL afin de
+    cristalliser ``realized_pnl`` ; pour la précision des tests on insère une
+    position pré-fermée directement via session pour contrôler le timestamp.
+    """
+    from polycopy.storage.models import MyPosition
+
+    # Bypass repository : on contrôle exactement closed_at et realized_pnl.
+    async with my_position_repo._session_factory() as session:  # noqa: SLF001
+        position = MyPosition(
+            condition_id=condition_id or f"0xcond_{closed_at.timestamp():.0f}",
+            asset_id=asset_id or f"0xasset_{closed_at.timestamp():.0f}",
+            size=0.0,
+            avg_price=0.5,
+            simulated=simulated,
+            closed_at=closed_at,
+            realized_pnl=realized_pnl,
+            source_wallet_address=source_wallet.lower(),
+        )
+        session.add(position)
+        await session.commit()
+
+
+async def test_internal_pnl_score_sigmoid_bounds(
+    my_position_repo,
+) -> None:
+    """MB.1 §9.1 #1 — sigmoid borné, +$50 sur 12 positions → ~0.9933."""
+    from math import exp
+
+    wallet = "0xWALLET_PNL_HIGH"
+    now = datetime.now(tz=UTC)
+    # 12 positions closed avec réalisé total = +$50 sur 12 closed récentes.
+    per_position = 50.0 / 12.0
+    for i in range(12):
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=per_position,
+            closed_at=now - timedelta(days=i),
+            simulated=True,
+            asset_id=f"0xa{i}",
+            condition_id=f"0xc{i}",
+        )
+
+    collector = _build_collector_with_repo(my_position_repo, execution_mode="dry_run")
+    score = await collector._compute_internal_pnl_score(wallet)
+
+    assert score is not None
+    expected = 1.0 / (1.0 + exp(-5.0))  # 50/10 = 5 → sigmoid(5) ≈ 0.9933
+    assert score == pytest.approx(expected, abs=1e-6)
+
+
+async def test_internal_pnl_score_returns_none_under_min_positions(
+    my_position_repo,
+) -> None:
+    """MB.1 §9.1 #2 — count<10 → None (cold-start)."""
+    wallet = "0xWALLET_TOO_FEW"
+    now = datetime.now(tz=UTC)
+    for i in range(9):  # 1 sous le seuil 10
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=1.0,
+            closed_at=now - timedelta(days=i),
+            simulated=True,
+            asset_id=f"0xa{i}",
+            condition_id=f"0xc{i}",
+        )
+
+    collector = _build_collector_with_repo(my_position_repo, execution_mode="dry_run")
+    score = await collector._compute_internal_pnl_score(wallet)
+    assert score is None
+
+
+async def test_internal_pnl_score_dry_run_vs_live_mode_isolation(
+    my_position_repo,
+) -> None:
+    """MB.1 §9.1 #3 — ségrégation simulated selon execution_mode."""
+    wallet = "0xWALLET_MIXED_MODES"
+    now = datetime.now(tz=UTC)
+    # 12 positions simulated=True (dry-run) avec PnL +$24.
+    for i in range(12):
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=2.0,
+            closed_at=now - timedelta(days=i),
+            simulated=True,
+            asset_id=f"0xdry_a{i}",
+            condition_id=f"0xdry_c{i}",
+        )
+    # 12 positions simulated=False (live) avec PnL -$12.
+    for i in range(12):
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=-1.0,
+            closed_at=now - timedelta(days=i),
+            simulated=False,
+            asset_id=f"0xlive_a{i}",
+            condition_id=f"0xlive_c{i}",
+        )
+
+    score_dry = await _build_collector_with_repo(
+        my_position_repo, execution_mode="dry_run"
+    )._compute_internal_pnl_score(wallet)
+    score_live = await _build_collector_with_repo(
+        my_position_repo, execution_mode="live"
+    )._compute_internal_pnl_score(wallet)
+
+    assert score_dry is not None and score_live is not None
+    # dry_run lit simulated=True → +$24/10 = 2.4 → sigmoid(2.4) ≈ 0.917
+    # live    lit simulated=False → -$12/10 = -1.2 → sigmoid(-1.2) ≈ 0.231
+    assert score_dry > 0.5 > score_live  # filtre simulated correct
+
+
+async def test_internal_pnl_score_30d_window_correct(
+    my_position_repo,
+) -> None:
+    """MB.1 §9.1 #4 — fenêtre 30j filtre les anciennes positions.
+
+    13 closed total, mais 5 récentes (<30j) + 8 anciennes (>30j) → après
+    filtre 30j il reste 5 < 10 = seuil min → cold-start None.
+    """
+    wallet = "0xWALLET_WINDOW"
+    now = datetime.now(tz=UTC)
+    # 5 récentes (15j → in window)
+    for i in range(5):
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=2.0,
+            closed_at=now - timedelta(days=15),
+            simulated=True,
+            asset_id=f"0xrecent_a{i}",
+            condition_id=f"0xrecent_c{i}",
+        )
+    # 8 anciennes (45j → out of 30d window)
+    for i in range(8):
+        await _seed_my_position_closed(
+            my_position_repo,
+            source_wallet=wallet,
+            realized_pnl=2.0,
+            closed_at=now - timedelta(days=45),
+            simulated=True,
+            asset_id=f"0xold_a{i}",
+            condition_id=f"0xold_c{i}",
+        )
+
+    collector = _build_collector_with_repo(my_position_repo, execution_mode="dry_run")
+    score = await collector._compute_internal_pnl_score(wallet)
+    assert score is None  # 5 in window < 10 min

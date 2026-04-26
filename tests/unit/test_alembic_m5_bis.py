@@ -149,7 +149,10 @@ def test_upgrade_is_idempotent_second_run_noop(tmp_path: Path) -> None:
             rev = conn.execute(
                 text("SELECT version_num FROM alembic_version"),
             ).scalar_one()
-        assert rev == "0007_m5_bis_eviction"
+        # M15 MB.1 : migration head est désormais 0009 (M5_bis ne casse pas
+        # par cet upgrade — c'est un check de cohérence Alembic, pas un
+        # ancrage M5_bis-only).
+        assert rev == "0009_m15_anti_toxic_lifecycle"
     finally:
         engine.dispose()
 

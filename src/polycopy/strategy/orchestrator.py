@@ -190,6 +190,9 @@ class StrategyOrchestrator:
                 my_size=ctx.my_size,
                 my_price=ctx.midpoint,
                 trade_id=trade.trade_id,
+                # M15 MB.1 : propage le wallet source pour persistance MyPosition
+                # (alimente le collecteur internal_pnl côté discovery).
+                source_wallet_address=trade.target_wallet.lower(),
             )
             try:
                 self._out_queue.put_nowait(event)

@@ -724,13 +724,15 @@ class Settings(BaseSettings):
     # Discipline identique BLACKLISTED_WALLETS : CSV ou JSON array, lowercase.
     # Auto-detection wash cluster reportée M17+ (§14.6 spec M12).
     wash_cluster_wallets: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    scoring_version: Literal["v1", "v2.1"] = Field(
+    scoring_version: Literal["v1", "v2.1", "v2.1.1"] = Field(
         "v1",
         description=(
             "Version de la formule de scoring. Loggée + écrite avec chaque score "
             "pour reproductibilité (cf. §7.6 spec). M14 : v2 (M12) remplacé par "
-            "v2.1-ROBUST. v1 (M5) reste en fallback. Append-only versioning : "
-            "chaque row trader_scores porte sa version, jamais réécrite."
+            "v2.1-ROBUST. M15 : v2.1.1 ajoute le facteur internal_pnl (poids "
+            "0.25) avec branche cold-start fallback v2.1 weights. v1 (M5) reste "
+            "en fallback. Append-only versioning : chaque row trader_scores "
+            "porte sa version, jamais réécrite."
         ),
     )
     scoring_min_closed_markets: int = Field(
@@ -915,6 +917,113 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- M15 — anti-toxic lifecycle + internal PnL feedback ------------------
+    # MB.1 — collecteur internal_pnl (sigmoid 30j PnL réalisé par polycopy).
+    scoring_internal_min_positions: int = Field(
+        10,
+        ge=1,
+        le=200,
+        description=(
+            "Cold-start threshold du facteur internal_pnl (M15 MB.1). Si "
+            "count(closed positions copiées 30j) < seuil → score=None et "
+            "l'aggregator v2.1.1 fallback sur la branche cold-start (5 "
+            "facteurs renormalisés aux poids v2.1)."
+        ),
+    )
+    scoring_internal_pnl_scale_usd: Decimal = Field(
+        Decimal("10.0"),
+        ge=Decimal("0.10"),
+        le=Decimal("1000.0"),
+        description=(
+            "Scale factor du sigmoid internal_pnl (M15 MB.1). +$10/30j ↔ "
+            "score 0.73. Sur capital virtuel $1000 = 1% monthly = signal "
+            "raisonnable. Ajustable post-cutover si H-EMP-3 fail (cf. §14.10)."
+        ),
+    )
+    # MB.3 — garde-fou absolu (force-demote sous ce score même dans top-N).
+    scoring_absolute_hard_floor: float = Field(
+        0.30,
+        ge=0.0,
+        le=0.50,
+        description=(
+            "Garde-fou MB.3 : un wallet sous ce score force-demote même s'il "
+            "est dans le top-N (cas pathologique pool entièrement < 0.30). "
+            "Renommé pour clarté vs scoring_demotion_threshold (M5/M14) — "
+            "ranking-based prend le relais comme critère principal."
+        ),
+    )
+    # MB.6 — probation fractional-Kelly pour wallets [10, 50) trades.
+    probation_min_trades: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description=(
+            "M15 MB.6 — entry threshold probation. Wallets avec "
+            "trade_count_90d ≥ ce seuil ET < probation_full_trades sont "
+            "promotables en probation (sized 0.25× via PositionSizer)."
+        ),
+    )
+    probation_full_trades: int = Field(
+        50,
+        ge=10,
+        le=500,
+        description=(
+            "M15 MB.6 — release threshold. Quand trade_count_90d ≥ ce seuil "
+            "ET days_active ≥ probation_full_days, is_probation flip à False "
+            "(sizing redevient normal)."
+        ),
+    )
+    probation_min_days: int = Field(
+        7,
+        ge=1,
+        le=90,
+        description=(
+            "M15 MB.6 — entry day-active threshold (relaxé vs M14). Le gate "
+            "days_active standard ≥30 baisse à 7 pour les candidats probation."
+        ),
+    )
+    probation_full_days: int = Field(
+        30,
+        ge=1,
+        le=365,
+        description=("M15 MB.6 — release day-active threshold (= gate full M14)."),
+    )
+    probation_size_multiplier: Decimal = Field(
+        Decimal("0.25"),
+        ge=Decimal("0.05"),
+        le=Decimal("1.0"),
+        description=(
+            "M15 MB.6 — multiplicateur quarter-Kelly appliqué dans "
+            "PositionSizer._check_buy si is_source_probation=True. Default "
+            "0.25 = limite supérieure sûre (Frigo Kalshi AI bot drawdown >80% "
+            "above 0.25×). 1.0 = pas de protection (warning log au boot)."
+        ),
+    )
+    # MB.8 — auto-blacklist sur seuil PnL ou win-rate observé.
+    auto_blacklist_pnl_threshold_usd: Decimal = Field(
+        Decimal("-5.0"),
+        ge=Decimal("-1000.0"),
+        le=Decimal("0.0"),
+        description=(
+            "M15 MB.8 — seuil PnL cumulatif observé sur 30j. Si "
+            "cumulative_observed_pnl < seuil → auto-blacklist (status DB → "
+            "'blacklisted', alerte Telegram). Discipline réversible : "
+            "reconcile_blacklist re-shadow le wallet au cycle suivant si "
+            "absent de BLACKLISTED_WALLETS env. Default -$5 sur capital "
+            "virtuel $1000 = -0.5%."
+        ),
+    )
+    auto_blacklist_min_positions_for_wr: int = Field(
+        30,
+        ge=10,
+        le=200,
+        description=(
+            "M15 MB.8 — plancher de positions copiées closed avant que le "
+            "critère win-rate < 25% puisse déclencher. Évite les fausses "
+            "alertes sur petits échantillons."
+        ),
+    )
+
     @field_validator("blacklisted_wallets", mode="before")
     @classmethod
     def _parse_blacklisted_wallets(cls, v: object) -> object:
@@ -1057,6 +1166,36 @@ class Settings(BaseSettings):
                 "SCORING_DEMOTION_THRESHOLD "
                 f"({self.scoring_demotion_threshold}) must be strictly less than "
                 f"SCORING_PROMOTION_THRESHOLD ({self.scoring_promotion_threshold}).",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_m15_anti_toxic_lifecycle(self) -> "Settings":
+        """Cross-field M15 : cohérence des seuils probation + auto-blacklist.
+
+        - ``probation_min_trades < probation_full_trades`` strict (sinon le
+          gate full ne peut jamais être atteint depuis l'entrée probation).
+        - ``probation_min_days < probation_full_days`` strict (même logique).
+        - ``auto_blacklist_pnl_threshold_usd <= 0`` (déjà borné par Field,
+          assertion défensive — un seuil positif n'a aucun sens).
+        """
+        if self.probation_min_trades >= self.probation_full_trades:
+            raise ValueError(
+                "PROBATION_MIN_TRADES "
+                f"({self.probation_min_trades}) must be strictly less than "
+                f"PROBATION_FULL_TRADES ({self.probation_full_trades}).",
+            )
+        if self.probation_min_days >= self.probation_full_days:
+            raise ValueError(
+                "PROBATION_MIN_DAYS "
+                f"({self.probation_min_days}) must be strictly less than "
+                f"PROBATION_FULL_DAYS ({self.probation_full_days}).",
+            )
+        if self.auto_blacklist_pnl_threshold_usd > 0:
+            raise ValueError(
+                "AUTO_BLACKLIST_PNL_THRESHOLD_USD "
+                f"({self.auto_blacklist_pnl_threshold_usd}) must be ≤ 0 "
+                "(seuil de PnL négatif déclenchant la blacklist).",
             )
         return self
 

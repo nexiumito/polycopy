@@ -122,6 +122,17 @@ class TargetTrader(Base):
         String(42),
         nullable=True,
     )
+    # M15 MB.6 : True ⟺ wallet copié à 0.25× sizing jusqu'à passage du
+    # gate full (`trade_count_90d >= 50 AND days_active >= 30`). Auto-
+    # release dans `_maybe_release_probation`. Pas mutuellement exclusif
+    # avec pinned (un wallet pinned est jamais en probation par design,
+    # mais le code ne contraint pas).
+    is_probation: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+    )
 
 
 class DetectedTrade(Base):
@@ -243,6 +254,14 @@ class MyPosition(Base):
     # (`size * (winning ? 1 - avg_price : -avg_price)`). NULL si position
     # ouverte ou si position réelle (calculé hors snapshot).
     realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # M15 MB.1 : wallet polymarket source qui a déclenché la copie. Default
+    # NULL pour les rows historiques M3..M14. Le collecteur internal_pnl
+    # filtre `source_wallet_address = :wallet` — les rows None sont ignorés
+    # (acceptable cold-start, pas de backfill v1).
+    source_wallet_address: Mapped[str | None] = mapped_column(
+        String(42),
+        nullable=True,
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -252,6 +271,14 @@ class MyPosition(Base):
             name="uq_my_positions_condition_asset_simulated",
         ),
         Index("ix_my_positions_simulated_open", "simulated", "closed_at"),
+        # M15 MB.1 : index composite pour le collecteur internal_pnl
+        # (1 query SQL/wallet/cycle).
+        Index(
+            "ix_my_positions_source_wallet_closed",
+            "source_wallet_address",
+            "closed_at",
+            "simulated",
+        ),
     )
 
 

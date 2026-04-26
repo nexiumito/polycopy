@@ -56,6 +56,7 @@ from polycopy.monitoring.dtos import Alert
 from polycopy.storage.dtos import TraderEventDTO, TraderScoreDTO
 from polycopy.storage.models import TraderScore
 from polycopy.storage.repositories import (
+    MyPositionRepository,
     TargetTraderRepository,
     TraderDailyPnlRepository,
     TraderEventRepository,
@@ -134,6 +135,9 @@ class DiscoveryOrchestrator:
             score_repo = TraderScoreRepository(self._sf)
             event_repo = TraderEventRepository(self._sf)
             daily_pnl_repo = TraderDailyPnlRepository(self._sf)
+            # M15 MB.1 : repo MyPosition pour le collecteur internal_pnl
+            # (lecture seule sur my_positions.realized_pnl).
+            my_positions_repo = MyPositionRepository(self._sf)
             decision_engine = DecisionEngine(target_repo, cfg, self._alerts)
 
             # M5_bis Phase C : EvictionScheduler opt-in strict.
@@ -169,6 +173,8 @@ class DiscoveryOrchestrator:
                 data_api=data_api,
                 category_resolver=category_resolver,
                 settings=cfg,
+                # M15 MB.1 : alimente _compute_internal_pnl_score.
+                my_positions_repo=my_positions_repo,
             )
             daily_pnl_writer = TraderDailyPnlWriter(
                 data_api=data_api,
@@ -636,11 +642,11 @@ class DiscoveryOrchestrator:
         # Phase 1 : matérialiser la liste de metrics + collecter les brier raw
         # pour calculer la baseline pool finale.
         metrics_list: list[TraderMetricsV2] = [
-            m for m in metrics_iter if isinstance(m, TraderMetricsV2)  # type: ignore[attr-defined]
+            m
+            for m in metrics_iter
+            if isinstance(m, TraderMetricsV2)  # type: ignore[attr-defined]
         ]
-        brier_values = [
-            float(m.brier_90d) for m in metrics_list if m.brier_90d is not None
-        ]
+        brier_values = [float(m.brier_90d) for m in metrics_list if m.brier_90d is not None]
         if brier_values:
             brier_baseline_pool = sum(brier_values) / len(brier_values)
             # M14 MA.4 floor : pool trop homogène (baseline < 0.10) → fallback

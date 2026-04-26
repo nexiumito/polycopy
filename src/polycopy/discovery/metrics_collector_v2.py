@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
+from math import exp
 from statistics import mean, pstdev
 from typing import TYPE_CHECKING, Any
 
@@ -39,7 +40,10 @@ if TYPE_CHECKING:
     from polycopy.discovery.metrics_collector import MetricsCollector
     from polycopy.discovery.scoring.v2.category_resolver import MarketCategoryResolver
     from polycopy.storage.models import TraderDailyPnl
-    from polycopy.storage.repositories import TraderDailyPnlRepository
+    from polycopy.storage.repositories import (
+        MyPositionRepository,
+        TraderDailyPnlRepository,
+    )
 
 
 log = structlog.get_logger(__name__)
@@ -60,6 +64,12 @@ _BRIER_MIN_RESOLVED: int = 5
 # Calcul "jour actif" : on considère actif tout jour avec ≥ 1 trade dans
 # /activity. days_active = nombre de jours distincts observés.
 
+# M15 MB.1 — fenêtre internal_pnl (30 jours roulants).
+_INTERNAL_PNL_WINDOW_DAYS: int = 30
+# M15 MB.1 — clip flottant avant `exp(-x)` pour éviter overflow (sigmoid sature
+# de toute façon au-delà de ±50).
+_SIGMOID_INPUT_CLIP: float = 50.0
+
 
 class MetricsCollectorV2:
     """Étend :class:`MetricsCollector` M5 avec les 12 mesures v2.
@@ -68,6 +78,11 @@ class MetricsCollectorV2:
     identiques (win_rate, ROI, HHI markets, volume). Ajoute en propre les
     12 mesures v2 (Sortino / Calmar / Brier / timing / HHI catégories /
     consistency / discipline + 3 gates).
+
+    M15 MB.1 : ajoute ``_compute_internal_pnl_score`` (sigmoid sur PnL réalisé
+    par polycopy depuis qu'il copie le wallet) — alimente le facteur
+    ``internal_pnl`` de v2.1.1. Lecture seule sur ``my_positions`` via
+    ``MyPositionRepository.sum_realized_pnl_by_source_wallet``.
     """
 
     def __init__(
@@ -77,12 +92,16 @@ class MetricsCollectorV2:
         data_api: DiscoveryDataApiClient,
         category_resolver: MarketCategoryResolver,
         settings: Settings,
+        my_positions_repo: MyPositionRepository | None = None,
     ) -> None:
         self._base = base_collector
         self._daily_pnl_repo = daily_pnl_repo
         self._data_api = data_api
         self._category_resolver = category_resolver
         self._settings = settings
+        # M15 MB.1 : optional pour backward-compat tests M12/M14 (le collecteur
+        # internal_pnl retourne None si le repo n'est pas injecté).
+        self._my_positions_repo = my_positions_repo
 
     async def collect(self, wallet_address: str) -> TraderMetricsV2:
         """Agrège l'ensemble des metrics v2 pour 1 wallet."""
@@ -129,6 +148,9 @@ class MetricsCollectorV2:
             )
         hhi_categories = _compute_hhi_categories(activity, cid_to_cat)
 
+        # M15 MB.1 : internal_pnl_score (sigmoid sur PnL réalisé par polycopy).
+        internal_pnl_score = await self._compute_internal_pnl_score(wallet_address)
+
         return TraderMetricsV2(
             base=base_metrics,
             sortino_90d=sortino,
@@ -144,7 +166,65 @@ class MetricsCollectorV2:
             trade_count_90d=trade_count_90d,
             days_active=days_active,
             monthly_equity_curve=equity_curve,
+            internal_pnl_score=internal_pnl_score,
         )
+
+    async def _compute_internal_pnl_score(self, wallet_address: str) -> float | None:
+        """Score sigmoid sur la PnL réalisée par polycopy depuis qu'il copie
+        ``wallet_address`` (M15 MB.1).
+
+        Source de vérité : ``my_positions.realized_pnl`` cristallisé par M13
+        Bug 5 (SELL copié) ou M8 v2 neg_risk resolution. Le scope du sigmoid
+        est paramétré par ``SCORING_INTERNAL_PNL_SCALE_USD`` (default 10.0 —
+        soit +$10/30j ↔ score 0.73).
+
+        Filtre ``simulated`` selon ``execution_mode`` (cf. décision D8 spec
+        M15 §14.1) :
+
+        - ``live`` : ``simulated=False`` strict (prod copy data).
+        - ``dry_run`` : ``simulated=True`` strict (virtual copy data).
+        - ``simulation`` : ``simulated=True`` (offline backtest, équivalent
+          dry-run sémantiquement).
+
+        Cold-start : si ``count < SCORING_INTERNAL_MIN_POSITIONS=10`` →
+        retourne ``None``. L'aggregator (MB.2) traite ce cas via la branche
+        cold-start (renormalize aux poids v2.1 sur 5 facteurs).
+
+        Pure async — 1 query SQL, pas de réseau, pas de side-effect DB.
+        Backward-compat : retourne ``None`` si ``my_positions_repo`` n'est
+        pas injecté (tests M12/M14 historiques).
+        """
+        if self._my_positions_repo is None:
+            return None
+
+        cutoff = datetime.now(tz=UTC) - timedelta(days=_INTERNAL_PNL_WINDOW_DAYS)
+        simulated_flag = self._settings.execution_mode != "live"
+
+        try:
+            pnl_sum, count = await self._my_positions_repo.sum_realized_pnl_by_source_wallet(
+                wallet_address=wallet_address.lower(),
+                since=cutoff,
+                simulated=simulated_flag,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive: don't break scoring
+            log.warning(
+                "internal_pnl_repository_error",
+                wallet=wallet_address,
+                error=str(exc),
+            )
+            return None
+
+        if count < self._settings.scoring_internal_min_positions:
+            return None
+
+        scale_usd = float(self._settings.scoring_internal_pnl_scale_usd)
+        if scale_usd <= 0.0:  # défense en profondeur (Field bound déjà ≥0.10)
+            scale_usd = 10.0
+        x = float(pnl_sum) / scale_usd
+        # sigmoid(x) = 1 / (1 + exp(-x)). Clip avant exp() pour éviter
+        # overflow flottant (sature de toute façon au-delà de ±50).
+        x_clipped = max(-_SIGMOID_INPUT_CLIP, min(_SIGMOID_INPUT_CLIP, x))
+        return 1.0 / (1.0 + exp(-x_clipped))
 
 
 # --- Helpers purs (réutilisés par les factors sur l'equity curve) -------------

@@ -184,11 +184,17 @@ class TargetTraderRepository:
         *,
         label: str | None = None,
         discovered_at: datetime | None = None,
+        is_probation: bool = False,
     ) -> TargetTrader:
         """Insère un wallet auto-découvert en ``status='shadow'`` (observation M5).
 
         ``active=False`` — le watcher ne le pollera pas jusqu'à la promotion.
         ``pinned=False`` — M5 peut promote/demote librement.
+
+        M15 MB.6 : ``is_probation`` (default ``False``) — un candidat avec
+        ``10 ≤ trade_count_90d < 50`` qui passe les autres gates est
+        ``is_probation=True`` à l'insertion shadow ; le sizing 0.25× kick in
+        post-promotion via ``PositionSizer``.
         """
         wallet_lower = wallet_address.lower()
         async with self._session_factory() as session:
@@ -203,6 +209,7 @@ class TargetTraderRepository:
                 status="shadow",
                 pinned=False,
                 discovered_at=discovered_at or datetime.now(tz=UTC),
+                is_probation=is_probation,
             )
             session.add(trader)
             await session.commit()
@@ -374,6 +381,60 @@ class TargetTraderRepository:
                 return
             trader.consecutive_low_score_cycles = 0
             await session.commit()
+
+    # --- M15 MB.6 + MB.3 : probation flag + ranking-based active scores ----
+
+    async def set_probation(self, wallet_address: str, *, on: bool) -> None:
+        """Pose ou retire le flag ``is_probation`` (M15 MB.6).
+
+        Quand ``True`` : ``PositionSizer`` multiplie ``my_size`` par
+        ``probation_size_multiplier`` (default 0.25). Auto-release dans
+        ``_maybe_release_probation`` du ``DecisionEngine`` quand le wallet
+        passe le gate full ``trade_count_90d >= 50 AND days_active >= 30``.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader).where(TargetTrader.wallet_address == wallet_lower)
+            trader = (await session.execute(stmt)).scalar_one_or_none()
+            if trader is None:
+                return
+            trader.is_probation = on
+            await session.commit()
+
+    async def list_probation_flags(self, wallets: set[str]) -> dict[str, bool]:
+        """Batch lookup ``{wallet_lower: is_probation}`` pour le watcher (M15 MB.6).
+
+        Utilisé par ``WalletPoller._enrich_with_probation_flags`` pour
+        propager le flag dans ``DetectedTradeDTO`` sans N+1 query côté
+        pipeline (1 query batch par cycle).
+        """
+        if not wallets:
+            return {}
+        wallets_lc = {w.lower() for w in wallets}
+        async with self._session_factory() as session:
+            stmt = select(
+                TargetTrader.wallet_address,
+                TargetTrader.is_probation,
+            ).where(TargetTrader.wallet_address.in_(wallets_lc))
+            rows = (await session.execute(stmt)).all()
+        return {row[0]: bool(row[1]) for row in rows}
+
+    async def list_active_scores(self) -> list[tuple[str, float]]:
+        """Liste ``(wallet_lower, score)`` pour les wallets ``status='active'``
+        (M15 MB.3).
+
+        Source : ``TargetTrader.score`` (overwrite par cycle scoring,
+        cohérent avec le snapshot M5/M14 ``last_scored_at``). Les wallets
+        sans score (jamais scorés) sont **exclus** — un nouveau active
+        n'entre dans le ranking qu'à partir du 1er cycle scoring.
+        """
+        async with self._session_factory() as session:
+            stmt = select(TargetTrader.wallet_address, TargetTrader.score).where(
+                TargetTrader.status == "active",
+                TargetTrader.score.is_not(None),
+            )
+            rows = (await session.execute(stmt)).all()
+        return [(row[0], float(row[1])) for row in rows]
 
 
 class DetectedTradeRepository:
@@ -586,6 +647,7 @@ class MyPositionRepository:
         side: Literal["BUY", "SELL"],
         size_filled: float,
         fill_price: float,
+        source_wallet_address: str | None = None,
     ) -> MyPosition:
         """Met à jour la position **réelle** après un fill CLOB.
 
@@ -594,6 +656,11 @@ class MyPositionRepository:
 
         M8 : filtre ``simulated=False`` pour ne jamais toucher une position
         virtuelle depuis le path live.
+
+        M15 MB.1 : ``source_wallet_address`` (optionnel, lower-cased) persisté
+        à la **création** uniquement — un BUY incrémentale sur position
+        existante n'écrase pas ``source_wallet_address`` (contrat append-only :
+        une position appartient au wallet qui l'a ouverte).
         """
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
@@ -615,6 +682,9 @@ class MyPositionRepository:
                     size=size_filled,
                     avg_price=fill_price,
                     simulated=False,
+                    source_wallet_address=(
+                        source_wallet_address.lower() if source_wallet_address is not None else None
+                    ),
                 )
                 session.add(position)
                 await session.commit()
@@ -669,6 +739,7 @@ class MyPositionRepository:
         side: Literal["BUY", "SELL"],
         size_filled: float,
         fill_price: float,
+        source_wallet_address: str | None = None,
     ) -> MyPosition | None:
         """Upsert d'une position **virtuelle** sur (condition_id, asset_id).
 
@@ -676,6 +747,9 @@ class MyPositionRepository:
         SELL : décrémente une position virtuelle existante (close si ≤ 0). Si
         aucune position virtuelle ouverte n'existe → retourne ``None`` et
         l'appelant log un warning (v1 M8 : skip + warning, pas de crash).
+
+        M15 MB.1 : ``source_wallet_address`` (optionnel, lower-cased) persisté
+        à la **création** uniquement — cohérent avec ``upsert_on_fill``.
         """
         async with self._session_factory() as session:
             stmt = select(MyPosition).where(
@@ -694,6 +768,9 @@ class MyPositionRepository:
                     size=size_filled,
                     avg_price=fill_price,
                     simulated=True,
+                    source_wallet_address=(
+                        source_wallet_address.lower() if source_wallet_address is not None else None
+                    ),
                 )
                 session.add(position)
                 await session.commit()
@@ -781,6 +858,81 @@ class MyPositionRepository:
             result = await session.execute(stmt)
             value = result.scalar_one()
             return float(value) if value is not None else 0.0
+
+    # --- M15 MB.1 + MB.8 : agrégats par source_wallet_address --------------
+
+    async def sum_realized_pnl_by_source_wallet(
+        self,
+        *,
+        wallet_address: str,
+        since: datetime,
+        simulated: bool,
+    ) -> tuple[float, int]:
+        """Retourne ``(signed_pnl_sum, count)`` sur fenêtre ``since``.
+
+        Filtre :
+
+        - ``MyPosition.source_wallet_address == wallet_address.lower()``
+        - ``MyPosition.closed_at IS NOT NULL``
+        - ``MyPosition.closed_at > since``
+        - ``MyPosition.realized_pnl IS NOT NULL``
+        - ``MyPosition.simulated == simulated``
+
+        Index composite ``(source_wallet_address, closed_at, simulated)``
+        crée à la migration 0009 — query 1 SQL/cycle/wallet, négligeable.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            stmt = select(
+                func.coalesce(func.sum(MyPosition.realized_pnl), 0.0),
+                func.count(MyPosition.id),
+            ).where(
+                MyPosition.source_wallet_address == wallet_lower,
+                MyPosition.closed_at.is_not(None),
+                MyPosition.closed_at > since,
+                MyPosition.realized_pnl.is_not(None),
+                MyPosition.simulated.is_(simulated),
+            )
+            row = (await session.execute(stmt)).first()
+        if row is None:
+            return 0.0, 0
+        return float(row[0] or 0.0), int(row[1] or 0)
+
+    async def count_wins_losses_by_source_wallet(
+        self,
+        *,
+        wallet_address: str,
+        since: datetime,
+        simulated: bool,
+    ) -> tuple[int, int]:
+        """Retourne ``(wins, losses)`` (réalisés strict positifs / négatifs) sur ``since``.
+
+        Break-even (``realized_pnl == 0``) sont **exclus du dénominateur**
+        (cf. spec M15 §14.3). MB.8 calcule ``observed_win_rate = wins /
+        (wins + losses)`` ; ``decided=0`` → wallet observé neutre, pas de
+        signal exploitable côté auto-blacklist.
+        """
+        wallet_lower = wallet_address.lower()
+        async with self._session_factory() as session:
+            wins_stmt = select(func.count(MyPosition.id)).where(
+                MyPosition.source_wallet_address == wallet_lower,
+                MyPosition.closed_at.is_not(None),
+                MyPosition.closed_at > since,
+                MyPosition.realized_pnl.is_not(None),
+                MyPosition.realized_pnl > 0.0,
+                MyPosition.simulated.is_(simulated),
+            )
+            losses_stmt = select(func.count(MyPosition.id)).where(
+                MyPosition.source_wallet_address == wallet_lower,
+                MyPosition.closed_at.is_not(None),
+                MyPosition.closed_at > since,
+                MyPosition.realized_pnl.is_not(None),
+                MyPosition.realized_pnl < 0.0,
+                MyPosition.simulated.is_(simulated),
+            )
+            wins = (await session.execute(wins_stmt)).scalar_one()
+            losses = (await session.execute(losses_stmt)).scalar_one()
+        return int(wins or 0), int(losses or 0)
 
 
 class PnlSnapshotRepository:

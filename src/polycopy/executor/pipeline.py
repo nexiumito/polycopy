@@ -276,6 +276,8 @@ async def _persist_result(
                 side=approved.side,
                 size_filled=shares_filled,
                 fill_price=fill_price,
+                # M15 MB.1 : trace le wallet source pour internal_pnl.
+                source_wallet_address=approved.source_wallet_address,
             )
         bound_log.info(
             "order_filled",
@@ -467,6 +469,8 @@ async def _persist_realistic_simulated(
         side=approved.side,
         size_filled=fill.filled_size,
         fill_price=fill.avg_fill_price,
+        # M15 MB.1 : trace le wallet source pour internal_pnl.
+        source_wallet_address=approved.source_wallet_address,
     )
     if position is None:
         # SELL sur position virtuelle inexistante (v1 scope : skip + warning).

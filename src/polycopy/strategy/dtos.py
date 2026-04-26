@@ -66,6 +66,12 @@ class OrderApproved(BaseModel):
     rebinder le contextvar structlog côté executor et compléter la chaîne
     d'instrumentation (stage 6 = ``executor_submitted_ms``). Nullable pour
     backward-compat tests M2..M10.
+
+    M15 MB.1 : ``source_wallet_address`` propagé depuis
+    ``DetectedTradeDTO.target_wallet`` pour permettre à l'Executor de
+    persister ``MyPosition.source_wallet_address`` à la création — alimente
+    le collecteur ``_compute_internal_pnl_score``. Nullable + lower-cased
+    par convention. Cf. spec M15 §14.5.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -78,6 +84,7 @@ class OrderApproved(BaseModel):
     my_size: float
     my_price: float
     trade_id: str | None = None
+    source_wallet_address: str | None = None
 
 
 @dataclass

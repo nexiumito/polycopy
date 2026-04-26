@@ -60,6 +60,10 @@ class TraderMetricsV2(BaseModel):
     days_active: int = 0
     # --- equity curve raw (entrée Sortino/Calmar, consommée par le factor) -
     monthly_equity_curve: list[float] = Field(default_factory=list)
+    # --- M15 MB.1 internal_pnl signal (None = cold-start <10 closed) -------
+    internal_pnl_score: float | None = None
+    # --- M15 MB.7 anti-arbitrage gate (1.0 default = directional pur) ------
+    net_exposure_ratio: float = 1.0
 
     @property
     def wallet_address(self) -> str:

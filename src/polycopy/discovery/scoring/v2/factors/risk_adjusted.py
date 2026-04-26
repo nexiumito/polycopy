@@ -121,9 +121,7 @@ def _sortino_ratio(returns: list[float], *, risk_free_rate: float) -> float:
     mean_ret = mean(returns)
     downside = [r for r in returns if r < 0]
     total_dev = pstdev(returns)
-    if not downside or (
-        (pstdev(downside) if len(downside) > 1 else abs(downside[0])) == 0.0
-    ):
+    if not downside or ((pstdev(downside) if len(downside) > 1 else abs(downside[0])) == 0.0):
         # M14 MA.3 : Sharpe fallback (pas sentinel 3.0).
         if total_dev == 0.0:
             return 0.0  # défense en profondeur (caller a déjà gardé)
