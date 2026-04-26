@@ -46,6 +46,8 @@ _TRADE_COUNT_MIN_COLD_START: int = 20
 _DAYS_ACTIVE_MIN: int = 30
 _DAYS_ACTIVE_MIN_COLD_START: int = 7
 _ZOMBIE_RATIO_MAX: float = 0.40
+# M15 MB.7 — gate dur anti-arbitrage YES+NO neutre directionellement.
+_NET_EXPOSURE_MIN: float = 0.10
 
 
 def check_cash_pnl(metrics: TraderMetricsV2) -> GateResult:
@@ -176,16 +178,51 @@ def check_not_wash_cluster(wallet: str, settings: Settings) -> GateResult:
     )
 
 
+def check_not_arbitrage_bot(metrics: TraderMetricsV2) -> GateResult:
+    """Gate 7 : ``net_exposure_ratio ≥ 0.10`` (M15 MB.7).
+
+    Détecte les wallets qui passent les autres gates (positive PnL, high
+    trade count, active, non-zombie, non-wash) **mais** sont des arbitrageurs
+    YES+NO neutres directionellement — leur PnL n'est pas transférable à un
+    copy-trader (Claude §9 item 5 + A10, $40M/an Dev Genius).
+
+    ``net_exposure_ratio`` est calculé par
+    :func:`MetricsCollectorV2._compute_net_exposure_ratio` (mean ratio sur
+    les ``condition_ids`` du wallet sur la fenêtre 90j).
+
+    Default safe ``1.0`` côté collector si aucune position éligible — ne
+    déclenche pas à tort sur wallets sans data.
+    """
+    observed = float(metrics.net_exposure_ratio)
+    passed = observed >= _NET_EXPOSURE_MIN
+    return GateResult(
+        gate_name="not_arbitrage_bot",
+        passed=passed,
+        observed_value=observed,
+        threshold=_NET_EXPOSURE_MIN,
+        reason=(
+            f"net_exposure_ratio:{observed:.3f} >= {_NET_EXPOSURE_MIN}"
+            if passed
+            else (
+                f"net_exposure_ratio:{observed:.3f} < {_NET_EXPOSURE_MIN} "
+                "(arbitrage bot pattern)"
+            )
+        ),
+    )
+
+
 def check_all_gates(
     metrics: TraderMetricsV2,
     wallet: str,
     settings: Settings,
 ) -> AggregateGateResult:
-    """Vérifie les 6 gates en séquence fail-fast.
+    """Vérifie les 7 gates (M15 MB.7 +1) en séquence fail-fast.
 
     Ordre optimisé pour coût moyen d'un fail : env lookups d'abord (O(1)),
-    puis DTO lookups. Retourne ``AggregateGateResult(passed=True)`` si tous
-    passent ; sinon ``passed=False`` + le premier :class:`GateResult` échoué.
+    puis DTO lookups simples, ``not_arbitrage_bot`` en queue (DTO computed
+    lookup `net_exposure_ratio`). Retourne ``AggregateGateResult(passed=True)``
+    si tous passent ; sinon ``passed=False`` + le premier :class:`GateResult`
+    échoué.
     """
     cold_start_mode: bool = getattr(settings, "scoring_v2_cold_start_mode", False)
     checks: list[Callable[[], GateResult]] = [
@@ -195,6 +232,7 @@ def check_all_gates(
         lambda: check_trade_count(metrics, cold_start_mode=cold_start_mode),
         lambda: check_cash_pnl(metrics),
         lambda: check_zombie_ratio(metrics),
+        lambda: check_not_arbitrage_bot(metrics),  # MB.7 NEW (last — DTO computed)
     ]
     for check in checks:
         result = check()

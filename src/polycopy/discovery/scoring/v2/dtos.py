@@ -139,6 +139,8 @@ _GateName = Literal[
     "zombie_ratio_max",
     "not_blacklisted",
     "not_wash_cluster",
+    # M15 MB.7 — anti-arbitrage YES+NO neutre directionellement.
+    "not_arbitrage_bot",
 ]
 
 

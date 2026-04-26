@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterable
 from contextlib import AsyncExitStack, nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -610,7 +611,7 @@ class DiscoveryOrchestrator:
 
     def _build_pool_context_from_metrics(
         self,
-        metrics_iter: object,  # Iterable[TraderMetricsV2] — évite import TYPE_CHECKING-only
+        metrics_iter: Iterable[TraderMetricsV2],
     ) -> PoolContext:
         """Agrège les valeurs brutes pool-wide + Brier baseline pool dynamique.
 
@@ -642,9 +643,7 @@ class DiscoveryOrchestrator:
         # Phase 1 : matérialiser la liste de metrics + collecter les brier raw
         # pour calculer la baseline pool finale.
         metrics_list: list[TraderMetricsV2] = [
-            m
-            for m in metrics_iter
-            if isinstance(m, TraderMetricsV2)  # type: ignore[attr-defined]
+            m for m in metrics_iter if isinstance(m, TraderMetricsV2)
         ]
         brier_values = [float(m.brier_90d) for m in metrics_list if m.brier_90d is not None]
         if brier_values:

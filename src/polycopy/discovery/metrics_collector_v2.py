@@ -151,6 +151,9 @@ class MetricsCollectorV2:
         # M15 MB.1 : internal_pnl_score (sigmoid sur PnL réalisé par polycopy).
         internal_pnl_score = await self._compute_internal_pnl_score(wallet_address)
 
+        # M15 MB.7 : net_exposure_ratio (gate anti-arbitrage YES+NO).
+        net_exposure_ratio = _compute_net_exposure_ratio(positions)
+
         return TraderMetricsV2(
             base=base_metrics,
             sortino_90d=sortino,
@@ -167,6 +170,7 @@ class MetricsCollectorV2:
             days_active=days_active,
             monthly_equity_curve=equity_curve,
             internal_pnl_score=internal_pnl_score,
+            net_exposure_ratio=net_exposure_ratio,
         )
 
     async def _compute_internal_pnl_score(self, wallet_address: str) -> float | None:
@@ -472,3 +476,58 @@ def _compute_monthly_pnl_positive_ratio(
     if total == 0:
         return 0.0
     return positive / total
+
+
+def _compute_net_exposure_ratio(positions: list[RawPosition]) -> float:
+    """``net_exposure_ratio`` — directional vs YES+NO arbitrage (M15 MB.7).
+
+    Pour chaque ``condition_id``, calcule :
+
+    .. code::
+
+        gross  = abs(yes_net) + abs(no_net)
+        ratio  = abs(yes_net - no_net) / gross  if gross > 0 else skip
+
+    où ``yes_net`` somme les ``size`` des positions ``outcome_index==0``
+    (BUY YES) et ``no_net`` celles avec ``outcome_index==1`` (BUY NO).
+    Le ratio final est la moyenne des ratios par ``condition_id``.
+
+    Interprétation :
+
+    - ``ratio == 1.0`` : wallet directional pur (tout YES ou tout NO sur
+      chaque marché).
+    - ``ratio == 0.0`` : wallet arbitrageur YES+NO neutre (positions
+      parfaitement compensées sur chaque marché).
+    - ``ratio < 0.10`` (gate ``not_arbitrage_bot`` MB.7) : pattern
+      d'extracteur YES+NO documenté ($40M/an Dev Genius / Claude §9
+      item 5) — leur PnL n'est pas transférable à un copy-trader.
+
+    Pure function. Default safe ``1.0`` si aucune position éligible
+    (``outcome_index is None`` partout, marché atypique) — ne déclenche
+    pas le gate à tort.
+
+    Cf. spec M15 §5.7 + §9.7.
+    """
+    by_cond: dict[str, dict[str, float]] = defaultdict(lambda: {"yes": 0.0, "no": 0.0})
+    for p in positions:
+        if p.outcome_index is None:
+            continue  # legacy DTO ou marché atypique
+        side = "yes" if p.outcome_index == 0 else "no" if p.outcome_index == 1 else None
+        if side is None:
+            continue  # outcome_index hors {0,1} (marché >2 outcomes)
+        by_cond[p.condition_id][side] += float(p.size)
+
+    if not by_cond:
+        return 1.0
+
+    ratios: list[float] = []
+    for amounts in by_cond.values():
+        gross = abs(amounts["yes"]) + abs(amounts["no"])
+        if gross <= 0.0:
+            continue
+        ratio = abs(amounts["yes"] - amounts["no"]) / gross
+        ratios.append(ratio)
+
+    if not ratios:
+        return 1.0
+    return sum(ratios) / len(ratios)

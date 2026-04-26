@@ -226,3 +226,97 @@ def test_check_all_gates_cold_start_mode_from_settings_attr(
     result = check_all_gates(metrics, "0xabc", _Stub())  # type: ignore[arg-type]
     # 25 passe en cold_start (seuil 20) alors qu'il faillerait en strict (50).
     assert result.passed is True
+
+
+# --- M15 MB.7 : not_arbitrage_bot + _compute_net_exposure_ratio (4 tests §9.7)
+
+
+from polycopy.discovery.dtos import RawPosition  # noqa: E402
+from polycopy.discovery.metrics_collector_v2 import (  # noqa: E402
+    _compute_net_exposure_ratio,
+)
+from polycopy.discovery.scoring.v2.gates import check_not_arbitrage_bot  # noqa: E402
+
+
+def _raw_position(
+    *,
+    condition_id: str,
+    asset: str,
+    size: float,
+    outcome_index: int | None,
+) -> RawPosition:
+    """Helper RawPosition minimaliste pour les tests net_exposure."""
+    return RawPosition(
+        conditionId=condition_id,
+        asset=asset,
+        size=size,
+        avg_price=0.5,
+        initial_value=size * 0.5,
+        current_value=size * 0.5,
+        cash_pnl=0.0,
+        realized_pnl=0.0,
+        total_bought=size * 0.5,
+        redeemable=False,
+        opened_at=None,
+        outcomeIndex=outcome_index,
+    )
+
+
+def test_compute_net_exposure_ratio_arbitrage_bot_under_threshold() -> None:
+    """MB.7 §9.7 #21 — YES+NO neutre parfait → ratio 0.0 (sous seuil 0.10)."""
+    positions = [
+        _raw_position(condition_id="0xC1", asset="0xa_yes", size=100.0, outcome_index=0),
+        _raw_position(condition_id="0xC1", asset="0xa_no", size=100.0, outcome_index=1),
+    ]
+    ratio = _compute_net_exposure_ratio(positions)
+    assert ratio == pytest.approx(0.0)
+
+
+def test_compute_net_exposure_ratio_directional_trader_above_threshold() -> None:
+    """MB.7 §9.7 #22 — directional pur (BUY YES uniquement) → ratio 1.0."""
+    positions = [
+        _raw_position(condition_id="0xC1", asset="0xa1", size=50.0, outcome_index=0),
+        _raw_position(condition_id="0xC2", asset="0xa2", size=100.0, outcome_index=0),
+        _raw_position(condition_id="0xC3", asset="0xa3", size=200.0, outcome_index=0),
+    ]
+    ratio = _compute_net_exposure_ratio(positions)
+    assert ratio == pytest.approx(1.0)
+
+
+def test_compute_net_exposure_ratio_mixed_partial() -> None:
+    """MB.7 §9.7 #23 — mix : cond1 partial (70/130=0.538), cond2 neutre (0)."""
+    positions = [
+        # cond1 : YES 100 + NO 30 → ratio = 70 / 130 = 0.5384...
+        _raw_position(condition_id="0xC1", asset="0xa1y", size=100.0, outcome_index=0),
+        _raw_position(condition_id="0xC1", asset="0xa1n", size=30.0, outcome_index=1),
+        # cond2 : YES 100 + NO 100 → ratio = 0
+        _raw_position(condition_id="0xC2", asset="0xa2y", size=100.0, outcome_index=0),
+        _raw_position(condition_id="0xC2", asset="0xa2n", size=100.0, outcome_index=1),
+    ]
+    ratio = _compute_net_exposure_ratio(positions)
+    assert ratio == pytest.approx((70.0 / 130.0 + 0.0) / 2)
+
+
+def test_arbitrage_gate_rejects_under_threshold_and_writes_reason() -> None:
+    """MB.7 §9.7 #24 — gate rejette wallet avec ratio<0.10, raison explicite.
+
+    Le test vérifie le contrat du gate (pas l'écriture trader_event qui se
+    passe au niveau orchestrator — testé en intégration §9.9 indirectement).
+    """
+    metrics = _metrics(net_exposure_ratio=0.07)
+    result = check_not_arbitrage_bot(metrics)
+    assert result.passed is False
+    assert result.gate_name == "not_arbitrage_bot"
+    assert "0.070" in result.reason
+    assert "arbitrage bot pattern" in result.reason
+
+    # Bonus défensif : le gate passe le wallet directional sans warning.
+    metrics_ok = _metrics(net_exposure_ratio=1.0)
+    assert check_not_arbitrage_bot(metrics_ok).passed is True
+
+    # Wallet rejeté par check_all_gates est court-circuité au gate not_arbitrage_bot.
+    settings = _settings(blacklisted_wallets=[])
+    aggregate = check_all_gates(metrics, "0xabc", settings)
+    assert aggregate.passed is False
+    assert aggregate.failed_gate is not None
+    assert aggregate.failed_gate.gate_name == "not_arbitrage_bot"
