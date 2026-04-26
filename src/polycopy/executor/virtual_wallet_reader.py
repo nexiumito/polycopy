@@ -4,20 +4,29 @@ Implémente le même contrat que ``WalletStateReader`` (méthode ``get_state``
 async retournant un ``WalletState``) pour pouvoir être injecté dans le
 ``PnlSnapshotWriter`` M4 sans refactor (cf. spec §2.7).
 
-``total_usdc = virtual_capital + realized_pnl + unrealized_pnl`` où
+``total_usdc = initial_capital + realized_pnl + unrealized_pnl`` où
 ``unrealized_pnl = Σ (size × current_mid - size × avg_price)`` sur toutes les
 positions virtuelles ouvertes.
+
+M17 MD.4 : un cache in-memory ``_last_known_mid`` (TTL 10 min = 2× snapshot
+interval default) sert de fallback quand ``ClobReadClient.get_midpoint``
+échoue transitoirement (5xx, 429, network blip). Si le mid manque ET le
+last_known est stale ou absent → ``MidpointUnavailableError`` est levée :
+le ``PnlSnapshotWriter`` catch et skip le snapshot, plutôt que d'écrire
+un ``total_usdc`` creux qui corromprait le calcul de drawdown (audit C-004).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.executor.dtos import WalletState
+from polycopy.executor.exceptions import MidpointUnavailableError
 from polycopy.storage.repositories import MyPositionRepository
 
 if TYPE_CHECKING:
@@ -35,6 +44,11 @@ class VirtualWalletStateReader:
     creds consommée par le path dry-run realistic fill".
     """
 
+    # M17 MD.4 : TTL 10 min = 2× ``pnl_snapshot_interval_seconds`` default.
+    # Au-delà on raise ``MidpointUnavailableError`` plutôt que servir une
+    # valeur trop stale (cf. spec §5.4 D4 trade-off).
+    _LAST_KNOWN_TTL_SECONDS: ClassVar[float] = 600.0
+
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -44,6 +58,9 @@ class VirtualWalletStateReader:
         self._positions_repo = MyPositionRepository(session_factory)
         self._clob_read = clob_read
         self._settings = settings
+        # M17 MD.4 : write-through cache du dernier mid OK par asset_id.
+        # Float (cohérent avec le retour `get_midpoint`) + datetime UTC.
+        self._last_known_mid: dict[str, tuple[float, datetime]] = {}
 
     async def get_state(self) -> WalletState:
         """Retourne l'état du wallet virtuel pour le PnlSnapshotWriter M4."""
@@ -53,8 +70,28 @@ class VirtualWalletStateReader:
         for pos in positions:
             mid = await self._safe_get_midpoint(pos.asset_id)
             if mid is None:
-                # Skip cette position : la valorisation tombe à 0 cycle suivant.
-                continue
+                # M17 MD.4 : fallback sur le last_known frais si dispo.
+                last_known = self._fetch_last_known(pos.asset_id)
+                if last_known is None:
+                    age = self._last_known_age_seconds(pos.asset_id)
+                    log.warning(
+                        "virtual_wallet_midpoint_stale_last_known",
+                        asset_id=pos.asset_id,
+                        last_known_age_seconds=age,
+                    )
+                    raise MidpointUnavailableError(
+                        asset_id=pos.asset_id,
+                        last_known_age_seconds=age,
+                    )
+                mid = last_known
+                log.info(
+                    "virtual_wallet_using_last_known_mid",
+                    asset_id=pos.asset_id,
+                    mid=mid,
+                )
+            else:
+                # M17 MD.4 : refresh write-through cache uniquement sur fetch OK.
+                self._record_last_known(pos.asset_id, mid)
             current_value = pos.size * mid
             unrealized += current_value - pos.size * pos.avg_price
             exposure += current_value
@@ -90,3 +127,27 @@ class VirtualWalletStateReader:
                 error=str(exc)[:120],
             )
             return None
+
+    def _record_last_known(self, asset_id: str, mid: float) -> None:
+        """Write-through cache : overwrite (asset_id → (mid, now_utc))."""
+        self._last_known_mid[asset_id] = (mid, datetime.now(tz=UTC))
+
+    def _fetch_last_known(self, asset_id: str) -> float | None:
+        """Retourne le mid cached si frais (< TTL), sinon ``None``."""
+        entry = self._last_known_mid.get(asset_id)
+        if entry is None:
+            return None
+        mid, recorded_at = entry
+        age = (datetime.now(tz=UTC) - recorded_at).total_seconds()
+        if age > self._LAST_KNOWN_TTL_SECONDS:
+            # TTL expiré : on ne sert pas la valeur. On ne purge pas non
+            # plus — un futur `_record_last_known` overwrite proprement.
+            return None
+        return mid
+
+    def _last_known_age_seconds(self, asset_id: str) -> float | None:
+        """Pour le diagnostic : âge du last_known en secondes (ou None)."""
+        entry = self._last_known_mid.get(asset_id)
+        if entry is None:
+            return None
+        return (datetime.now(tz=UTC) - entry[1]).total_seconds()

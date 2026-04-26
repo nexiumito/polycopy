@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from polycopy.executor.exceptions import MidpointUnavailableError
 from polycopy.executor.virtual_wallet_reader import VirtualWalletStateReader
 from polycopy.executor.wallet_state_reader import WalletStateReader
 from polycopy.monitoring.dtos import Alert
@@ -77,7 +78,19 @@ class PnlSnapshotWriter:
 
     async def _tick(self, stop_event: asyncio.Event) -> None:
         """Une itération : fetch état wallet, calcule drawdown, persist, alertes."""
-        state = await self._reader.get_state()
+        try:
+            state = await self._reader.get_state()
+        except MidpointUnavailableError as exc:
+            # M17 MD.4 : panne CLOB midpoint prolongée → skip ce tick plutôt
+            # que persister un total_usdc creux (qui corromprait la baseline
+            # max et déclencherait un drawdown factice — audit C-004).
+            log.warning(
+                "pnl_snapshot_skipped_midpoint_unavailable",
+                asset_id=exc.asset_id,
+                last_known_age_seconds=exc.last_known_age_seconds,
+                mode=self._settings.execution_mode,
+            )
+            return
         total = state.total_position_value_usd + state.available_capital_usd
 
         # Le drawdown all-time-high est calculé sur la même "bucket" (real vs

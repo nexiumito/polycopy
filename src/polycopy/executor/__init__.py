@@ -9,6 +9,7 @@ from polycopy.executor.dtos import (
     OrderResult,
     WalletState,
 )
+from polycopy.executor.exceptions import MidpointUnavailableError
 from polycopy.executor.orchestrator import ExecutorOrchestrator
 from polycopy.executor.pipeline import execute_order
 from polycopy.executor.wallet_state_reader import WalletStateReader
@@ -20,6 +21,7 @@ __all__ = [
     "ExecutorAuthError",
     "ExecutorOrchestrator",
     "ExecutorValidationError",
+    "MidpointUnavailableError",
     "OrderResult",
     "WalletState",
     "WalletStateReader",

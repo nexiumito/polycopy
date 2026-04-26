@@ -9,7 +9,7 @@ Couvre :
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import httpx
@@ -94,10 +94,18 @@ async def test_realized_pnl_added_to_total(
     assert total == pytest.approx(1015.0, abs=1e-9)
 
 
-async def test_midpoint_failure_skips_position_no_crash(
+async def test_midpoint_failure_raises_midpoint_unavailable_no_last_known(
     session_factory: async_sessionmaker[AsyncSession],
     my_position_repo: MyPositionRepository,
 ) -> None:
+    """M17 MD.4 — fetch fail au tout 1ᵉʳ tick (last_known vide) → raise.
+
+    Remplace l'ancien comportement M8 v1 (skip silencieux qui produisait
+    un total_usdc=0 → drawdown factice — audit C-004). MD.4 : le writer
+    upstream catch et skip le snapshot.
+    """
+    from polycopy.executor.exceptions import MidpointUnavailableError
+
     await my_position_repo.upsert_virtual(
         condition_id="0xa",
         asset_id="A",
@@ -108,7 +116,121 @@ async def test_midpoint_failure_skips_position_no_crash(
     clob_read = AsyncMock(spec=ClobReadClient)
     clob_read.get_midpoint.side_effect = httpx.HTTPError("boom")
     reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
-    state = await reader.get_state()
-    assert state.total_position_value_usd == 0.0
-    # Capital intact (capital + skipped position)
-    assert state.available_capital_usd == 1000.0
+    with pytest.raises(MidpointUnavailableError) as exc:
+        await reader.get_state()
+    assert exc.value.asset_id == "A"
+    assert exc.value.last_known_age_seconds is None
+
+
+# --- M17 MD.4 : last_known_mid fallback (audit C-004) ----------------------
+
+
+async def test_virtual_wallet_records_last_known_on_success(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """1ᵉʳ tick OK → dict last_known peuplé."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xa",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.4,
+    )
+    clob_read = AsyncMock(spec=ClobReadClient)
+    clob_read.get_midpoint.return_value = 0.5
+    reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
+    await reader.get_state()
+    # Cache peuplé après le 1ᵉʳ fetch OK.
+    assert "A" in reader._last_known_mid
+    mid, _ = reader._last_known_mid["A"]
+    assert mid == 0.5
+
+
+async def test_virtual_wallet_uses_last_known_mid_on_transient_none(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Tick 1 OK populate cache → tick 2 fail HTTP → fallback last_known."""
+    await my_position_repo.upsert_virtual(
+        condition_id="0xa",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.4,
+    )
+    clob_read = AsyncMock(spec=ClobReadClient)
+    # Tick 1 : 0.5 ok, tick 2 : raise httpx.
+    clob_read.get_midpoint.side_effect = [0.5, httpx.HTTPError("transient")]
+    reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
+    state1 = await reader.get_state()
+    assert state1.total_position_value_usd == pytest.approx(5.0)
+    # Tick 2 : utilise last_known 0.5 → même valorisation, pas de raise.
+    state2 = await reader.get_state()
+    assert state2.total_position_value_usd == pytest.approx(5.0)
+
+
+async def test_virtual_wallet_raises_on_mid_outage_exceeding_ttl(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """last_known stale > 600s → MidpointUnavailableError."""
+    from polycopy.executor.exceptions import MidpointUnavailableError
+
+    await my_position_repo.upsert_virtual(
+        condition_id="0xa",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.4,
+    )
+    clob_read = AsyncMock(spec=ClobReadClient)
+    reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
+    # Pre-populate avec un timestamp ancien (TTL 600s écoulé).
+    reader._last_known_mid["A"] = (
+        0.5,
+        datetime.now(tz=UTC) - timedelta(seconds=601),
+    )
+    clob_read.get_midpoint.side_effect = httpx.HTTPError("boom")
+    with pytest.raises(MidpointUnavailableError) as exc:
+        await reader.get_state()
+    assert exc.value.asset_id == "A"
+    assert exc.value.last_known_age_seconds is not None
+    assert exc.value.last_known_age_seconds > 600.0
+
+
+async def test_pnl_writer_skips_snapshot_on_midpoint_unavailable(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """PnlSnapshotWriter._tick catch MidpointUnavailableError → skip insert."""
+    import asyncio
+
+    from polycopy.monitoring.pnl_writer import PnlSnapshotWriter
+    from polycopy.storage.repositories import PnlSnapshotRepository
+
+    await my_position_repo.upsert_virtual(
+        condition_id="0xa",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.4,
+    )
+    clob_read = AsyncMock(spec=ClobReadClient)
+    clob_read.get_midpoint.side_effect = httpx.HTTPError("boom")
+    reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
+    alerts: asyncio.Queue = asyncio.Queue()
+    writer = PnlSnapshotWriter(
+        session_factory,
+        _settings(),
+        reader,
+        alerts,
+    )
+    stop = asyncio.Event()
+    # Appel direct du _tick pour vérifier le skip propre.
+    await writer._tick(stop)
+    # Aucun snapshot inséré.
+    repo = PnlSnapshotRepository(session_factory)
+    latest = await repo.get_latest()
+    assert latest is None
