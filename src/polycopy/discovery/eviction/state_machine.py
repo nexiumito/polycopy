@@ -122,9 +122,13 @@ def classify_sell_only_transitions(
                             from_status="sell_only",
                             to_status="active",
                             score_at_event=self_score,
-                            delta_vs_worst_active=_delta_vs_worst(
+                            # M15 MB.4 (fix audit H-007) : utilise les fresh
+                            # scores pour identifier le worst active, pas
+                            # ``t.score`` snapshot DB stale.
+                            delta_vs_worst_active=_delta_vs_worst_fresh(
                                 self_score,
                                 active_non_pinned,
+                                inputs.scores,
                             ),
                             triggering_wallet=triggering,
                             cycles_observed=cycles,
@@ -170,6 +174,13 @@ def _delta_vs_worst(
     self_score: float,
     active_non_pinned: list[TraderSnapshot],
 ) -> float | None:
+    """⚠️ Deprecated M15 MB.4 — utilise les ``t.score`` snapshot DB stale.
+
+    Conservée stricte backward-compat (callers qui ne propagent pas encore
+    `inputs.scores`). Le scheduler M5_bis Phase C appelle désormais
+    :func:`_delta_vs_worst_fresh` via ``classify_sell_only_transitions``.
+    Audit H-007 : voir spec M15 §5.4 + §3.4.
+    """
     if not active_non_pinned:
         return None
     worst = min(active_non_pinned, key=lambda t: (t.score or 0.0, t.wallet_address))
@@ -177,6 +188,34 @@ def _delta_vs_worst(
     if worst_score is None:
         return None
     return self_score - worst_score
+
+
+def _delta_vs_worst_fresh(
+    self_score: float,
+    active_non_pinned: list[TraderSnapshot],
+    scores: dict[str, float],
+) -> float | None:
+    """M15 MB.4 — H-007 fix : utilise ``scores`` fresh pour identifier le
+    worst active_non_pinned, pas ``t.score`` DB stale.
+
+    Le wallet absent du dict ``scores`` (cas dégradé : un nouveau active
+    pas encore scoré ce cycle) → fallback sur ``t.score`` snapshot DB
+    (comportement M5_bis pré-MB.4 préservé pour ne jamais raise).
+
+    Stratégie de tri stable : tri lexico ``(fresh_score, wallet_address)``
+    pour reproduire l'ordre déterministe M5_bis (essentiel pour les tests
+    en table-driven et l'audit trail).
+
+    Cf. spec M15 §5.4 + §9.4 + audit 2026-04-24 [H-007].
+    """
+    if not active_non_pinned:
+        return None
+
+    def _fresh_for(t: TraderSnapshot) -> float:
+        return scores.get(t.wallet_address.lower(), t.score or 0.0)
+
+    worst = min(active_non_pinned, key=lambda t: (_fresh_for(t), t.wallet_address))
+    return self_score - _fresh_for(worst)
 
 
 def reconcile_blacklist_decisions(

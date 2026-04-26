@@ -407,3 +407,95 @@ def test_hysteresis_state_reports_first_observed_at() -> None:
     assert state is not None
     assert state.first_observed_at >= before
     assert state.last_delta == 0.20
+
+
+# --- M15 MB.4 : fix audit H-007 — fresh scores in _delta_vs_worst (2 tests §9.4)
+
+
+def test_classify_sell_only_uses_fresh_scores_for_worst_active() -> None:
+    """MB.4 §9.4 #14 — `_delta_vs_worst` consomme `inputs.scores` fresh, pas
+    `t.score` snapshot DB stale.
+
+    Setup : pool 1 sell_only + 3 active non-pinned avec snapshot DB scores
+    `[0.30, 0.45, 0.50]`. `inputs.scores` (fresh) `{0xa1: 0.55, 0xa2: 0.45,
+    0xa3: 0.50, 0xsell: 0.40, 0xcand: 0.42}`.
+
+    Avec MB.4 : worst fresh = 0xa2 à 0.45 (vs 0xa1 stale à 0.30 sans le fix).
+    `delta_vs_worst_active = 0.40 - 0.45 = -0.05`.
+
+    Cf. spec M15 §3.4 + audit 2026-04-24 [H-007].
+    """
+    # Le triggering wallet (0xcand) est inclus dans active_non_pinned par
+    # design — c'est un wallet active. Pour démontrer le fix H-007 sans
+    # ambiguïté on monte 0xcand fresh au-dessus du pool, et on observe
+    # que le worst fresh devient 0xa2 (et non 0xa1 stale 0.30).
+    sell = _snap("0xsell", "sell_only", 0.50, triggering="0xcand", open_positions=1)
+    cand = _snap("0xcand", "active", 0.52)
+    a1 = _snap("0xa1", "active", 0.30)  # DB stale 0.30 (potentielle worst)
+    a2 = _snap("0xa2", "active", 0.45)  # DB stale 0.45
+    a3 = _snap("0xa3", "active", 0.50)  # DB stale 0.50
+    traders = [sell, cand, a1, a2, a3]
+    fresh_scores = {
+        "0xsell": 0.40,
+        "0xcand": 0.42,  # ≥ 0xa2 fresh donc 0xa2 (0.45) est worst < 0xcand
+        "0xa1": 0.55,  # remonté ce cycle (0.30 → 0.55)
+        "0xa2": 0.45,  # worst fresh (sera détecté par MB.4)
+        "0xa3": 0.50,
+    }
+    # Force le delta abort à se déclencher pour récupérer la décision.
+    tracker = HysteresisTracker()
+    decisions = []
+    for _ in range(3):
+        decisions = classify_sell_only_transitions(
+            _inputs(traders, fresh_scores),
+            tracker,
+            blacklist=set(),
+        )
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d.transition == "abort_to_active"
+    # Avec MB.4, le worst FRESH parmi active_non_pinned :
+    #   0xcand=0.42, 0xa1=0.55, 0xa2=0.45, 0xa3=0.50 → worst = 0xcand 0.42.
+    # delta_vs_worst = self_score(0.40) - 0.42 = -0.02.
+    # Si on consommait t.score stale, le worst serait 0xa1 à 0.30 →
+    # delta = 0.40 - 0.30 = +0.10 (bug H-007). Différence détectable.
+    assert d.delta_vs_worst_active is not None
+    assert d.delta_vs_worst_active == pytest.approx(-0.02, abs=1e-6)
+
+
+def test_eviction_no_stale_score_dependency_regression() -> None:
+    """MB.4 §9.4 #15 — entre 2 cycles, si DB scores ne sont pas mis à jour
+    (cas dégradé) mais inputs.scores porte les fresh, l'audit trail
+    `delta_vs_worst_active` reste cohérent (pas de drift dû au stale).
+    """
+    sell = _snap("0xsell", "sell_only", 0.50, triggering="0xcand", open_positions=1)
+    cand = _snap("0xcand", "active", 0.52)
+    a1 = _snap("0xa1", "active", 0.40)  # DB stale 0.40 (pas mis à jour)
+    traders = [sell, cand, a1]
+    # Active non-pinned ce cycle : 0xcand (0.42 fresh) + 0xa1 (0.45 fresh).
+    # Worst fresh = 0xcand 0.42. delta = self(0.40) - 0.42 = -0.02.
+    fresh_cycle1 = {"0xsell": 0.40, "0xcand": 0.42, "0xa1": 0.45}
+    fresh_cycle2 = {"0xsell": 0.40, "0xcand": 0.42, "0xa1": 0.45}  # stable
+
+    # Cycle 1 + 2 + 3 sous margin → abort declenche au 3ème.
+    tracker = HysteresisTracker()
+    classify_sell_only_transitions(
+        _inputs(traders, fresh_cycle1),
+        tracker,
+        blacklist=set(),
+    )
+    classify_sell_only_transitions(
+        _inputs(traders, fresh_cycle2),
+        tracker,
+        blacklist=set(),
+    )
+    decisions = classify_sell_only_transitions(
+        _inputs(traders, fresh_cycle2),
+        tracker,
+        blacklist=set(),
+    )
+    assert len(decisions) == 1
+    d = decisions[0]
+    # Worst fresh = 0xcand à 0.42. delta = 0.40 - 0.42 = -0.02. Cohérent
+    # entre les 2 cycles (les fresh scores n'ont pas bougé).
+    assert d.delta_vs_worst_active == pytest.approx(-0.02, abs=1e-6)
