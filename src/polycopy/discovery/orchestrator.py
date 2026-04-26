@@ -663,6 +663,11 @@ class DiscoveryOrchestrator:
         specialization_pool: list[float] = []
         consistency_pool: list[float] = []
         discipline_pool: list[float] = []
+        # M15 MB.2 : pool internal_pnl — wallets cold-start (None) exclus.
+        # Pool vide = J0 post-merge (tous wallets en cold-start). Cohérent
+        # avec compute_score_v2_1_1 qui short-circuit sur la branche
+        # cold-start avant de toucher ce pool.
+        internal_pnl_pool: list[float] = []
 
         for m in metrics_list:
             risk_adjusted_pool.append(compute_risk_adjusted(m))
@@ -673,6 +678,15 @@ class DiscoveryOrchestrator:
             specialization_pool.append(compute_specialization(m))
             consistency_pool.append(compute_consistency(m))
             discipline_pool.append(compute_discipline(m))
+            # M15 MB.2 : import local pour éviter le cycle si jamais le
+            # module factors charge tardivement.
+            from polycopy.discovery.scoring.v2.factors.internal_pnl import (
+                compute_internal_pnl,
+            )
+
+            ipnl = compute_internal_pnl(m)
+            if ipnl is not None:
+                internal_pnl_pool.append(ipnl)
 
         return PoolContext(
             risk_adjusted_pool=risk_adjusted_pool,
@@ -681,6 +695,7 @@ class DiscoveryOrchestrator:
             specialization_pool=specialization_pool,
             consistency_pool=consistency_pool,
             discipline_pool=discipline_pool,
+            internal_pnl_pool=internal_pnl_pool,
             brier_baseline_pool=brier_baseline_pool,
         )
 

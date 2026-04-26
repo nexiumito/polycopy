@@ -22,6 +22,7 @@ from __future__ import annotations
 from polycopy.discovery.scoring.v2.factors.calibration import compute_calibration
 from polycopy.discovery.scoring.v2.factors.consistency import compute_consistency
 from polycopy.discovery.scoring.v2.factors.discipline import compute_discipline
+from polycopy.discovery.scoring.v2.factors.internal_pnl import compute_internal_pnl
 from polycopy.discovery.scoring.v2.factors.risk_adjusted import compute_risk_adjusted
 from polycopy.discovery.scoring.v2.factors.specialization import compute_specialization
 from polycopy.discovery.scoring.v2.factors.timing_alpha import compute_timing_alpha
@@ -30,6 +31,7 @@ __all__ = [
     "compute_calibration",
     "compute_consistency",
     "compute_discipline",
+    "compute_internal_pnl",
     "compute_risk_adjusted",
     "compute_specialization",
     "compute_timing_alpha",

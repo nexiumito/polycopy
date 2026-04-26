@@ -20,7 +20,10 @@ API publique :
 
 from __future__ import annotations
 
-from polycopy.discovery.scoring.v2.aggregator import compute_score_v2
+from polycopy.discovery.scoring.v2.aggregator import (
+    compute_score_v2,
+    compute_score_v2_1_1,
+)
 from polycopy.discovery.scoring.v2.category_resolver import MarketCategoryResolver
 from polycopy.discovery.scoring.v2.dtos import (
     AggregateGateResult,
@@ -50,4 +53,5 @@ __all__ = [
     "bind_pool_context",
     "check_all_gates",
     "compute_score_v2",
+    "compute_score_v2_1_1",
 ]

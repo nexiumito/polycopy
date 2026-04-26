@@ -204,8 +204,7 @@ def check_not_arbitrage_bot(metrics: TraderMetricsV2) -> GateResult:
             f"net_exposure_ratio:{observed:.3f} >= {_NET_EXPOSURE_MIN}"
             if passed
             else (
-                f"net_exposure_ratio:{observed:.3f} < {_NET_EXPOSURE_MIN} "
-                "(arbitrage bot pattern)"
+                f"net_exposure_ratio:{observed:.3f} < {_NET_EXPOSURE_MIN} (arbitrage bot pattern)"
             )
         ),
     )

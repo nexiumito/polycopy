@@ -186,12 +186,17 @@ def test_score_breakdown_carries_v2_1_version() -> None:
     assert out.scoring_version == "v2.1"
 
 
-def test_settings_scoring_version_literal_accepts_v1_and_v2_1() -> None:
-    """MA.8 : Settings.scoring_version Literal["v1", "v2.1"] uniquement."""
+def test_settings_scoring_version_literal_accepts_v1_v2_1_v2_1_1() -> None:
+    """M15 MB.2 : Settings.scoring_version Literal étendu ``v2.1.1``.
+
+    Adapté de ``test_settings_scoring_version_literal_accepts_v1_and_v2_1``
+    (MA.8) — le Literal accepte maintenant ``v1`` / ``v2.1`` / ``v2.1.1``.
+    """
     from polycopy.config import Settings
 
     Settings(scoring_version="v1")
     Settings(scoring_version="v2.1")
+    Settings(scoring_version="v2.1.1")
     # "v2" (M12) n'est plus accepté — DB reset post-M14, code remplacé in-place.
     with pytest.raises(ValueError, match="scoring_version"):
         Settings(scoring_version="v2")
@@ -266,3 +271,116 @@ def test_bind_pool_context_resets_after_block() -> None:
         assert _CURRENT_POOL_CONTEXT.get() is ctx
         raise RuntimeError("boom")
     assert _CURRENT_POOL_CONTEXT.get() is None
+
+
+# --- M15 MB.2 : compute_score_v2_1_1 + cold-start branch (4 tests §9.2) -----
+
+
+from polycopy.discovery.scoring.v2 import compute_score_v2_1_1  # noqa: E402
+from polycopy.discovery.scoring.v2.aggregator import (  # noqa: E402
+    _WEIGHT_CALIBRATION_V2_1_1,
+    _WEIGHT_CONSISTENCY_V2_1_1,
+    _WEIGHT_DISCIPLINE_V2_1_1,
+    _WEIGHT_INTERNAL_PNL_V2_1_1,
+    _WEIGHT_RISK_ADJUSTED_V2_1_1,
+    _WEIGHT_SPECIALIZATION_V2_1_1,
+    _WEIGHT_TIMING_ALPHA_V2_1_1,
+)
+from polycopy.discovery.scoring.v2.factors import compute_internal_pnl  # noqa: E402
+
+
+def _v2_1_1_pool_context(
+    *,
+    internal_pnl_pool: list[float] | None = None,
+) -> PoolContext:
+    """PoolContext v2.1.1 avec internal_pnl_pool optionnel."""
+    wide = [x * 0.1 for x in range(20)]  # 0.0..1.9
+    return PoolContext(
+        risk_adjusted_pool=wide,
+        calibration_pool=wide,
+        timing_alpha_pool=wide,
+        specialization_pool=wide,
+        consistency_pool=wide,
+        discipline_pool=wide,
+        internal_pnl_pool=internal_pnl_pool if internal_pnl_pool is not None else [],
+        brier_baseline_pool=0.25,
+    )
+
+
+def test_aggregator_v2_1_1_weights_sum_to_one() -> None:
+    """MB.2 §9.2 #5 — pondérations v2.1.1 + cold-start somment à 1.0."""
+    full_sum = (
+        _WEIGHT_RISK_ADJUSTED_V2_1_1
+        + _WEIGHT_CALIBRATION_V2_1_1
+        + _WEIGHT_TIMING_ALPHA_V2_1_1
+        + _WEIGHT_SPECIALIZATION_V2_1_1
+        + _WEIGHT_CONSISTENCY_V2_1_1
+        + _WEIGHT_DISCIPLINE_V2_1_1
+        + _WEIGHT_INTERNAL_PNL_V2_1_1
+    )
+    assert full_sum == pytest.approx(1.0, abs=1e-6)
+    # Cold-start path utilise les poids v2.1 (somme déjà testée par
+    # test_weights_sum_to_one ci-dessus).
+
+
+def test_aggregator_cold_start_renormalizes_without_internal_pnl() -> None:
+    """MB.2 §9.2 #6 — cold-start (internal_pnl_score=None) → flag set, score
+    sur 5 facteurs avec poids v2.1 restaurés.
+    """
+    m = _metrics(internal_pnl_score=None)
+    ctx = _v2_1_1_pool_context()  # pool internal_pnl vide (cas J0)
+    breakdown = compute_score_v2_1_1(m, ctx)
+    assert breakdown.cold_start_internal_pnl is True
+    assert breakdown.scoring_version == "v2.1.1"
+    # internal_pnl placeholder 0.0 dans raw + normalized (pas pondéré).
+    assert breakdown.raw.internal_pnl == 0.0
+    assert breakdown.normalized.internal_pnl == 0.0
+    # Score borné [0, 1].
+    assert 0.0 <= breakdown.score <= 1.0
+
+
+def test_aggregator_v2_1_1_responds_to_internal_pnl_change() -> None:
+    """MB.2 §9.2 #7 — 2 metrics identiques sauf internal_pnl_score → score
+    diffère monotone (le full path pondère internal_pnl à 0.25)."""
+    pool_internal = [0.1 * i for i in range(20)]  # 0.0..1.9
+    ctx = _v2_1_1_pool_context(internal_pnl_pool=pool_internal)
+    m_low = _metrics(internal_pnl_score=0.2)
+    m_high = _metrics(internal_pnl_score=0.8)
+    score_low = compute_score_v2_1_1(m_low, ctx).score
+    score_high = compute_score_v2_1_1(m_high, ctx).score
+    assert score_high > score_low
+    # Aucun cold-start.
+    assert compute_score_v2_1_1(m_low, ctx).cold_start_internal_pnl is False
+    assert compute_score_v2_1_1(m_high, ctx).cold_start_internal_pnl is False
+
+
+def test_compute_internal_pnl_clips_to_unit_interval() -> None:
+    """MB.2 §9.2 #8 — defensive clip à [0, 1] sur valeur anormale."""
+    # internal_pnl_score=1.5 (anormal — sigmoid produit toujours dans [0,1]).
+    m = _metrics(internal_pnl_score=1.5)
+    score = compute_internal_pnl(m)
+    assert score == 1.0
+    # Symétrique : -0.5 → 0.0.
+    m_neg = _metrics(internal_pnl_score=-0.5)
+    assert compute_internal_pnl(m_neg) == 0.0
+    # None reste None (cold-start).
+    m_none = _metrics(internal_pnl_score=None)
+    assert compute_internal_pnl(m_none) is None
+
+
+def test_v2_1_1_registered_in_registry() -> None:
+    """MB.2 — registry contient v2.1.1 en plus de v1 et v2.1."""
+    assert "v2.1.1" in SCORING_VERSIONS_REGISTRY
+    # v2.1 et v1 toujours présents (audit trail M14 préservé).
+    assert "v2.1" in SCORING_VERSIONS_REGISTRY
+    assert "v1" in SCORING_VERSIONS_REGISTRY
+
+
+def test_registry_v2_1_1_wrapper_returns_score_with_pool_context() -> None:
+    """Wrapper v2.1.1 utilise contextvar pool_context comme v2.1."""
+    m = _metrics(internal_pnl_score=0.5)
+    ctx = _v2_1_1_pool_context(internal_pnl_pool=[0.1, 0.5, 0.9])
+    with bind_pool_context(ctx):
+        score = SCORING_VERSIONS_REGISTRY["v2.1.1"](m)
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0

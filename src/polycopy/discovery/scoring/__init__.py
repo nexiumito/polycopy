@@ -32,15 +32,20 @@ from polycopy.discovery.scoring.v1 import (
     compute_score,
 )
 from polycopy.discovery.scoring.v2.aggregator import (
+    _compute_score_v2_1_1_wrapper,
     _compute_score_v2_wrapper,
 )
 
-# Enregistrement v2.1 dans le registry partagé avec v1. Effet de bord au
-# chargement du module — intentionnel (l'orchestrator consomme le registry
-# après import). Versioning sacré : ne JAMAIS réécrire une row historique
-# d'une version donnée. Ici on n'enregistre **plus** "v2" car la DB est
-# reset post-M14 (cf. décision utilisateur 2026-04-25).
+# Enregistrement v2.1 + v2.1.1 dans le registry partagé avec v1. Effet de
+# bord au chargement du module — intentionnel (l'orchestrator consomme le
+# registry après import). Versioning sacré : ne JAMAIS réécrire une row
+# historique d'une version donnée. Ici on n'enregistre **plus** "v2" car la
+# DB est reset post-M14 (cf. décision utilisateur 2026-04-25). v2.1 reste
+# accessible (audit trail M14).
 SCORING_VERSIONS_REGISTRY["v2.1"] = _compute_score_v2_wrapper
+# M15 MB.2 : v2.1.1 ajoute le facteur internal_pnl (poids 0.25) avec
+# branche cold-start fallback v2.1 weights si <10 closed positions copiées.
+SCORING_VERSIONS_REGISTRY["v2.1.1"] = _compute_score_v2_1_1_wrapper
 
 
 __all__ = [

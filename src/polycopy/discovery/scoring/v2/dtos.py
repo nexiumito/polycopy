@@ -72,7 +72,7 @@ class TraderMetricsV2(BaseModel):
 
 
 class RawSubscores(BaseModel):
-    """6 sous-scores bruts (avant winsorisation pool)."""
+    """6 (M14 v2.1) ou 7 (M15 v2.1.1) sous-scores bruts (avant rank pool)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -82,10 +82,14 @@ class RawSubscores(BaseModel):
     specialization: float
     consistency: float
     discipline: float
+    # M15 MB.2 : 7e facteur. Default 0.0 = placeholder pour les paths v2.1
+    # qui n'écrivent pas le champ (backward-compat). Le scoring v2.1.1 set
+    # explicite la valeur via compute_internal_pnl.
+    internal_pnl: float = 0.0
 
 
 class ScoringNormalizedSubscores(BaseModel):
-    """6 sous-scores normalisés ∈ [0, 1] post winsorisation p5-p95 pool."""
+    """7 sous-scores normalisés ∈ [0, 1] post rank-transform pool (M15)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -95,10 +99,17 @@ class ScoringNormalizedSubscores(BaseModel):
     specialization: float = Field(ge=0.0, le=1.0)
     consistency: float = Field(ge=0.0, le=1.0)
     discipline: float = Field(ge=0.0, le=1.0)
+    # M15 MB.2 : default 0.0 pour cold-start (le champ n'est pas pondéré
+    # quand `cold_start_internal_pnl=True` dans le breakdown).
+    internal_pnl: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ScoreV2Breakdown(BaseModel):
-    """Sortie complète de :func:`compute_score_v2` pour audit + dashboard."""
+    """Sortie complète de :func:`compute_score_v2` pour audit + dashboard.
+
+    M15 MB.2 : ``scoring_version`` étendu à ``"v2.1.1"`` + ajout flag
+    ``cold_start_internal_pnl`` pour distinguer la branche fallback.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -107,7 +118,10 @@ class ScoreV2Breakdown(BaseModel):
     raw: RawSubscores
     normalized: ScoringNormalizedSubscores
     brier_baseline_pool: float
-    scoring_version: Literal["v2.1"] = "v2.1"
+    scoring_version: Literal["v2.1", "v2.1.1"] = "v2.1"
+    # M15 MB.2 : True ⟺ score calculé via la branche cold-start
+    # (5 facteurs hérités v2.1 renormalisés, internal_pnl_score absent).
+    cold_start_internal_pnl: bool = False
 
 
 class PoolContext(BaseModel):
@@ -127,6 +141,10 @@ class PoolContext(BaseModel):
     specialization_pool: list[float] = Field(default_factory=list)
     consistency_pool: list[float] = Field(default_factory=list)
     discipline_pool: list[float] = Field(default_factory=list)
+    # M15 MB.2 : pool des `internal_pnl_score` non-None. Wallets cold-start
+    # sont exclus du pool (ne ranksent pas le facteur). Pool vide → tous
+    # les wallets sont en cold-start (cas J0 post-merge).
+    internal_pnl_pool: list[float] = Field(default_factory=list)
     # Brier d'un wallet hypothétique qui achèterait toujours au midpoint pool
     # (ou fallback 0.25 = Brier random binaire).
     brier_baseline_pool: float = 0.25
