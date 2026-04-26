@@ -176,31 +176,49 @@ async def test_active_score_above_threshold_resets_hysteresis(
     assert after is not None and after.consecutive_low_score_cycles == 0
 
 
-async def test_active_under_threshold_two_cycles_no_demote(
+async def test_active_under_hard_floor_two_cycles_no_demote(
     target_trader_repo: TargetTraderRepository,
     alerts_queue: asyncio.Queue[Alert],
 ) -> None:
+    """M15 MB.3 : sous absolute_hard_floor (<0.30), hystérésis incrémentée
+    mais pas encore demote (3 cycles requis).
+
+    Adapté du test M5 ``test_active_under_threshold_two_cycles_no_demote``.
+    Sémantique changée : la branche absolute_hard_floor de MB.3 remplace le
+    threshold M5 ``score < SCORING_DEMOTION_THRESHOLD=0.40``. Pour tester
+    l'hystérésis, on utilise des scores < 0.30 (default
+    ``SCORING_ABSOLUTE_HARD_FLOOR``) — plus exigeant qu'auparavant mais le
+    chemin code testé est strictement le même (incrément + check seuil).
+    """
     await target_trader_repo.insert_shadow("0xunder")
     await target_trader_repo.transition_status("0xunder", new_status="active")
     engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
-    # Cycle 1
+    # Cycle 1 — score sous hard floor 0.30
     cur = await target_trader_repo.get("0xunder")
-    d1 = await engine.decide(_scoring("0xunder", 0.30), cur, active_count=3)
+    d1 = await engine.decide(_scoring("0xunder", 0.20), cur, active_count=3)
     assert d1.decision == "keep"
-    # Cycle 2
+    # Cycle 2 — toujours sous hard floor
     cur = await target_trader_repo.get("0xunder")
-    d2 = await engine.decide(_scoring("0xunder", 0.25), cur, active_count=3)
+    d2 = await engine.decide(_scoring("0xunder", 0.15), cur, active_count=3)
     assert d2.decision == "keep"
     cur = await target_trader_repo.get("0xunder")
     assert cur is not None and cur.status == "active"
     assert cur.consecutive_low_score_cycles == 2
 
 
-async def test_active_under_threshold_three_cycles_demotes_to_shadow(
+async def test_active_under_hard_floor_three_cycles_demotes_to_shadow(
     target_trader_repo: TargetTraderRepository,
     alerts_queue: asyncio.Queue[Alert],
 ) -> None:
-    """M5_bis Phase C : la demote active → shadow (ex-paused) + previously_demoted_at."""
+    """M15 MB.3 : 3 cycles sous absolute_hard_floor déclenchent demote shadow.
+
+    Adapté du test M5_bis Phase C
+    ``test_active_under_threshold_three_cycles_demotes_to_shadow``. Le
+    chemin code (transition active→shadow + previously_demoted_at) est
+    strictement préservé — c'est le critère d'entrée qui change : 3 cycles
+    sous ``SCORING_ABSOLUTE_HARD_FLOOR=0.30`` (vs 3 cycles sous
+    ``SCORING_DEMOTION_THRESHOLD=0.40`` en M5).
+    """
     await target_trader_repo.insert_shadow("0xout")
     await target_trader_repo.transition_status("0xout", new_status="active")
     engine = DecisionEngine(target_trader_repo, _settings(), alerts_queue)
@@ -286,3 +304,167 @@ async def test_blacklisted_status_returns_keep(
     d = await engine.decide(_scoring("0xbl", 0.99), cur, active_count=3)
     assert d.decision == "keep"
     assert d.to_status == "blacklisted"
+
+
+# --- M15 MB.3 : ranking-based _decide_active (5 tests §9.3) -----------------
+
+
+async def _seed_active_with_score(
+    repo: TargetTraderRepository,
+    wallet: str,
+    score: float,
+    *,
+    pinned: bool = False,
+) -> None:
+    """Helper : insère un wallet en active avec un score posé via update_score."""
+    await repo.insert_shadow(wallet)
+    if pinned:
+        await repo.transition_status_unsafe(wallet, new_status="pinned")
+    else:
+        await repo.transition_status(wallet, new_status="active")
+    await repo.update_score(wallet, score=score, scoring_version="v2.1.1")
+
+
+async def test_decide_active_ranking_based_demotes_out_of_top_n(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.3 §9.3 #9 — wallet rank 11/10 (out of top-N) demote après 3 cycles."""
+    settings = _settings(max_active_traders=10)
+    # Seed pool : 10 wallets actifs avec scores 0.40..0.85, +1 wallet courant
+    # à 0.31 → rank 11/11 (out-of-top-10).
+    for i in range(10):
+        await _seed_active_with_score(
+            target_trader_repo,
+            f"0xa{i:02d}",
+            0.40 + i * 0.05,
+        )
+    await _seed_active_with_score(target_trader_repo, "0xouter", 0.31)
+
+    engine = DecisionEngine(target_trader_repo, settings, alerts_queue)
+    decisions = []
+    for _ in range(3):
+        cur = await target_trader_repo.get("0xouter")
+        decisions.append(
+            await engine.decide(_scoring("0xouter", 0.31), cur, active_count=11),
+        )
+    assert decisions[0].decision == "keep"
+    assert decisions[0].event_metadata["ranking_basis"] == "top_n"
+    assert decisions[2].decision == "demote_shadow"
+    assert decisions[2].to_status == "shadow"
+    assert decisions[2].event_metadata["ranking_basis"] == "top_n"
+
+
+async def test_decide_active_hysteresis_resets_when_back_in_top_n(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.3 §9.3 #10 — out-of-top-N puis back-in → hystérésis reset."""
+    settings = _settings(max_active_traders=3)
+    # Pool : 3 actifs au-dessus du wallet test.
+    for w, s in (("0xtop1", 0.80), ("0xtop2", 0.75), ("0xtop3", 0.70)):
+        await _seed_active_with_score(target_trader_repo, w, s)
+    await _seed_active_with_score(target_trader_repo, "0xtest", 0.50)
+
+    engine = DecisionEngine(target_trader_repo, settings, alerts_queue)
+    # Cycle T+0 : rank 4/4 (out-of-top-3) → +1 hystérésis.
+    cur = await target_trader_repo.get("0xtest")
+    await engine.decide(_scoring("0xtest", 0.50), cur, active_count=4)
+    cur = await target_trader_repo.get("0xtest")
+    assert cur is not None and cur.consecutive_low_score_cycles == 1
+
+    # Cycle T+1 : on remonte le score à 0.78 → rank 1/4 (in top-3).
+    await target_trader_repo.update_score(
+        "0xtest",
+        score=0.78,
+        scoring_version="v2.1.1",
+    )
+    cur = await target_trader_repo.get("0xtest")
+    decision = await engine.decide(_scoring("0xtest", 0.78), cur, active_count=4)
+    assert decision.decision == "keep"
+    cur = await target_trader_repo.get("0xtest")
+    assert cur is not None and cur.consecutive_low_score_cycles == 0
+
+
+async def test_decide_active_absolute_hard_floor_safeguard_still_fires(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.3 §9.3 #11 — pool entièrement bas, wallet dans top-N mais score
+    sous absolute_hard_floor → force-demote après hystérésis.
+    """
+    settings = _settings(
+        max_active_traders=10,
+        scoring_absolute_hard_floor=0.30,
+    )
+    # Seed 10 wallets tous avec scores bas (≤ 0.30). Le wallet test à 0.20
+    # est dans le top-10 (pool sub-cap aussi possible) mais sous hard floor.
+    for i in range(9):
+        await _seed_active_with_score(
+            target_trader_repo,
+            f"0xb{i:02d}",
+            0.05 + i * 0.02,
+        )
+    await _seed_active_with_score(target_trader_repo, "0xfloor", 0.20)
+
+    engine = DecisionEngine(target_trader_repo, settings, alerts_queue)
+    decisions = []
+    for _ in range(3):
+        cur = await target_trader_repo.get("0xfloor")
+        decisions.append(
+            await engine.decide(_scoring("0xfloor", 0.20), cur, active_count=10),
+        )
+    assert decisions[2].decision == "demote_shadow"
+    assert decisions[2].event_metadata["ranking_basis"] == "absolute_floor"
+
+
+async def test_decide_active_pinned_never_demoted(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.3 §9.3 #12 — pinned wallet jamais demote (safeguard M5)."""
+    settings = _settings(max_active_traders=3)
+    await _seed_active_with_score(
+        target_trader_repo,
+        "0xpin",
+        0.05,
+        pinned=True,
+    )
+    engine = DecisionEngine(target_trader_repo, settings, alerts_queue)
+    for _ in range(10):
+        cur = await target_trader_repo.get("0xpin")
+        d = await engine.decide(_scoring("0xpin", 0.05), cur, active_count=1)
+        assert d.decision == "keep"
+        assert d.from_status == "pinned"
+    cur = await target_trader_repo.get("0xpin")
+    assert cur is not None
+    # Aucun incrément hystérésis sur pinned (le path court-circuite avant
+    # _decide_active).
+    assert cur.consecutive_low_score_cycles == 0
+
+
+async def test_decide_active_pool_sub_cap_no_demote(
+    target_trader_repo: TargetTraderRepository,
+    alerts_queue: asyncio.Queue[Alert],
+) -> None:
+    """MB.3 §9.3 #13 — pool sub-cap (active_count < cap), personne hors
+    top-N → personne demote (régression test contre churn artificiel).
+    """
+    settings = _settings(max_active_traders=10)
+    # Pool 5 wallets seulement (sub-cap 10).
+    for w, s in (
+        ("0xa1", 0.65),
+        ("0xa2", 0.60),
+        ("0xa3", 0.55),
+        ("0xa4", 0.50),
+        ("0xa5", 0.40),  # rank 5/5, mais 5 < 10 (cap)
+    ):
+        await _seed_active_with_score(target_trader_repo, w, s)
+
+    engine = DecisionEngine(target_trader_repo, settings, alerts_queue)
+    cur = await target_trader_repo.get("0xa5")
+    decision = await engine.decide(_scoring("0xa5", 0.40), cur, active_count=5)
+    assert decision.decision == "keep"
+    assert decision.event_metadata["ranking_basis"] == "top_n"
+    cur = await target_trader_repo.get("0xa5")
+    assert cur is not None and cur.consecutive_low_score_cycles == 0

@@ -293,10 +293,72 @@ class DecisionEngine:
         score: float,
         version: str,
     ) -> DiscoveryDecision:
+        """M15 MB.3 — ranking-based activation.
+
+        Diff vs M5/M14 :
+
+        1. Le critère principal est le **rang** du wallet parmi les
+           ``status='active'`` du pool. Hors top-N (``rank >=
+           MAX_ACTIVE_TRADERS``) → incrément hystérésis. Pool sub-cap
+           (active_count < cap) → personne hors top-N → personne demote
+           via ranking (rotation utile uniquement quand on est saturés,
+           cf. spec §14.1 D9).
+        2. Garde-fou absolu **toujours actif** : si ``score <
+           SCORING_ABSOLUTE_HARD_FLOOR=0.30``, on incrémente l'hystérésis
+           **et** on demote indépendamment du ranking (cas pathologique :
+           pool entièrement < 0.30).
+        3. Hystérésis 3 cycles préservée
+           (``SCORING_DEMOTION_HYSTERESIS_CYCLES``) — anti-flip-flop.
+        4. ``pinned`` jamais ici (filtre amont via ``decide``).
+
+        Cf. spec M15 §5.3 + §9.3.
+        """
         cfg = self._settings
-        wallet = current.wallet_address
-        if score >= cfg.scoring_demotion_threshold:
-            # Score acceptable : reset hystérésis
+        wallet = current.wallet_address.lower()
+
+        # 1. Garde-fou absolu hard floor — ceinture + bretelle.
+        if score < cfg.scoring_absolute_hard_floor:
+            new_count = await self._target_repo.increment_low_score(wallet)
+            if new_count >= cfg.scoring_demotion_hysteresis_cycles:
+                return await self._do_demote(
+                    current,
+                    score,
+                    version,
+                    new_count,
+                    reason=(
+                        f"score {score:.2f} < absolute_hard_floor "
+                        f"{cfg.scoring_absolute_hard_floor:.2f}"
+                    ),
+                    ranking_basis="absolute_floor",
+                )
+            return DiscoveryDecision(
+                wallet_address=wallet,
+                decision="keep",
+                from_status="active",
+                to_status="active",
+                score_at_event=score,
+                scoring_version=version,
+                reason=(
+                    f"under absolute_hard_floor {new_count}/"
+                    f"{cfg.scoring_demotion_hysteresis_cycles} (score {score:.2f})"
+                ),
+                event_metadata={
+                    "cycles_under_threshold": new_count,
+                    "ranking_basis": "absolute_floor",
+                },
+            )
+
+        # 2. Ranking : fetch active scores du pool courant + rank du wallet.
+        active_scores = await self._target_repo.list_active_scores()
+        sorted_scores = sorted(active_scores, key=lambda r: -r[1])
+        wallet_rank = next(
+            (i for i, (w, _) in enumerate(sorted_scores) if w == wallet),
+            len(sorted_scores),  # wallet absent du snapshot → fall through
+        )
+        out_of_top_n = wallet_rank >= cfg.max_active_traders
+
+        if not out_of_top_n:
+            # Dans le top-N : reset hystérésis + keep.
             if current.consecutive_low_score_cycles > 0:
                 await self._target_repo.reset_low_score(wallet)
             return DiscoveryDecision(
@@ -306,36 +368,30 @@ class DecisionEngine:
                 to_status="active",
                 score_at_event=score,
                 scoring_version=version,
-                reason=f"score {score:.2f} >= demotion {cfg.scoring_demotion_threshold:.2f}",
+                reason=(
+                    f"rank {wallet_rank + 1}/{len(sorted_scores)} within "
+                    f"top-{cfg.max_active_traders} (score {score:.2f})"
+                ),
+                event_metadata={
+                    "wallet_rank": wallet_rank + 1,
+                    "ranking_basis": "top_n",
+                },
             )
-        # Sous le seuil : incrément hystérésis
+
+        # 3. Out-of-top-N → incrément hystérésis.
         new_count = await self._target_repo.increment_low_score(wallet)
         if new_count >= cfg.scoring_demotion_hysteresis_cycles:
-            now = datetime.now(tz=UTC)
-            await self._target_repo.transition_status(
-                wallet,
-                new_status="shadow",
-                reset_hysteresis=True,
-            )
-            # M5_bis Phase C : flag UX pour distinguer un shadow
-            # "re-observation après demote" d'un shadow "découvert neuf".
-            await self._target_repo.set_previously_demoted_at(wallet, at=now)
-            log.warning(
-                "trader_demoted",
-                wallet=wallet,
-                score=score,
-                cycles_under_threshold=new_count,
-                to_status="shadow",
-            )
-            return DiscoveryDecision(
-                wallet_address=wallet,
-                decision="demote_shadow",
-                from_status="active",
-                to_status="shadow",
-                score_at_event=score,
-                scoring_version=version,
-                reason=f"{new_count} cycles under {cfg.scoring_demotion_threshold:.2f}",
-                event_metadata={"cycles_under_threshold": new_count},
+            return await self._do_demote(
+                current,
+                score,
+                version,
+                new_count,
+                reason=(
+                    f"rank {wallet_rank + 1} > MAX_ACTIVE_TRADERS="
+                    f"{cfg.max_active_traders} for {new_count} cycles"
+                ),
+                ranking_basis="top_n",
+                wallet_rank=wallet_rank + 1,
             )
         return DiscoveryDecision(
             wallet_address=wallet,
@@ -345,10 +401,63 @@ class DecisionEngine:
             score_at_event=score,
             scoring_version=version,
             reason=(
-                f"under threshold {new_count}/{cfg.scoring_demotion_hysteresis_cycles} "
-                f"(score {score:.2f})"
+                f"out-of-top-N {new_count}/"
+                f"{cfg.scoring_demotion_hysteresis_cycles} (rank "
+                f"{wallet_rank + 1}, score {score:.2f})"
             ),
-            event_metadata={"cycles_under_threshold": new_count},
+            event_metadata={
+                "cycles_out_of_top_n": new_count,
+                "wallet_rank": wallet_rank + 1,
+                "ranking_basis": "top_n",
+            },
+        )
+
+    async def _do_demote(
+        self,
+        current: TargetTrader,
+        score: float,
+        version: str,
+        new_count: int,
+        *,
+        reason: str,
+        ranking_basis: str,
+        wallet_rank: int | None = None,
+    ) -> DiscoveryDecision:
+        """Helper privé MB.3 : transition active → shadow + flag UX."""
+        wallet = current.wallet_address.lower()
+        now = datetime.now(tz=UTC)
+        await self._target_repo.transition_status(
+            wallet,
+            new_status="shadow",
+            reset_hysteresis=True,
+        )
+        # M5_bis Phase C : flag UX pour distinguer un shadow
+        # "re-observation après demote" d'un shadow "découvert neuf".
+        await self._target_repo.set_previously_demoted_at(wallet, at=now)
+        log.warning(
+            "trader_demoted",
+            wallet=wallet,
+            score=score,
+            cycles_under_threshold=new_count,
+            ranking_basis=ranking_basis,
+            wallet_rank=wallet_rank,
+            to_status="shadow",
+        )
+        event_metadata: dict[str, object] = {
+            "cycles_under_threshold": new_count,
+            "ranking_basis": ranking_basis,
+        }
+        if wallet_rank is not None:
+            event_metadata["wallet_rank"] = wallet_rank
+        return DiscoveryDecision(
+            wallet_address=wallet,
+            decision="demote_shadow",
+            from_status="active",
+            to_status="shadow",
+            score_at_event=score,
+            scoring_version=version,
+            reason=reason,
+            event_metadata=event_metadata,
         )
 
     async def _push_cap_alert(self, wallet: str, score: float) -> None:
