@@ -23,7 +23,7 @@ from polycopy.executor.virtual_wallet_reader import VirtualWalletStateReader
 from polycopy.executor.wallet_state_reader import WalletStateReader
 from polycopy.monitoring.dtos import Alert
 from polycopy.storage.dtos import PnlSnapshotDTO
-from polycopy.storage.repositories import PnlSnapshotRepository
+from polycopy.storage.repositories import MyPositionRepository, PnlSnapshotRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -48,6 +48,9 @@ class PnlSnapshotWriter:
         sentinel: SentinelFile | None = None,
     ) -> None:
         self._repo = PnlSnapshotRepository(session_factory)
+        # M17 MD.6 : agrège `MyPosition.realized_pnl` par mode pour peupler
+        # le DTO (au lieu de 0.0 hardcodé — audit H-002).
+        self._positions_repo = MyPositionRepository(session_factory)
         self._settings = settings
         self._reader = wallet_state_reader
         self._alerts = alerts_queue
@@ -101,10 +104,24 @@ class PnlSnapshotWriter:
         drawdown_pct = self._compute_drawdown_pct(max_ever, total)
 
         is_simulated = self._settings.execution_mode != "live"
+        # M17 MD.6 : peuple realized + unrealized avec les vraies valeurs (au
+        # lieu de 0.0 hardcodé — audit H-002). `unrealized = total - initial -
+        # realized_cumulative` cohérent avec la formule `/home` PnL latent
+        # M13 ([dashboard/queries.py:980-982](../dashboard/queries.py#L980-L982))
+        # — convergence /home ↔ /performance garantie (audit C-005 effet).
+        realized_cumulative = await self._positions_repo.sum_realized_pnl_by_mode(
+            simulated=is_simulated,
+        )
+        initial_capital = float(
+            self._settings.dry_run_initial_capital_usd
+            if self._settings.dry_run_initial_capital_usd is not None
+            else self._settings.risk_available_capital_usd_stub
+        )
+        unrealized_pnl = total - initial_capital - realized_cumulative
         dto = PnlSnapshotDTO(
             total_usdc=total,
-            realized_pnl=0.0,
-            unrealized_pnl=0.0,
+            realized_pnl=realized_cumulative,
+            unrealized_pnl=unrealized_pnl,
             drawdown_pct=drawdown_pct,
             open_positions_count=state.open_positions_count,
             cash_pnl_total=None,

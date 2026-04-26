@@ -859,6 +859,26 @@ class MyPositionRepository:
             value = result.scalar_one()
             return float(value) if value is not None else 0.0
 
+    async def sum_realized_pnl_by_mode(self, *, simulated: bool) -> float:
+        """M17 MD.6 — somme des ``realized_pnl`` cumulé filtré par ``simulated``.
+
+        Usage : ``PnlSnapshotWriter._tick`` peuple
+        ``PnlSnapshotDTO.realized_pnl`` avec la vraie valeur (au lieu de
+        ``0.0`` hardcodé pré-M17 — audit H-002 + C-005 effet).
+
+        - ``simulated=True``  → équivalent à ``sum_realized_pnl_virtual``.
+        - ``simulated=False`` → live (dry-run live n'existe pas ; nominal
+          live remplit ce filtre une fois M3 actif et les positions cristallisées).
+        """
+        async with self._session_factory() as session:
+            stmt = select(func.coalesce(func.sum(MyPosition.realized_pnl), 0.0)).where(
+                MyPosition.simulated.is_(simulated),
+                MyPosition.closed_at.is_not(None),
+            )
+            result = await session.execute(stmt)
+            value = result.scalar_one()
+            return float(value) if value is not None else 0.0
+
     # --- M15 MB.1 + MB.8 : agrégats par source_wallet_address --------------
 
     async def sum_realized_pnl_by_source_wallet(
