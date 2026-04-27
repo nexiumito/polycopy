@@ -550,6 +550,7 @@ def build_partials_router() -> APIRouter:
     async def performance_rows(
         request: Request,
         sf: SFDep,
+        settings: STDep,
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -568,6 +569,8 @@ def build_partials_router() -> APIRouter:
                 "status": status or "",
                 "limit": limit,
                 "offset": offset,
+                # M19 MH.10 — feature flag wash_risk (rendu conditionnel template).
+                "scoring_version": settings.scoring_version,
             },
         )
 

@@ -190,6 +190,10 @@ class TraderPerformanceRow:
     win_rate_pct: float | None
     realized_pnl_total: float
     last_trade_at: datetime | None
+    # M19 MH.10 — fee_drag 24h (None si pas de fee_cost_usd dans pipeline_state).
+    fee_drag_24h_usd: float | None = None
+    # M19 MH.10 — wash_score (feature flag MF, None tant que pas shippé).
+    wash_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1862,6 +1866,60 @@ _PERFORMANCE_STATUSES = frozenset(
 )
 
 
+async def compute_fee_drag_24h(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> dict[str, float]:
+    """M19 MH.10 — Σ fee_cost_usd sur trades dernières 24h, par wallet.
+
+    Source : ``StrategyDecision.pipeline_state["fee_cost_usd"]`` (peuplé par
+    M16/M18 ME.3 quand ``STRATEGY_FEES_AWARE_ENABLED=true``). Le caller
+    filtre par 24h via ``decided_at``. Pour remonter au wallet, JOIN
+    ``DetectedTrade.tx_hash``. Skip silencieusement les rows sans
+    ``fee_cost_usd`` (M3..M15 historique pré-M16, ou flag off).
+
+    Cohérent avec le path nominal V2 (M18 ME.3 ``FeeQuote``) — la valeur
+    persistée dans ``pipeline_state`` provient déjà de ``get_fee_quote()``,
+    pas de l'alias ``get_fee_rate()`` deprecated.
+
+    Retourne ``{wallet_address: total_drag_usd}``. Wallets sans drag absent.
+    """
+    since_24h = datetime.now(tz=UTC) - timedelta(hours=24)
+    async with session_factory() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(
+                        DetectedTrade.target_wallet,
+                        StrategyDecision.pipeline_state,
+                    )
+                    .select_from(StrategyDecision)
+                    .join(
+                        DetectedTrade,
+                        DetectedTrade.tx_hash == StrategyDecision.tx_hash,
+                    )
+                    .where(
+                        StrategyDecision.decided_at >= since_24h,
+                        StrategyDecision.decision == "APPROVED",
+                    ),
+                )
+            ).all(),
+        )
+
+    drag: dict[str, float] = {}
+    for wallet, state in rows:
+        if not isinstance(state, dict):
+            continue
+        fee_cost = state.get("fee_cost_usd")
+        if fee_cost is None:
+            continue
+        try:
+            fee_cost_f = float(fee_cost)
+        except (TypeError, ValueError):
+            continue
+        drag[str(wallet)] = drag.get(str(wallet), 0.0) + fee_cost_f
+    return drag
+
+
 async def list_trader_performance(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -2018,6 +2076,9 @@ async def list_trader_performance(
         else:
             agg.positions_open += 1
 
+    # M19 MH.10 — fee_drag 24h par wallet, calculé hors boucle.
+    fee_drag_by_wallet = await compute_fee_drag_24h(session_factory)
+
     rows: list[TraderPerformanceRow] = []
     traders_by_wallet = {t.wallet_address: t for t in traders}
     for wallet, agg in aggregates.items():
@@ -2043,6 +2104,8 @@ async def list_trader_performance(
                 win_rate_pct=win_rate,
                 realized_pnl_total=agg.realized_pnl_total,
                 last_trade_at=last_trade_by_wallet.get(wallet),
+                fee_drag_24h_usd=fee_drag_by_wallet.get(wallet),
+                wash_score=None,  # MH.10 — feature flag MF, None tant que non shippé
             ),
         )
 

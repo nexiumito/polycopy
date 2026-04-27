@@ -10,6 +10,22 @@
       <th class="text-right px-4 py-2">Ouvertes</th>
       <th class="text-right px-4 py-2">Win rate</th>
       <th class="text-right px-4 py-2">PnL total</th>
+      <th class="text-right px-4 py-2">
+        <span class="inline-flex items-center justify-end">Fee drag (24h)
+          <span class="info-icon" title="Σ fee_cost_usd sur trades APPROVED dernières 24h. Source: pipeline_state (M16 + M18 ME.3 FeeQuote).">
+            <i data-lucide="info" class="w-3 h-3"></i>
+          </span>
+        </span>
+      </th>
+      {% if scoring_version == "v2.2" %}
+      <th class="text-center px-4 py-2">
+        <span class="inline-flex items-center">Wash risk
+          <span class="info-icon" title="Sirolly cluster detection (MF). 🟢 < 0.2, 🟡 < 0.5, 🔴 ≥ 0.5.">
+            <i data-lucide="info" class="w-3 h-3"></i>
+          </span>
+        </span>
+      </th>
+      {% endif %}
       <th class="text-right px-4 py-2">Dernier trade</th>
     </tr>
   </thead>
@@ -51,6 +67,26 @@
             style="color: {% if r.realized_pnl_total > 0 %}var(--color-profit){% elif r.realized_pnl_total < 0 %}var(--color-loss){% else %}var(--color-muted){% endif %};">
           {{ r.realized_pnl_total | format_usd }}
         </td>
+        <td class="px-4 py-2 text-right" style="color: var(--color-muted);">
+          {% if r.fee_drag_24h_usd is not none and r.fee_drag_24h_usd > 0 %}
+            {{ r.fee_drag_24h_usd | format_usd }}
+          {% else %}
+            <span style="color: var(--color-muted);">—</span>
+          {% endif %}
+        </td>
+        {% if scoring_version == "v2.2" %}
+        <td class="px-4 py-2 text-center">
+          {% if r.wash_score is none %}
+            <span style="color: var(--color-muted);">—</span>
+          {% elif r.wash_score < 0.2 %}
+            <span title="wash_score={{ '%.2f' | format(r.wash_score) }}">🟢</span>
+          {% elif r.wash_score < 0.5 %}
+            <span title="wash_score={{ '%.2f' | format(r.wash_score) }}">🟡</span>
+          {% else %}
+            <span title="wash_score={{ '%.2f' | format(r.wash_score) }}">🔴</span>
+          {% endif %}
+        </td>
+        {% endif %}
         <td class="px-4 py-2 text-right whitespace-nowrap" style="color: var(--color-muted);">
           {{ r.last_trade_at | humanize_dt }}
         </td>

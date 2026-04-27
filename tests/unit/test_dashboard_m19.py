@@ -850,3 +850,147 @@ async def test_mh11_alltime_stats_filter_simulated_strict_under_live_mode(
     # Si les virtuelles polluaient, on aurait 250_000 dans realized_pnl_total.
     assert stats.realized_pnl_total == pytest.approx(0.0, abs=1e-6)
     assert stats.realized_pnl_total < 1_000.0
+
+
+# ---------------------------------------------------------------------------
+# MH.10 — /performance fee_drag column + wash_risk feature flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh10_compute_fee_drag_24h_aggregates_per_wallet(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from datetime import timedelta
+
+    from polycopy.storage.models import DetectedTrade, StrategyDecision
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # 2 trades du même wallet, 1 trade autre wallet, 1 trade ancien (>24h).
+        for tx in ["0xa1", "0xa2", "0xb1", "0xold"]:
+            ts = now - timedelta(hours=30 if tx == "0xold" else 1)
+            session.add(
+                DetectedTrade(
+                    tx_hash=tx,
+                    target_wallet="0xwa" if tx.startswith("0xa") else (
+                        "0xwb" if tx == "0xb1" else "0xwold"
+                    ),
+                    condition_id="0xc",
+                    asset_id="ax",
+                    side="BUY",
+                    size=1.0,
+                    usdc_size=1.0,
+                    price=0.5,
+                    timestamp=ts,
+                    raw_json={},
+                ),
+            )
+        session.add(
+            StrategyDecision(
+                detected_trade_id=1,
+                tx_hash="0xa1",
+                decision="APPROVED",
+                decided_at=now - timedelta(hours=1),
+                pipeline_state={"fee_cost_usd": 0.10},
+            ),
+        )
+        session.add(
+            StrategyDecision(
+                detected_trade_id=2,
+                tx_hash="0xa2",
+                decision="APPROVED",
+                decided_at=now - timedelta(hours=2),
+                pipeline_state={"fee_cost_usd": 0.05},
+            ),
+        )
+        session.add(
+            StrategyDecision(
+                detected_trade_id=3,
+                tx_hash="0xb1",
+                decision="APPROVED",
+                decided_at=now - timedelta(hours=3),
+                pipeline_state={"fee_cost_usd": 0.20},
+            ),
+        )
+        # Hors fenêtre 24h — doit être ignoré.
+        session.add(
+            StrategyDecision(
+                detected_trade_id=4,
+                tx_hash="0xold",
+                decision="APPROVED",
+                decided_at=now - timedelta(hours=30),
+                pipeline_state={"fee_cost_usd": 99.99},
+            ),
+        )
+        await session.commit()
+
+    drag = await queries.compute_fee_drag_24h(session_factory)
+    assert drag.get("0xwa") == pytest.approx(0.15, abs=1e-6)
+    assert drag.get("0xwb") == pytest.approx(0.20, abs=1e-6)
+    assert "0xwold" not in drag
+
+
+@pytest.mark.asyncio
+async def test_mh10_compute_fee_drag_skips_rejected_and_missing_field(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from datetime import timedelta
+
+    from polycopy.storage.models import DetectedTrade, StrategyDecision
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        for tx in ["0xrej", "0xnofee"]:
+            session.add(
+                DetectedTrade(
+                    tx_hash=tx,
+                    target_wallet="0xwallet",
+                    condition_id="0xc",
+                    asset_id="ax",
+                    side="BUY",
+                    size=1.0,
+                    usdc_size=1.0,
+                    price=0.5,
+                    timestamp=now,
+                    raw_json={},
+                ),
+            )
+        # REJECTED — ne doit pas compter.
+        session.add(
+            StrategyDecision(
+                detected_trade_id=1,
+                tx_hash="0xrej",
+                decision="REJECTED",
+                decided_at=now - timedelta(hours=1),
+                pipeline_state={"fee_cost_usd": 5.0},
+            ),
+        )
+        # APPROVED mais pas de fee_cost_usd (M3..M15 pré-M16, ou flag off).
+        session.add(
+            StrategyDecision(
+                detected_trade_id=2,
+                tx_hash="0xnofee",
+                decision="APPROVED",
+                decided_at=now - timedelta(hours=1),
+                pipeline_state={"reason": "ok"},
+            ),
+        )
+        await session.commit()
+
+    drag = await queries.compute_fee_drag_24h(session_factory)
+    assert "0xwallet" not in drag
+
+
+@pytest.mark.asyncio
+async def test_mh10_performance_template_renders_fee_drag_column_only(
+    m19_client: AsyncClient,
+) -> None:
+    res = await m19_client.get("/partials/performance-rows")
+    assert res.status_code == 200
+    body = res.text
+    if "<table" in body:
+        # Colonne fee_drag présente quand des rows existent (default v1
+        # → wash_risk absent).
+        assert "Fee drag (24h)" in body
+        assert "Wash risk" not in body
