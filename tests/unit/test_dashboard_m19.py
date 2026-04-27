@@ -523,3 +523,121 @@ async def test_mh9_scoring_template_renders_local_ranks_and_tooltip(
     res = await m19_client.get("/traders/scoring")
     assert res.status_code == 200
     assert "intersection v1∩v2" in res.text  # tooltip text
+
+
+# ---------------------------------------------------------------------------
+# MH.5 — Gain max latent side-aware via JOIN DetectedTrade.outcome
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh5_gain_max_latent_side_aware_yes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from polycopy.storage.models import DetectedTrade, MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        session.add(
+            DetectedTrade(
+                tx_hash="0xtx_yes",
+                target_wallet="0xw",
+                condition_id="0xcondYES",
+                asset_id="aYES",
+                side="BUY",
+                size=1.0,
+                usdc_size=0.30,
+                price=0.30,
+                timestamp=now,
+                outcome="Yes",
+                raw_json={},
+            ),
+        )
+        session.add(
+            MyPosition(
+                condition_id="0xcondYES",
+                asset_id="aYES",
+                size=1.0,
+                avg_price=0.30,
+                opened_at=now,
+                closed_at=None,
+                simulated=True,
+                realized_pnl=None,
+            ),
+        )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    # YES branch : size * (1 - avg_price) = 1.0 * 0.70 = 0.70.
+    assert stats.open_max_profit_usd == pytest.approx(0.70, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_mh5_gain_max_latent_side_aware_no(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from polycopy.storage.models import DetectedTrade, MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        session.add(
+            DetectedTrade(
+                tx_hash="0xtx_no",
+                target_wallet="0xw",
+                condition_id="0xcondNO",
+                asset_id="aNO",
+                side="BUY",
+                size=1.0,
+                usdc_size=0.60,
+                price=0.60,
+                timestamp=now,
+                outcome="No",
+                raw_json={},
+            ),
+        )
+        session.add(
+            MyPosition(
+                condition_id="0xcondNO",
+                asset_id="aNO",
+                size=1.0,
+                avg_price=0.60,
+                opened_at=now,
+                closed_at=None,
+                simulated=True,
+                realized_pnl=None,
+            ),
+        )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    # NO branch : size * avg_price = 1.0 * 0.60 = 0.60 (PAS 0.40 = formule YES).
+    assert stats.open_max_profit_usd == pytest.approx(0.60, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_mh5_gain_max_latent_outcome_unknown_fallback_yes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Edge case M19 §13.4 D4 : outcome NULL → fallback YES (legacy conservateur)."""
+    from polycopy.storage.models import MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # Pas de DetectedTrade matché (cas M3 historique).
+        session.add(
+            MyPosition(
+                condition_id="0xcondNULL",
+                asset_id="aNULL",
+                size=1.0,
+                avg_price=0.30,
+                opened_at=now,
+                closed_at=None,
+                simulated=True,
+                realized_pnl=None,
+            ),
+        )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    # YES fallback : size * (1 - avg_price) = 1.0 * 0.70 = 0.70.
+    assert stats.open_max_profit_usd == pytest.approx(0.70, abs=1e-6)

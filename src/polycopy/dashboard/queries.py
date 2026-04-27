@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.dashboard.dtos import DiscoveryStatus, KpiCard, PnlMilestone
@@ -930,12 +930,33 @@ async def get_home_alltime_stats(
             await session.execute(select(func.min(PnlSnapshot.timestamp)))
         ).scalar_one_or_none()
 
-        # --- M13 Bug 6 : exposition + gain max latent sur positions OUVERTES.
+        # --- M13 Bug 6 + M19 MH.5 : exposition + gain max latent sur positions
+        # OUVERTES, avec calcul side-aware via JOIN sur DetectedTrade.outcome.
+        # Audit M-011 : la formule legacy (1 - avg_price) × size invalide sur
+        # BUY NO. Fix : YES → (1 - avg_price) × size, NO → avg_price × size.
+        # Outcome inconnu (cas M3 historique sans DetectedTrade) → fallback YES
+        # cohérent comportement legacy (cf. spec M19 §13.4 D4).
         open_filter = [MyPosition.closed_at.is_(None)]
         if pnl_mode == "real":
             open_filter.append(MyPosition.simulated.is_(False))
         elif pnl_mode == "dry_run":
             open_filter.append(MyPosition.simulated.is_(True))
+
+        # Subquery : pour chaque (condition_id, asset_id), la dernière outcome
+        # détectée (row_number sur timestamp desc, rn=1).
+        latest_outcome_subq = (
+            select(
+                DetectedTrade.condition_id.label("ds_condition_id"),
+                DetectedTrade.asset_id.label("ds_asset_id"),
+                DetectedTrade.outcome.label("ds_outcome"),
+                func.row_number()
+                .over(
+                    partition_by=(DetectedTrade.condition_id, DetectedTrade.asset_id),
+                    order_by=DetectedTrade.timestamp.desc(),
+                )
+                .label("rn"),
+            )
+        ).subquery()
         open_stats = (
             await session.execute(
                 select(
@@ -944,10 +965,29 @@ async def get_home_alltime_stats(
                         0.0,
                     ).label("exposition"),
                     func.coalesce(
-                        func.sum(MyPosition.size * (1.0 - MyPosition.avg_price)),
+                        func.sum(
+                            case(
+                                (
+                                    latest_outcome_subq.c.ds_outcome == "No",
+                                    MyPosition.size * MyPosition.avg_price,
+                                ),
+                                # YES OR NULL fallback → (1 - avg_price) × size.
+                                else_=MyPosition.size * (1.0 - MyPosition.avg_price),
+                            ),
+                        ),
                         0.0,
                     ).label("max_profit"),
-                ).where(*open_filter),
+                )
+                .select_from(MyPosition)
+                .outerjoin(
+                    latest_outcome_subq,
+                    and_(
+                        latest_outcome_subq.c.ds_condition_id == MyPosition.condition_id,
+                        latest_outcome_subq.c.ds_asset_id == MyPosition.asset_id,
+                        latest_outcome_subq.c.rn == 1,
+                    ),
+                )
+                .where(*open_filter),
             )
         ).first()
         open_exposition_usd = float(open_stats.exposition) if open_stats else 0.0
