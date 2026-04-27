@@ -29,7 +29,7 @@ def mock_clob_class(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Patche `ClobClient` dans le module `clob_write_client`."""
     mock_class = MagicMock()
     instance = mock_class.return_value
-    instance.create_or_derive_api_creds.return_value = MagicMock(
+    instance.create_or_derive_api_key.return_value = MagicMock(
         api_key="uuid",
         api_secret="base64",
         api_passphrase="phrase",
@@ -117,3 +117,71 @@ async def test_post_order_passes_neg_risk_in_options(
     options = call.args[1]
     assert options["neg_risk"] is True
     assert options["tick_size"] == "0.01"
+
+
+# --- M18 ME.1 : SDK V1 → V2 swap --------------------------------------------
+
+
+def test_clob_write_client_imports_from_v2() -> None:
+    """Aucun symbole `py_clob_client.*` (V1) ne doit subsister dans le module."""
+    import inspect
+
+    source = inspect.getsource(cwc_module)
+    # `py_clob_client_v2` autorisé. `py_clob_client` (V1) interdit.
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("from py_clob_client"):
+            assert stripped.startswith("from py_clob_client_v2"), (
+                f"V1 import detected in clob_write_client.py: {line!r}"
+            )
+        if stripped.startswith("import py_clob_client"):
+            assert stripped.startswith("import py_clob_client_v2"), (
+                f"V1 import detected in clob_write_client.py: {line!r}"
+            )
+
+
+def test_clob_write_client_calls_create_or_derive_api_key(
+    mock_clob_class: MagicMock,
+) -> None:
+    """M18 D2 : `create_or_derive_api_creds` (V1) → `create_or_derive_api_key` (V2)."""
+    ClobWriteClient(_real_settings())
+    instance = mock_clob_class.return_value
+    instance.create_or_derive_api_key.assert_called_once()
+    # Pas de fallback sur l'ancien nom V1.
+    instance.create_or_derive_api_creds.assert_not_called()
+
+
+async def test_build_order_args_passes_string_side_directly(
+    mock_clob_class: MagicMock,
+    sample_clob_order_response: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M18 D4 : `built.side` (string) passe directement à OrderArgs(side=...).
+
+    Plus de conversion via `BUY`/`SELL` constants V1.
+    """
+    captured_args: list[Any] = []
+
+    def _spy_order_args(**kwargs: Any) -> Any:
+        captured_args.append(kwargs)
+        return MagicMock(**kwargs)
+
+    monkeypatch.setattr(cwc_module, "OrderArgs", _spy_order_args)
+    instance = mock_clob_class.return_value
+    instance.create_and_post_order.return_value = sample_clob_order_response
+
+    client = ClobWriteClient(_real_settings())
+    built = BuiltOrder(
+        token_id="123",
+        side="SELL",
+        size=10.0,
+        price=0.5,
+        tick_size=0.01,
+        neg_risk=False,
+        order_type="FOK",
+    )
+    await client.post_order(built)
+    assert captured_args, "OrderArgs spy never called"
+    last = captured_args[-1]
+    assert last["side"] == "SELL", "side passed to OrderArgs MUST be the raw string"
+    assert isinstance(last["side"], str)

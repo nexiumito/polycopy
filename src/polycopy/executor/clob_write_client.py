@@ -1,19 +1,22 @@
-"""Client write CLOB : signature L1+L2 et POST `/order` via `py-clob-client`.
+"""Client write CLOB : signature L1+L2 et POST `/order` via `py-clob-client-v2`.
 
-`py-clob-client` est sync (utilise `requests`). On wrap chaque appel SDK via
+`py-clob-client-v2` est sync (utilise `requests`). On wrap chaque appel SDK via
 `asyncio.to_thread` pour ne pas bloquer l'event loop.
 
 Garde-fou : ce client **refuse de s'instancier** en `dry_run=true` ou sans
 clés Polymarket. Cf. spec M3 §2.
+
+M18 : SDK V1 → V2 (`py_clob_client` → `py_clob_client_v2`). Le SDK V2 garde
+le constructor V1-style positionnel (cf. spec M18 §4.1 D1) — diff minimal.
+Le SDK V2 est **dual-version capable** : signe V1 ou V2 selon le résultat de
+`/version` endpoint backend (cf. spec M18 §4.11 D11). Ship pré-cutover safe.
 """
 
 import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client_v2 import ClobClient, OrderArgs, OrderType
 
 from polycopy.executor.dtos import BuiltOrder, OrderResult
 
@@ -27,7 +30,7 @@ _CHAIN_ID = 137
 
 
 class ClobWriteClient:
-    """Wrapper async sur `py-clob-client` pour POST `/order` signés."""
+    """Wrapper async sur `py-clob-client-v2` pour POST `/order` signés."""
 
     def __init__(self, settings: "Settings") -> None:
         if settings.execution_mode != "live":
@@ -54,15 +57,15 @@ class ClobWriteClient:
         # Étape 1 : L1 — déterministe pour la même clé+nonce.
         temp_client = ClobClient(
             _HOST,
-            key=settings.polymarket_private_key,
             chain_id=_CHAIN_ID,
+            key=settings.polymarket_private_key,
         )
-        api_creds = temp_client.create_or_derive_api_creds()
+        api_creds = temp_client.create_or_derive_api_key()
         # Étape 2 : L2 — client signataire complet.
         return ClobClient(
             _HOST,
-            key=settings.polymarket_private_key,
             chain_id=_CHAIN_ID,
+            key=settings.polymarket_private_key,
             creds=api_creds,
             signature_type=settings.polymarket_signature_type,
             funder=settings.polymarket_funder,
@@ -77,7 +80,9 @@ class ClobWriteClient:
             )
         args = self._build_order_args(built)
         options = {"tick_size": str(built.tick_size), "neg_risk": built.neg_risk}
-        order_type_enum = OrderType[built.order_type]
+        # M18 : SDK V2 expose `OrderType` comme classe à attributs (pas Enum) —
+        # `OrderType.FOK` est `"FOK"` (string), accès via `getattr`.
+        order_type_enum = getattr(OrderType, built.order_type)
         response: dict[str, Any] = await asyncio.to_thread(
             self._client.create_and_post_order,
             args,
@@ -88,12 +93,13 @@ class ClobWriteClient:
 
     @staticmethod
     def _build_order_args(built: BuiltOrder) -> OrderArgs:
-        side_const = BUY if built.side == "BUY" else SELL
+        # M18 D4 : le SDK V2 accepte la string `"BUY"`/`"SELL"` directement
+        # via OrderArgs(side=...) — plus de conversion via constants.
         # FIXME: pour FOK BUY, `size` est en USD à dépenser (selon doc skill).
         # À confirmer empiriquement au 1er run réel à $1.
         return OrderArgs(
             token_id=built.token_id,
             price=built.price,
             size=built.size,
-            side=side_const,
+            side=built.side,
         )
