@@ -22,7 +22,12 @@
     <article class="rounded-xl border p-4 flex flex-col gap-1"
              style="border-color: var(--color-border); background: var(--color-surface);">
       <header class="flex items-center justify-between">
-        <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">PnL réalisé</span>
+        <span class="text-xs uppercase tracking-wide flex items-center" style="color: var(--color-muted);">
+          PnL réalisé
+          <span class="info-icon" title="Gains/pertes cristallisés sur positions fermées (SELL + résolutions marché). Définitif, ne bouge plus.">
+            <i data-lucide="info" class="w-3 h-3"></i>
+          </span>
+        </span>
         <i data-lucide="dollar-sign" class="w-4 h-4" style="color: var(--color-muted);"></i>
       </header>
       <p class="text-2xl font-semibold" style="color: {{ pnl_color }};">
@@ -42,7 +47,12 @@
     <article class="rounded-xl border p-4 flex flex-col gap-1"
              style="border-color: var(--color-border); background: var(--color-surface);">
       <header class="flex items-center justify-between">
-        <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">PnL latent</span>
+        <span class="text-xs uppercase tracking-wide flex items-center" style="color: var(--color-muted);">
+          PnL latent
+          <span class="info-icon" title="Mark-to-market positions ouvertes : Σ (mid_price − avg_buy) × size. Change avec les prix marché. Formule : total_usdc = initial_capital + realized_pnl + latent_pnl.">
+            <i data-lucide="info" class="w-3 h-3"></i>
+          </span>
+        </span>
         <i data-lucide="activity" class="w-4 h-4" style="color: var(--color-muted);"></i>
       </header>
       <p class="text-2xl font-semibold" style="color: {{ latent_color }};">
@@ -51,27 +61,37 @@
       <p class="text-xs" style="color: var(--color-muted);">mark-to-market positions ouvertes</p>
     </article>
     {# M13 Bug 6 : Win rate global (wins / (wins + losses) sur closed). #}
+    {% set win_rate_tooltip = "Positions fermées avec realized_pnl > 0 / (wins + losses). Break-even (= 0) exclus mais comptés séparément." %}
     {% if alltime.win_rate_pct is not none %}
+      {% set wr_subtext = alltime.wins ~ "W / " ~ alltime.losses ~ "L" %}
+      {% if alltime.breakeven_count and alltime.breakeven_count > 0 %}
+        {% set wr_subtext = wr_subtext ~ " / " ~ alltime.breakeven_count ~ " break-even" %}
+      {% endif %}
       {{ stat_card(
            "Win rate",
            alltime.win_rate_pct | format_pct(with_sign=False),
            "target",
-           subtext="positions gagnantes / décidées") }}
+           subtext=wr_subtext,
+           tooltip=win_rate_tooltip) }}
     {% else %}
-      {{ stat_card("Win rate", "—", "target", subtext="aucune position décidée") }}
+      {{ stat_card("Win rate", "—", "target",
+                   subtext="aucune position décidée",
+                   tooltip=win_rate_tooltip) }}
     {% endif %}
     {# M13 Bug 6 : Exposition = Σ size × avg_price sur positions ouvertes. #}
     {{ stat_card(
          "Exposition",
          alltime.open_exposition_usd | format_usd,
          "shield",
-         subtext="capital engagé positions ouvertes") }}
-    {# M13 Bug 6 : Gain max latent = Σ size × (1 - avg_price) sur ouvertes. #}
+         subtext="capital engagé positions ouvertes",
+         tooltip="Capital engagé dans les positions ouvertes : Σ avg_price × size. Ce qu'on perdrait si tout tombe à 0.") }}
+    {# M13 Bug 6 + M19 MH.5 : Gain max latent = Σ side-aware (YES (1-avg) + NO avg) × size. #}
     {{ stat_card(
          "Gain max latent",
          alltime.open_max_profit_usd | format_usd,
          "trending-up",
-         subtext="upside max si toutes YES gagnent") }}
+         subtext="upside max si toutes les positions gagnent",
+         tooltip="Payoff théorique side-aware : Σ (1 − avg_price) × size sur YES + Σ avg_price × size sur NO.") }}
     {{ stat_card(
          "Volume tradé",
          alltime.volume_usd_total | format_usd,

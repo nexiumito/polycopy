@@ -45,11 +45,18 @@
 </article>
 {%- endmacro %}
 
-{% macro stat_card(title, value, icon, subtext=None, value_color=None) -%}
+{% macro stat_card(title, value, icon, subtext=None, value_color=None, tooltip=None) -%}
 <article class="rounded-xl border p-4 flex flex-col gap-1"
          style="border-color: var(--color-border); background: var(--color-surface);">
   <header class="flex items-center justify-between">
-    <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">{{ title }}</span>
+    <span class="text-xs uppercase tracking-wide flex items-center" style="color: var(--color-muted);">
+      {{ title }}
+      {%- if tooltip %}
+      <span class="info-icon" title="{{ tooltip }}">
+        <i data-lucide="info" class="w-3 h-3"></i>
+      </span>
+      {%- endif %}
+    </span>
     <i data-lucide="{{ icon }}" class="w-4 h-4" style="color: var(--color-muted);"></i>
   </header>
   <p class="text-2xl font-semibold"

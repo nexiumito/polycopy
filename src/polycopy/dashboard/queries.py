@@ -722,6 +722,10 @@ async def get_home_kpi_cards(
             delta_sign=_delta_sign(total_delta_pct),
             sparkline_points=total_points,
             icon="dollar-sign",
+            tooltip=(
+                "Total capital live : initial_capital + realized_pnl + "
+                "latent_pnl. Aligne /home ↔ /performance à < 1 cent."
+            ),
         ),
         KpiCard(
             title="Drawdown",
@@ -731,6 +735,10 @@ async def get_home_kpi_cards(
             delta_sign=("negative" if drawdown_value and drawdown_value > 0 else "neutral"),
             sparkline_points=drawdown_points,
             icon="trending-down",
+            tooltip=(
+                "Chute depuis le plus haut historique du total_usdc. "
+                "Kill switch déclenché ≥ KILL_SWITCH_DRAWDOWN_PCT."
+            ),
         ),
         KpiCard(
             title="Positions ouvertes",

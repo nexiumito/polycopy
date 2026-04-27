@@ -278,3 +278,63 @@ async def test_mh3_label_shows_window_hours(
         res = await client.get("/home")
         assert res.status_code == 200
         assert "Approve stratégie (24h)" in res.text
+
+
+# ---------------------------------------------------------------------------
+# MH.4 — Tooltips explicatifs KPI cards /home
+# ---------------------------------------------------------------------------
+
+
+def test_mh4_kpi_card_supports_tooltip_field() -> None:
+    from polycopy.dashboard.dtos import KpiCard
+
+    assert "tooltip" in KpiCard.model_fields
+
+
+def test_mh4_kpi_card_macro_renders_tooltip_attribute() -> None:
+    from polycopy.dashboard.dtos import KpiCard
+
+    env = _macros_env()
+    tpl = env.from_string(
+        "{% from 'macros.html' import kpi_card %}{{ kpi_card(card) }}",
+    )
+    card = KpiCard(
+        title="Total USDC",
+        value="$1,006.50",
+        value_raw=1006.5,
+        delta=None,
+        delta_sign=None,
+        sparkline_points=[],
+        icon="dollar-sign",
+        tooltip="Décomposition: total = initial + realized + latent.",
+    )
+    out = tpl.render(card=card)
+    assert 'title="Décomposition: total = initial + realized + latent."' in out
+    assert "info-icon" in out
+
+
+def test_mh4_stat_card_macro_renders_tooltip_attribute() -> None:
+    env = _macros_env()
+    tpl = env.from_string(
+        "{% from 'macros.html' import stat_card %}"
+        "{{ stat_card('PnL', '+$1.50', 'dollar-sign', subtext='abc', tooltip='explanation here') }}",
+    )
+    out = tpl.render()
+    assert 'title="explanation here"' in out
+    assert "info-icon" in out
+
+
+@pytest.mark.asyncio
+async def test_mh4_home_renders_six_tooltips(
+    m19_client: AsyncClient,
+) -> None:
+    res = await m19_client.get("/home")
+    assert res.status_code == 200
+    body = res.text
+    # Les 6 tooltips KPI cards listés spec §2.1 MH.4 doivent apparaître.
+    assert "Gains/pertes cristallisés" in body  # PnL réalisé
+    assert "Mark-to-market positions ouvertes" in body  # PnL latent
+    assert "Capital engagé dans les positions" in body  # Exposition
+    assert "side-aware" in body  # Gain max latent
+    assert "Chute depuis le plus haut" in body  # Drawdown
+    assert "Break-even (= 0) exclus" in body  # Win rate
