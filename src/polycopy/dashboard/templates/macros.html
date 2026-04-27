@@ -1,5 +1,23 @@
 {# Macros Jinja réutilisables M6 — petites, concrètes, pas un mini-framework. #}
 
+{% macro render_address(value, kind="wallet") -%}
+{# M19 MH.1 — adresse tronquée + tooltip fullhash + bouton copy clipboard.
+   ``kind`` ∈ {"wallet", "condition", "tx"} pour différencier la classe CSS
+   appliquée (sémantique uniquement, le rendu reste identique). #}
+{%- if not value -%}
+  <span class="text-xs" style="color: var(--color-muted);">—</span>
+{%- else -%}
+<span class="addr-cell {{ 'condition-id' if kind == 'condition' else ('tx-hash' if kind == 'tx' else 'wallet-addr') }}"
+      title="{{ value }}" data-addr="{{ value }}">
+  <span class="font-mono">{{ value | short_hash(width=4) }}</span>
+  <button type="button" class="copy-btn" aria-label="Copier {{ value }}"
+          onclick="copyToClipboard('{{ value }}', this)">
+    <i data-lucide="copy" class="w-3 h-3"></i>
+  </button>
+</span>
+{%- endif -%}
+{%- endmacro %}
+
 {% macro kpi_card(card) -%}
 <article class="rounded-xl border p-4 flex flex-col gap-2"
          style="border-color: var(--color-border); background: var(--color-surface);">
@@ -108,7 +126,7 @@
   <div class="text-sm flex-1 min-w-0">
     <span>{{ milestone.label }}</span>
     {% if milestone.wallet_address %}
-      <span class="text-xs" style="color: var(--color-muted);">— {{ milestone.wallet_address | short_hash }}</span>
+      <span class="text-xs flex items-center gap-1" style="color: var(--color-muted);">— {{ render_address(milestone.wallet_address, kind="wallet") }}</span>
     {% endif %}
   </div>
   <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">{{ milestone.at | humanize_dt }}</span>

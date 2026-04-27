@@ -1,14 +1,16 @@
-{% from "macros.html" import side_pill, infinite_scroll_sentinel %}
+{% from "macros.html" import side_pill, render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <ul class="divide-y" style="border-color: var(--color-border);">
   {% for trade in rows %}
   <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
     {{ side_pill(trade.side) }}
     <div class="flex-1 min-w-0">
-      <p class="text-sm font-medium truncate">{{ trade.slug or trade.condition_id | short_hash }}</p>
-      <p class="text-xs" style="color: var(--color-muted);">
-        {{ trade.target_wallet | short_hash }} ·
-        {{ trade.size | format_size }} shares @ {{ trade.price | format_usd }}
+      <p class="text-sm font-medium truncate flex items-center gap-1">
+        {% if trade.slug %}{{ trade.slug }}{% else %}{{ render_address(trade.condition_id, kind="condition") }}{% endif %}
+      </p>
+      <p class="text-xs flex items-center gap-1" style="color: var(--color-muted);">
+        {{ render_address(trade.target_wallet, kind="wallet") }}
+        <span>· {{ trade.size | format_size }} shares @ {{ trade.price | format_usd }}</span>
       </p>
     </div>
     <div class="text-right">

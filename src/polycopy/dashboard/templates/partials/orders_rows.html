@@ -1,4 +1,4 @@
-{% from "macros.html" import badge, side_pill, infinite_scroll_sentinel %}
+{% from "macros.html" import badge, side_pill, render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <ul class="divide-y" style="border-color: var(--color-border);">
   {% for o in rows %}
@@ -9,11 +9,10 @@
         {{ o.size | format_size }} @ {{ o.price | format_usd }}
         {% if o.simulated %}<span class="text-xs ml-1" style="color: var(--color-muted);">(sim)</span>{% endif %}
       </p>
-      <p class="text-xs" style="color: var(--color-muted);">
-        source {{ o.source_tx_hash | short_hash }}
-        · cond {{ o.condition_id | short_hash }}
-        · tick {{ o.tick_size }}
-        {% if o.neg_risk %}· neg-risk{% endif %}
+      <p class="text-xs flex flex-wrap items-center gap-1" style="color: var(--color-muted);">
+        <span>source</span>{{ render_address(o.source_tx_hash, kind="tx") }}
+        <span>· cond</span>{{ render_address(o.condition_id, kind="condition") }}
+        <span>· tick {{ o.tick_size }}{% if o.neg_risk %} · neg-risk{% endif %}</span>
       </p>
       {% if o.error_msg %}
       <p class="text-xs mt-1" style="color: var(--color-loss);">⚠ {{ o.error_msg }}</p>

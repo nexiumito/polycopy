@@ -1,4 +1,4 @@
-{% from "macros.html" import infinite_scroll_sentinel %}
+{% from "macros.html" import render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <ul class="divide-y" style="border-color: var(--color-border);">
   {% for p in rows %}
@@ -8,7 +8,7 @@
        style="color: {% if p.closed_at %}var(--color-muted){% else %}var(--color-profit){% endif %};"></i>
     <div class="flex-1 min-w-0">
       <p class="text-sm font-medium flex items-center gap-2 flex-wrap">
-        <span>{{ p.condition_id | short_hash }}</span>
+        {{ render_address(p.condition_id, kind="condition") }}
         <span style="color: var(--color-muted);">·</span>
         {{ p.outcome_label | outcome_pill | safe }}
       </p>

@@ -1,4 +1,4 @@
-{% from "macros.html" import badge, infinite_scroll_sentinel %}
+{% from "macros.html" import badge, render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <table class="w-full text-sm">
   <thead class="sticky top-0" style="background: var(--color-surface-elevated);">
@@ -17,10 +17,15 @@
     {% for r in rows %}
       <tr class="border-t" style="border-color: var(--color-border);">
         <td class="px-4 py-2">
-          <span title="{{ r.wallet_address }}">{{ r.label or (r.wallet_address | short_hash) }}</span>
-          {% if r.pinned %}
-            <span class="ml-1 text-[10px] uppercase" style="color: var(--color-pinned);">pinned</span>
-          {% endif %}
+          <span class="inline-flex items-center gap-1 flex-wrap">
+            {% if r.label %}
+              <span title="{{ r.wallet_address }}">{{ r.label }}</span>
+            {% endif %}
+            {{ render_address(r.wallet_address, kind="wallet") }}
+            {% if r.pinned %}
+              <span class="text-[10px] uppercase" style="color: var(--color-pinned);">pinned</span>
+            {% endif %}
+          </span>
         </td>
         <td class="px-4 py-2">{{ badge(r.status, r.status) }}</td>
         <td class="px-4 py-2 text-right">

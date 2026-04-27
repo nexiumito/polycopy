@@ -1,11 +1,11 @@
-{% from "macros.html" import badge, infinite_scroll_sentinel %}
+{% from "macros.html" import badge, render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <ul class="divide-y" style="border-color: var(--color-border);">
   {% for d in rows %}
   <li class="flex items-center gap-4 px-4 py-3 hover:bg-[var(--color-surface-elevated)]">
     {{ badge(d.decision, d.decision) }}
     <div class="flex-1 min-w-0">
-      <p class="text-sm font-medium">{{ d.tx_hash | short_hash }}</p>
+      <p class="text-sm font-medium">{{ render_address(d.tx_hash, kind="tx") }}</p>
       <p class="text-xs" style="color: var(--color-muted);">
         {{ d.reason or "—" }}
         {% if d.my_size is not none %}· size {{ d.my_size | format_size }}{% endif %}

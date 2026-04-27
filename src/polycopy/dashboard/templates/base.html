@@ -47,6 +47,23 @@
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
     }
+    /* M19 MH.1 — copy button discret à côté des adresses tronquées. */
+    .addr-cell { display: inline-flex; align-items: center; gap: 4px; }
+    .copy-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0; margin: 0; border: 0; background: transparent;
+      color: inherit; opacity: 0.4; cursor: pointer;
+      transition: opacity 0.15s, color 0.15s;
+    }
+    .copy-btn:hover, .copy-btn:focus-visible { opacity: 1; outline: none; }
+    .copy-btn.copied { opacity: 1; color: var(--color-profit); }
+    .copy-btn.copied::after { content: " ✓"; }
+    /* M19 MH.4 — icône info discrète à côté des titres KPI. */
+    .info-icon {
+      display: inline-flex; align-items: center; opacity: 0.4; cursor: help;
+      margin-left: 4px; transition: opacity 0.15s;
+    }
+    .info-icon:hover { opacity: 1; }
   </style>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -191,5 +208,22 @@
       {% include "partials/external_health.html" %}
     </main>
   </div>
+  <script>
+    // M19 MH.1 — copie d'adresses (~15 lignes vanilla, Clipboard API + fallback execCommand).
+    async function copyToClipboard(text, btn) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (err) {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+      }
+      if (btn) {
+        btn.classList.add('copied');
+        setTimeout(function () { btn.classList.remove('copied'); }, 1500);
+      }
+    }
+  </script>
 </body>
 </html>

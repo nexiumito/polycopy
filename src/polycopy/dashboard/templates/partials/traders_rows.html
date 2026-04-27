@@ -1,4 +1,4 @@
-{% from "macros.html" import badge, score_gauge %}
+{% from "macros.html" import badge, render_address, score_gauge %}
 <div class="flex flex-wrap gap-2 mb-3 text-xs" style="color: var(--color-muted);">
   {% for s, n in counts.items() %}
     <span class="px-2 py-1 rounded border" style="border-color: var(--color-border);">{{ s }}: {{ n }}</span>
@@ -19,7 +19,7 @@
             <i data-lucide="pin" class="w-4 h-4 inline" style="color: var(--color-pinned);"></i>
           {% endif %}
         </p>
-        <p class="text-xs" style="color: var(--color-muted);">{{ r.wallet_address | short_hash }}</p>
+        <p class="text-xs" style="color: var(--color-muted);">{{ render_address(r.wallet_address, kind="wallet") }}</p>
       </div>
       {{ badge(r.status, r.status) }}
       <i data-lucide="chevron-down" class="w-4 h-4" style="color: var(--color-muted);"></i>
@@ -53,7 +53,7 @@
           {% if r.eviction_triggering_wallet %}
           <div>
             <dt class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">Évincé par</dt>
-            <dd class="font-mono text-xs">{{ r.eviction_triggering_wallet | short_hash }}</dd>
+            <dd class="text-xs">{{ render_address(r.eviction_triggering_wallet, kind="wallet") }}</dd>
           </div>
           {% endif %}
         </dl>

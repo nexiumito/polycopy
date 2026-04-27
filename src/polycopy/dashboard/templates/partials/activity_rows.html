@@ -1,4 +1,4 @@
-{% from "macros.html" import infinite_scroll_sentinel %}
+{% from "macros.html" import render_address, infinite_scroll_sentinel %}
 {% if rows %}
 <table class="w-full text-sm">
   <thead class="sticky top-0" style="background: var(--color-surface-elevated);">
@@ -23,15 +23,20 @@
           {% endif %}
         </td>
         <td class="px-4 py-2">
-          <span class="font-mono">{{ r.condition_id | short_hash }}</span>
-          <span style="color: var(--color-muted);">·</span>
-          {{ r.outcome_label | outcome_pill | safe }}
+          <span class="inline-flex items-center gap-1">
+            {{ render_address(r.condition_id, kind="condition") }}
+            <span style="color: var(--color-muted);">·</span>
+            {{ r.outcome_label | outcome_pill | safe }}
+          </span>
         </td>
         <td class="px-4 py-2">
           {% if r.source_trader_wallet %}
-            <span title="{{ r.source_trader_wallet }}">
-              {{ r.source_trader_label or (r.source_trader_wallet | short_hash) }}
-            </span>
+            {% if r.source_trader_label %}
+              <span title="{{ r.source_trader_wallet }}">{{ r.source_trader_label }}</span>
+              {{ render_address(r.source_trader_wallet, kind="wallet") }}
+            {% else %}
+              {{ render_address(r.source_trader_wallet, kind="wallet") }}
+            {% endif %}
           {% else %}
             <span style="color: var(--color-muted);">—</span>
           {% endif %}
