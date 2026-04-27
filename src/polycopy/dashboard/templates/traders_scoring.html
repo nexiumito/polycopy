@@ -97,6 +97,13 @@ python -m polycopy --verbose</pre>
           </span>
         </th>
         <th class="text-right py-2 px-2">Δ rank</th>
+        <th class="text-left py-2 px-2">
+          <span class="inline-flex items-center">Stability
+            <span class="info-icon" title="std(score) sur les {{ stability_window }} derniers cycles v2.1. 🟢 stable < 0.03, 🟡 volatile, 🔴 unstable ≥ 0.08, ⏳ insufficient (n < {{ stability_window }}).">
+              <i data-lucide="info" class="w-3 h-3"></i>
+            </span>
+          </span>
+        </th>
       </tr>
     </thead>
     <tbody>
@@ -141,11 +148,28 @@ python -m polycopy --verbose</pre>
           {% elif row.delta_rank < 0 %}<span style="color: var(--color-danger);">{{ row.delta_rank }}</span>
           {% else %}0{% endif %}
         </td>
+        <td class="py-1 px-2">
+          {# M19 MH.8 — badge stability dispatch (std sur N derniers cycles v2.1). #}
+          {% set st = stability.get(row.wallet_address, (none, 0)) %}
+          {% set _std = st[0] %}
+          {% set _n = st[1] %}
+          {% if _n < stability_window %}
+            <span title="n={{ _n }}/{{ stability_window }} cycles">⏳ insufficient</span>
+          {% elif _std is none %}
+            <span>⏳ —</span>
+          {% elif _std < 0.03 %}
+            <span title="std={{ '%.4f' | format(_std) }}">🟢 stable</span>
+          {% elif _std < 0.08 %}
+            <span title="std={{ '%.4f' | format(_std) }}">🟡 volatile</span>
+          {% else %}
+            <span title="std={{ '%.4f' | format(_std) }}">🔴 unstable</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
       {% if not rows %}
       <tr>
-        <td colspan="8" class="text-center py-6" style="color: var(--color-muted);">
+        <td colspan="9" class="text-center py-6" style="color: var(--color-muted);">
           Aucun score v1 ou v2 persisté. Lance un cycle discovery pour voir apparaître les rows.
         </td>
       </tr>

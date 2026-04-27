@@ -201,12 +201,20 @@ def build_pages_router() -> APIRouter:
         Read-only strict (pas d'endpoint write). Le bouton "Validate v2 & flip"
         du template n'exécute pas le flip (respect invariant dashboard M4.5
         read-only) — il affiche la commande ``.env`` à appliquer manuellement.
+
+        M19 MH.8 : enrichi avec stability metric (std(score) sur N=10 cycles)
+        + badge dispatch 🟢/🟡/🔴/⏳ + cutover panel inchangé.
         """
         rows = await queries.list_scoring_comparison(sf, limit=200)
         aggregates = await queries.scoring_comparison_aggregates(
             sf,
             shadow_days=settings.scoring_v2_shadow_days,
             cutover_ready=settings.scoring_v2_cutover_ready,
+        )
+        stability = await queries.compute_scoring_stability_for_pool(
+            sf,
+            window=10,
+            version="v2.1",
         )
         return _render(
             request,
@@ -216,6 +224,8 @@ def build_pages_router() -> APIRouter:
                 "aggregates": aggregates,
                 "pilot_version": settings.scoring_version,
                 "shadow_days_config": settings.scoring_v2_shadow_days,
+                "stability": stability,
+                "stability_window": 10,
             },
         )
 

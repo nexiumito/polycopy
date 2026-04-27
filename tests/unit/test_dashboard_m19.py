@@ -641,3 +641,131 @@ async def test_mh5_gain_max_latent_outcome_unknown_fallback_yes(
     stats = await queries.get_home_alltime_stats(session_factory)
     # YES fallback : size * (1 - avg_price) = 1.0 * 0.70 = 0.70.
     assert stats.open_max_profit_usd == pytest.approx(0.70, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# MH.8 — Scoring stability metric + cutover panel
+# ---------------------------------------------------------------------------
+
+
+class TestMh8StabilityMetric:
+    @pytest.mark.asyncio
+    async def test_stability_returns_zero_for_constant_score(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        from datetime import timedelta
+
+        from polycopy.storage.models import TraderScore
+
+        now = datetime.now(tz=UTC)
+        async with session_factory() as session:
+            for i in range(10):
+                session.add(
+                    TraderScore(
+                        target_trader_id=1,
+                        wallet_address="0xstable",
+                        score=0.5,
+                        scoring_version="v2.1",
+                        cycle_at=now - timedelta(hours=i),
+                        metrics_snapshot={},
+                    ),
+                )
+            await session.commit()
+        result = await queries.compute_scoring_stability_for_pool(
+            session_factory,
+            window=10,
+            version="v2.1",
+        )
+        assert result["0xstable"][0] == pytest.approx(0.0)
+        assert result["0xstable"][1] == 10
+
+    @pytest.mark.asyncio
+    async def test_stability_returns_high_std_for_unstable(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        from datetime import timedelta
+
+        from polycopy.storage.models import TraderScore
+
+        now = datetime.now(tz=UTC)
+        async with session_factory() as session:
+            for i in range(10):
+                session.add(
+                    TraderScore(
+                        target_trader_id=2,
+                        wallet_address="0xunstable",
+                        score=0.3 if i % 2 == 0 else 0.7,
+                        scoring_version="v2.1",
+                        cycle_at=now - timedelta(hours=i),
+                        metrics_snapshot={},
+                    ),
+                )
+            await session.commit()
+        result = await queries.compute_scoring_stability_for_pool(
+            session_factory,
+            window=10,
+            version="v2.1",
+        )
+        std, n = result["0xunstable"]
+        assert std is not None
+        assert std > 0.15  # alternance 0.3/0.7 → std ≈ 0.21
+        assert n == 10
+
+    def test_stability_label_dispatch(self) -> None:
+        assert queries.stability_label(0.0, 10) == "stable"
+        assert queries.stability_label(0.025, 10) == "stable"
+        assert queries.stability_label(0.03, 10) == "volatile"
+        assert queries.stability_label(0.05, 10) == "volatile"
+        assert queries.stability_label(0.08, 10) == "unstable"
+        assert queries.stability_label(0.5, 10) == "unstable"
+        assert queries.stability_label(0.0, 5) == "insufficient"
+        assert queries.stability_label(None, 10) == "insufficient"
+
+    @pytest.mark.asyncio
+    async def test_scoring_template_renders_stability_badges(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        m19_client: AsyncClient,
+    ) -> None:
+        from datetime import timedelta
+
+        from polycopy.storage.models import TargetTrader, TraderScore
+
+        now = datetime.now(tz=UTC)
+        async with session_factory() as session:
+            session.add(
+                TargetTrader(
+                    wallet_address="0xstable",
+                    label="Stable",
+                    status="active",
+                ),
+            )
+            for i in range(10):
+                session.add(
+                    TraderScore(
+                        target_trader_id=1,
+                        wallet_address="0xstable",
+                        score=0.5,
+                        scoring_version="v1",
+                        cycle_at=now - timedelta(hours=i),
+                        metrics_snapshot={},
+                    ),
+                )
+                session.add(
+                    TraderScore(
+                        target_trader_id=1,
+                        wallet_address="0xstable",
+                        score=0.6,
+                        scoring_version="v2.1",
+                        cycle_at=now - timedelta(hours=i),
+                        metrics_snapshot={},
+                    ),
+                )
+            await session.commit()
+        res = await m19_client.get("/traders/scoring")
+        assert res.status_code == 200
+        # Au moins un badge stability rendu (🟢/🟡/🔴/⏳).
+        assert "Stability" in res.text
+        assert ("🟢" in res.text) or ("⏳" in res.text)

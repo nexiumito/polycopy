@@ -9,6 +9,7 @@ dashboard ne peut littéralement pas muter la DB (vérifié via
 from __future__ import annotations
 
 import asyncio
+import statistics
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -1608,6 +1609,77 @@ def _spearman_rank(ranks_a: list[float], ranks_b: list[float]) -> float | None:
     if denom == 0:
         return None
     return 1.0 - (6.0 * d2_sum) / denom
+
+
+# M19 MH.8 — stability metric badge thresholds (cf. spec §5.5).
+SCORING_STABILITY_STABLE_THRESHOLD: float = 0.03
+SCORING_STABILITY_VOLATILE_THRESHOLD: float = 0.08
+
+
+def stability_label(
+    std: float | None,
+    n: int,
+    *,
+    window: int = 10,
+) -> Literal["stable", "volatile", "unstable", "insufficient"]:
+    """Dispatch badge stability M19 MH.8 (cohérent thresholds spec §5.5)."""
+    if n < window:
+        return "insufficient"
+    if std is None:
+        return "insufficient"
+    if std < SCORING_STABILITY_STABLE_THRESHOLD:
+        return "stable"
+    if std < SCORING_STABILITY_VOLATILE_THRESHOLD:
+        return "volatile"
+    return "unstable"
+
+
+async def compute_scoring_stability_for_pool(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    window: int = 10,
+    version: str = "v2.1",
+) -> dict[str, tuple[float | None, int]]:
+    """M19 MH.8 — std(score) sur les ``window`` derniers cycles par wallet.
+
+    Retourne ``{wallet_address: (std | None, n_cycles)}``. SQLite n'expose pas
+    ``STDDEV`` natif (pas de math extension par défaut) — fallback Python via
+    ``statistics.stdev`` sur la liste agrégée. ``std=None`` si ``n < 2``.
+
+    Permet à l'user d'identifier les wallets dont le scoring est fiable
+    (stable) vs volatile (signal bruité). Critique post-M14 (rank_normalize
+    rend la métrique sensible aux fluctuations relatives).
+    """
+    async with session_factory() as session:
+        # Fetch les ``window`` derniers scores par wallet, version filter,
+        # via row_number() over (partition_by wallet order_by cycle_at desc).
+        ranked = (
+            select(
+                TraderScore.wallet_address,
+                TraderScore.score,
+                func.row_number()
+                .over(
+                    partition_by=TraderScore.wallet_address,
+                    order_by=TraderScore.cycle_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(TraderScore.scoring_version == version)
+            .subquery()
+        )
+        rows = (
+            await session.execute(
+                select(ranked.c.wallet_address, ranked.c.score).where(ranked.c.rn <= window),
+            )
+        ).all()
+
+    by_wallet: dict[str, list[float]] = {}
+    for row in rows:
+        by_wallet.setdefault(str(row.wallet_address), []).append(float(row.score))
+    return {
+        wallet: (statistics.stdev(scores) if len(scores) >= 2 else None, len(scores))
+        for wallet, scores in by_wallet.items()
+    }
 
 
 # --- M6 commit 6 : onglet /activity (historique des PnL réalisés) -----------
