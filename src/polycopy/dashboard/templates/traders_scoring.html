@@ -82,8 +82,20 @@ python -m polycopy --verbose</pre>
         <th class="text-left py-2 px-2">Status</th>
         <th class="text-right py-2 px-2">Score v1</th>
         <th class="text-right py-2 px-2">Score v2</th>
-        <th class="text-right py-2 px-2">Rank v1</th>
-        <th class="text-right py-2 px-2">Rank v2</th>
+        <th class="text-right py-2 px-2">
+          <span class="inline-flex items-center">Rank v1
+            <span class="info-icon" title="Rang sur l'intersection v1∩v2 (N={{ aggregates.wallets_compared }}) — cohérent avec le calcul de Spearman ρ. Pas le rang pool-entier (M19 MH.9).">
+              <i data-lucide="info" class="w-3 h-3"></i>
+            </span>
+          </span>
+        </th>
+        <th class="text-right py-2 px-2">
+          <span class="inline-flex items-center">Rank v2
+            <span class="info-icon" title="Rang sur l'intersection v1∩v2 (N={{ aggregates.wallets_compared }}) — cohérent avec le calcul de Spearman ρ. Pas le rang pool-entier (M19 MH.9).">
+              <i data-lucide="info" class="w-3 h-3"></i>
+            </span>
+          </span>
+        </th>
         <th class="text-right py-2 px-2">Δ rank</th>
       </tr>
     </thead>
@@ -103,10 +115,25 @@ python -m polycopy --verbose</pre>
           {% if row.score_v2 is none %}—{% else %}{{ '%.3f' | format(row.score_v2) }}{% endif %}
         </td>
         <td class="py-1 px-2 text-right">
-          {% if row.rank_v1 is none %}—{% else %}{{ row.rank_v1 }}{% endif %}
+          {# M19 MH.9 — rangs locaux (intersection v1∩v2, cohérent ρ Spearman). #}
+          {% if row.rank_v1_local is not none %}
+            {{ row.rank_v1_local }}
+            {% if row.rank_v1_pool is not none and row.rank_v1_pool != row.rank_v1_local %}
+              <span class="text-xs" style="color: var(--color-muted);" title="pool: {{ row.rank_v1_pool }}">✦</span>
+            {% endif %}
+          {% elif row.rank_v1 is not none %}
+            <span title="hors intersection — rang pool affiché">{{ row.rank_v1 }}*</span>
+          {% else %}—{% endif %}
         </td>
         <td class="py-1 px-2 text-right">
-          {% if row.rank_v2 is none %}—{% else %}{{ row.rank_v2 }}{% endif %}
+          {% if row.rank_v2_local is not none %}
+            {{ row.rank_v2_local }}
+            {% if row.rank_v2_pool is not none and row.rank_v2_pool != row.rank_v2_local %}
+              <span class="text-xs" style="color: var(--color-muted);" title="pool: {{ row.rank_v2_pool }}">✦</span>
+            {% endif %}
+          {% elif row.rank_v2 is not none %}
+            <span title="hors intersection — rang pool affiché">{{ row.rank_v2 }}*</span>
+          {% else %}—{% endif %}
         </td>
         <td class="py-1 px-2 text-right">
           {% if row.delta_rank is none %}—

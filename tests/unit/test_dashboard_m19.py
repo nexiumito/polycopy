@@ -407,3 +407,119 @@ async def test_mh4_home_renders_six_tooltips(
     assert "side-aware" in body  # Gain max latent
     assert "Chute depuis le plus haut" in body  # Drawdown
     assert "Break-even (= 0) exclus" in body  # Win rate
+
+
+# ---------------------------------------------------------------------------
+# MH.9 — Spearman rangs locaux intersection v1∩v2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh9_scoring_comparison_row_exposes_local_ranks(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from polycopy.storage.models import TraderScore
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # 1 wallet dans v1∩v2 (intersection N=1) + 1 v1-only + 1 v2-only.
+        session.add(
+            TraderScore(
+                target_trader_id=1,
+                wallet_address="0xboth",
+                score=0.5,
+                scoring_version="v1",
+                cycle_at=now,
+                metrics_snapshot={},
+            ),
+        )
+        session.add(
+            TraderScore(
+                target_trader_id=1,
+                wallet_address="0xboth",
+                score=0.6,
+                scoring_version="v2.1",
+                cycle_at=now,
+                metrics_snapshot={},
+            ),
+        )
+        session.add(
+            TraderScore(
+                target_trader_id=2,
+                wallet_address="0xv1only",
+                score=0.4,
+                scoring_version="v1",
+                cycle_at=now,
+                metrics_snapshot={},
+            ),
+        )
+        session.add(
+            TraderScore(
+                target_trader_id=3,
+                wallet_address="0xv2only",
+                score=0.3,
+                scoring_version="v2.1",
+                cycle_at=now,
+                metrics_snapshot={},
+            ),
+        )
+        await session.commit()
+
+    rows = await queries.list_scoring_comparison(session_factory)
+    by_wallet = {r.wallet_address: r for r in rows}
+    # Seul 0xboth est dans l'intersection (N=1) → rang local = 1.
+    both = by_wallet["0xboth"]
+    assert both.rank_v1_local == 1
+    assert both.rank_v2_local == 1
+    # Pool reste pool : 0xboth est 1 sur 2 v1 (0.5 > 0.4).
+    assert both.rank_v1_pool == 1
+    assert both.rank_v2_pool == 1
+    # Hors intersection → rangs locaux None.
+    assert by_wallet["0xv1only"].rank_v1_local is None
+    assert by_wallet["0xv1only"].rank_v2_local is None
+    assert by_wallet["0xv2only"].rank_v1_local is None
+    assert by_wallet["0xv2only"].rank_v2_local is None
+
+
+@pytest.mark.asyncio
+async def test_mh9_scoring_template_renders_local_ranks_and_tooltip(
+    session_factory: async_sessionmaker[AsyncSession],
+    m19_client: AsyncClient,
+) -> None:
+    from polycopy.storage.models import TargetTrader, TraderScore
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        for i in range(3):
+            session.add(
+                TargetTrader(
+                    wallet_address=f"0xw{i}",
+                    label=f"trader{i}",
+                    status="active",
+                ),
+            )
+            session.add(
+                TraderScore(
+                    target_trader_id=i + 1,
+                    wallet_address=f"0xw{i}",
+                    score=0.3 + 0.1 * i,
+                    scoring_version="v1",
+                    cycle_at=now,
+                    metrics_snapshot={},
+                ),
+            )
+            session.add(
+                TraderScore(
+                    target_trader_id=i + 1,
+                    wallet_address=f"0xw{i}",
+                    score=0.5 + 0.1 * i,
+                    scoring_version="v2.1",
+                    cycle_at=now,
+                    metrics_snapshot={},
+                ),
+            )
+        await session.commit()
+
+    res = await m19_client.get("/traders/scoring")
+    assert res.status_code == 200
+    assert "intersection v1∩v2" in res.text  # tooltip text

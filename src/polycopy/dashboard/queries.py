@@ -1320,6 +1320,14 @@ class ScoringComparisonRow:
     ``score_v1`` / ``score_v2`` = latest per wallet (pas forcément du même
     cycle — peut arriver transitoirement, documenté dans la template).
     ``delta_rank`` = ``rank_v1 - rank_v2`` signed (positif = améliore le rang).
+
+    M19 MH.9 : ``rank_v1`` / ``rank_v2`` restent pool-wide (rétrocompat).
+    ``rank_v1_pool`` / ``rank_v2_pool`` sont des alias explicites. Les
+    nouveaux ``rank_v1_local`` / ``rank_v2_local`` représentent les rangs sur
+    **l'intersection v1∩v2** (les wallets qui ont les deux scores) — c'est
+    sur cette intersection que Spearman est calculé. ``None`` si le wallet
+    n'est pas dans l'intersection (audit I-008 : la spec UI affichait des
+    rangs pool-wide à côté de ρ calculé sur intersection, confusion).
     """
 
     wallet_address: str
@@ -1332,6 +1340,11 @@ class ScoringComparisonRow:
     rank_v2: int | None
     delta_rank: int | None
     last_scored_at: datetime | None
+    # M19 MH.9 — alias pool + rangs locaux (intersection v1∩v2).
+    rank_v1_pool: int | None = None
+    rank_v2_pool: int | None = None
+    rank_v1_local: int | None = None
+    rank_v2_local: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1415,11 +1428,19 @@ async def list_scoring_comparison(
     v1_by_wallet = {r.wallet_address: float(r.score) for r in v1_rows}
     v2_by_wallet = {r.wallet_address: float(r.score) for r in v2_rows}
 
-    # Ranks 1-based (1 = meilleur), None si absent.
+    # Ranks 1-based (1 = meilleur), None si absent (pool-wide).
     v1_ranked = sorted(v1_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
     v2_ranked = sorted(v2_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
     rank_v1 = {w: i + 1 for i, (w, _) in enumerate(v1_ranked)}
     rank_v2 = {w: i + 1 for i, (w, _) in enumerate(v2_ranked)}
+
+    # M19 MH.9 : rangs **locaux** sur l'intersection v1∩v2 (cohérent calcul
+    # Spearman). Évite la confusion "Rank v1 33 / Spearman 0.92" sur N=13.
+    intersection = set(v1_by_wallet) & set(v2_by_wallet)
+    v1_local_sorted = sorted(intersection, key=lambda w: v1_by_wallet[w], reverse=True)
+    v2_local_sorted = sorted(intersection, key=lambda w: v2_by_wallet[w], reverse=True)
+    rank_v1_local = {w: i + 1 for i, w in enumerate(v1_local_sorted)}
+    rank_v2_local = {w: i + 1 for i, w in enumerate(v2_local_sorted)}
 
     all_wallets = set(v1_by_wallet) | set(v2_by_wallet) | set(trader_by_wallet)
     rows: list[ScoringComparisonRow] = []
@@ -1440,6 +1461,10 @@ async def list_scoring_comparison(
                 score_v2=s2,
                 rank_v1=r1,
                 rank_v2=r2,
+                rank_v1_pool=r1,
+                rank_v2_pool=r2,
+                rank_v1_local=rank_v1_local.get(wallet),
+                rank_v2_local=rank_v2_local.get(wallet),
                 delta_rank=delta,
                 last_scored_at=(t.last_scored_at if t is not None else None),
             ),
