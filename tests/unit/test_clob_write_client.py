@@ -161,6 +161,71 @@ def test_clob_write_client_passes_use_server_time_to_sdk(
     assert second_call.kwargs["use_server_time"] is True
 
 
+# --- M18 ME.5 : Builder code optionnel --------------------------------------
+
+
+def _real_settings_with_builder(*, builder_code: str | None, builder_address: str | None = None) -> Settings:
+    return Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        execution_mode="live",
+        polymarket_private_key="0x" + "1" * 64,
+        polymarket_funder="0xF000000000000000000000000000000000000000",
+        polymarket_builder_code=builder_code,
+        polymarket_builder_address=builder_address,
+    )
+
+
+def test_settings_polymarket_builder_code_pattern_validates_hex32() -> None:
+    """M18 ME.5 : pattern strict ^0x + 64 hex (bytes32)."""
+    from pydantic import ValidationError
+
+    valid_code = "0x" + "a" * 64
+    settings = _real_settings_with_builder(builder_code=valid_code)
+    assert settings.polymarket_builder_code == valid_code
+
+    with pytest.raises(ValidationError):
+        _real_settings_with_builder(builder_code="0xshort")
+    with pytest.raises(ValidationError):
+        _real_settings_with_builder(builder_code="not-hex" + "a" * 60)
+
+
+def test_clob_write_client_passes_builder_config_when_set(
+    mock_clob_class: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M18 ME.5 D9 : `BuilderConfig(builder_address, builder_code)` plombé au L2 SDK."""
+    spy_builder_calls: list[Any] = []
+
+    def _spy_builder_config(*args: Any, **kwargs: Any) -> Any:
+        spy_builder_calls.append({"args": args, "kwargs": kwargs})
+        return MagicMock(builder_code=kwargs.get("builder_code"))
+
+    monkeypatch.setattr(cwc_module, "BuilderConfig", _spy_builder_config)
+
+    code = "0x" + "b" * 64
+    settings = _real_settings_with_builder(builder_code=code)
+    ClobWriteClient(settings)
+
+    assert spy_builder_calls, "BuilderConfig was not instantiated"
+    last = spy_builder_calls[-1]
+    assert last["kwargs"]["builder_code"] == code
+    # Default à polymarket_funder quand builder_address non set.
+    assert last["kwargs"]["builder_address"] == "0xF000000000000000000000000000000000000000"
+
+    # 2nd call to ClobClient is the L2 (real) client — reçoit builder_config.
+    second_call = mock_clob_class.call_args_list[1]
+    assert second_call.kwargs["builder_config"] is not None
+
+
+def test_clob_write_client_passes_no_builder_config_when_unset(
+    mock_clob_class: MagicMock,
+) -> None:
+    """M18 ME.5 D9 : `polymarket_builder_code=None` → builder_config=None (default)."""
+    ClobWriteClient(_real_settings())  # default = no builder_code
+    second_call = mock_clob_class.call_args_list[1]
+    assert second_call.kwargs["builder_config"] is None
+
+
 def test_clob_write_client_uses_polymarket_clob_host_setting(
     mock_clob_class: MagicMock,
     monkeypatch: pytest.MonkeyPatch,

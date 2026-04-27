@@ -99,6 +99,27 @@ class Settings(BaseSettings):
             "UNIQUEMENT par le wrap script (approve USDC.e → Onramp)."
         ),
     )
+    polymarket_builder_code: str | None = Field(
+        None,
+        pattern=r"^0x[0-9a-fA-F]{64}$",
+        description=(
+            "M18 ME.5 — Builder code Polymarket (bytes32, public, non-secret). "
+            "Si set, le SDK V2 plomb la valeur dans chaque Order.builder via "
+            "BuilderConfig — fee rebates apparents sur le Builder Leaderboard. "
+            "Réclamer son code via polymarket.com/settings?tab=builder. "
+            "Default None = aucun builder, comportement strict M3..M16. "
+            "Cohérent discipline MACHINE_ID (public, loggé en clair)."
+        ),
+    )
+    polymarket_builder_address: str | None = Field(
+        None,
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description=(
+            "M18 ME.5 — Adresse Ethereum du wallet builder (utilisée par "
+            "BuilderConfig). Optional — si POLYMARKET_BUILDER_CODE set ET "
+            "ce champ None, default à POLYMARKET_FUNDER. Public, loggé en clair."
+        ),
+    )
 
     # --- Cibles ---
     # `NoDecode` désactive le JSON-decode auto de pydantic-settings pour ce champ ;

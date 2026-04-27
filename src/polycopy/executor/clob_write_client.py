@@ -16,7 +16,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from py_clob_client_v2 import ClobClient, OrderArgs, OrderType
+from py_clob_client_v2 import BuilderConfig, ClobClient, OrderArgs, OrderType
 
 from polycopy.executor.dtos import BuiltOrder, OrderResult
 
@@ -46,10 +46,13 @@ class ClobWriteClient:
         self._settings = settings
         self._client = self._derive_client(settings)
         # Aucun log des creds (api_key, secret, passphrase) — règle de sécurité.
+        # Builder code public — flag bool pour réduire le spam log (la valeur
+        # peut être consultée dans `.env` directement).
         log.info(
             "executor_creds_ready",
             signature_type=settings.polymarket_signature_type,
             use_server_time=settings.polymarket_use_server_time,
+            builder_code_set=settings.polymarket_builder_code is not None,
         )
 
     @staticmethod
@@ -62,6 +65,17 @@ class ClobWriteClient:
             key=settings.polymarket_private_key,
         )
         api_creds = temp_client.create_or_derive_api_key()
+        # M18 ME.5 D9 : BuilderConfig instancié uniquement si builder_code set,
+        # sinon None laissé au SDK qui skip naturellement le plombage.
+        builder_config: BuilderConfig | None = None
+        if settings.polymarket_builder_code is not None:
+            builder_address = (
+                settings.polymarket_builder_address or settings.polymarket_funder or ""
+            )
+            builder_config = BuilderConfig(
+                builder_address=builder_address,
+                builder_code=settings.polymarket_builder_code,
+            )
         # Étape 2 : L2 — client signataire complet.
         return ClobClient(
             host,
@@ -70,6 +84,7 @@ class ClobWriteClient:
             creds=api_creds,
             signature_type=settings.polymarket_signature_type,
             funder=settings.polymarket_funder,
+            builder_config=builder_config,
             use_server_time=settings.polymarket_use_server_time,
         )
 
