@@ -55,6 +55,32 @@ class Settings(BaseSettings):
     )
     polymarket_signature_type: int = Field(1, ge=0, le=2)
 
+    # --- Polymarket V2 (M18) ---------------------------------------------
+    polymarket_clob_host: str = Field(
+        "https://clob.polymarket.com",
+        pattern=r"^https://[a-zA-Z0-9.-]+(?::\d+)?$",
+        description=(
+            "M18 — Host CLOB Polymarket (REST). Pré-cutover V2 (avant 28 "
+            "avril 2026 ~11h UTC) : peut pointer sur "
+            "https://clob-v2.polymarket.com pour tester contre le testnet. "
+            "Post-cutover : prod URL bascule automatiquement sur le backend "
+            "V2, default OK. Consommé par ClobReadClient, ClobMetadataClient, "
+            "ClobOrderbookReader, FeeRateClient, ClobWriteClient (via SDK). "
+            "Pattern strict — pas de http:// accepté."
+        ),
+    )
+    polymarket_use_server_time: bool = Field(
+        True,
+        description=(
+            "M18 — Si True, le SDK V2 ClobClient fetch /time avant chaque "
+            "order sign et utilise l'horloge serveur pour le champ timestamp "
+            "(ms) du signed struct V2. Coût +1 round-trip HTTP par sign "
+            "(~50-200ms), bénéfice zéro risque de rejection sur clock drift "
+            "(VM prod peut dériver après suspend/resume). Désactivable pour "
+            "tests/debug."
+        ),
+    )
+
     # --- Cibles ---
     # `NoDecode` désactive le JSON-decode auto de pydantic-settings pour ce champ ;
     # le validator ci-dessous reçoit la string brute et gère CSV + JSON.

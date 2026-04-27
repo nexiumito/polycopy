@@ -4,8 +4,11 @@ Le `neg_risk` est récupéré via `GammaApiClient.get_market` (M2) qui expose
 le champ depuis la réponse Gamma — pas besoin d'un endpoint dédié.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
@@ -17,20 +20,35 @@ from tenacity import (
     wait_exponential,
 )
 
+if TYPE_CHECKING:
+    from polycopy.config import Settings
+
 log = structlog.get_logger(__name__)
 _tenacity_log = logging.getLogger(__name__)
 
 
 class ClobMetadataClient:
-    """`GET https://clob.polymarket.com/tick-size?token_id=...`. Cache TTL 5 min."""
+    """`GET <polymarket_clob_host>/tick-size?token_id=...`. Cache TTL 5 min.
 
-    BASE_URL = "https://clob.polymarket.com"
+    M18 : `BASE_URL` consommé via `settings.polymarket_clob_host` (D7).
+    `settings=None` reste accepté pour rétrocompat tests M2..M17 (default
+    `https://clob.polymarket.com`).
+    """
+
+    DEFAULT_BASE_URL = "https://clob.polymarket.com"
     DEFAULT_TIMEOUT = 5.0
     CACHE_TTL = timedelta(minutes=5)
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        settings: Settings | None = None,
+    ) -> None:
         self._http = http_client
         self._cache: dict[str, tuple[datetime, float]] = {}
+        self._base_url = (
+            settings.polymarket_clob_host if settings is not None else self.DEFAULT_BASE_URL
+        )
 
     async def get_tick_size(self, token_id: str) -> float:
         """Retourne le tick size minimum pour un token. Cache 5 min."""
@@ -54,7 +72,7 @@ class ClobMetadataClient:
     )
     async def _fetch(self, token_id: str) -> float:
         response = await self._http.get(
-            f"{self.BASE_URL}/tick-size",
+            f"{self._base_url}/tick-size",
             params={"token_id": token_id},
             timeout=self.DEFAULT_TIMEOUT,
         )

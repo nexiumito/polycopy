@@ -85,7 +85,7 @@ class MonitoringOrchestrator:
 
                 wallet_reader = VirtualWalletStateReader(
                     self._session_factory,
-                    ClobReadClient(http_client),
+                    ClobReadClient(http_client, settings=self._settings),
                     self._settings,
                 )
                 log.info("monitoring_virtual_wallet_reader_enabled")

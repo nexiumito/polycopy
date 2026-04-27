@@ -151,6 +151,33 @@ def test_clob_write_client_calls_create_or_derive_api_key(
     instance.create_or_derive_api_creds.assert_not_called()
 
 
+def test_clob_write_client_passes_use_server_time_to_sdk(
+    mock_clob_class: MagicMock,
+) -> None:
+    """M18 ME.2 D8 : `use_server_time` propagé au constructor SDK V2 L2."""
+    ClobWriteClient(_real_settings())
+    # 2nd call to ClobClient is the L2 (real) client.
+    second_call = mock_clob_class.call_args_list[1]
+    assert second_call.kwargs["use_server_time"] is True
+
+
+def test_clob_write_client_uses_polymarket_clob_host_setting(
+    mock_clob_class: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M18 ME.2 D7 : `host` propagé depuis ``settings.polymarket_clob_host``."""
+    monkeypatch.setenv("POLYMARKET_CLOB_HOST", "https://clob-v2.polymarket.com")
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        execution_mode="live",
+        polymarket_private_key="0x" + "1" * 64,
+        polymarket_funder="0xF",
+    )
+    ClobWriteClient(settings)
+    first_call = mock_clob_class.call_args_list[0]
+    assert first_call.args[0] == "https://clob-v2.polymarket.com"
+
+
 async def test_build_order_args_passes_string_side_directly(
     mock_clob_class: MagicMock,
     sample_clob_order_response: dict[str, Any],

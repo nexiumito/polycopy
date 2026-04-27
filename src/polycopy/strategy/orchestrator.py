@@ -76,7 +76,7 @@ class StrategyOrchestrator:
         )
         async with httpx.AsyncClient() as http_client:
             gamma_client = GammaApiClient(http_client, settings=self._settings)
-            clob_client = ClobReadClient(http_client)
+            clob_client = ClobReadClient(http_client, settings=self._settings)
             # M16 : FeeRateClient opt-in via STRATEGY_FEES_AWARE_ENABLED.
             # Partage le httpx.AsyncClient (read-only public no-auth, pas de
             # cred touché). Co-lancement Strategy (pas Executor) car le fee

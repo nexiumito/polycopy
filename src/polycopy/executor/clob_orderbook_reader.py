@@ -10,7 +10,7 @@ import logging
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
@@ -24,6 +24,9 @@ from tenacity import (
 
 from polycopy.executor.dtos import Orderbook, OrderbookLevel
 
+if TYPE_CHECKING:
+    from polycopy.config import Settings
+
 log = structlog.get_logger(__name__)
 _tenacity_log = logging.getLogger(__name__)
 
@@ -33,14 +36,18 @@ class OrderbookNotFoundError(Exception):
 
 
 class ClobOrderbookReader:
-    """Wrapper httpx pour ``GET https://clob.polymarket.com/book?token_id=...``.
+    """Wrapper httpx pour ``GET <polymarket_clob_host>/book?token_id=...``.
 
     Cache in-memory par ``asset_id`` avec TTL configurable (5 s default) et
     LRU cap (500 entries default) pour éviter les fuites mémoire sur runs
     longs. Pic théorique post-cache : < 5 req/min observé.
+
+    M18 : `BASE_URL` consommé via `settings.polymarket_clob_host` (D7).
+    `settings=None` reste accepté pour rétrocompat tests M2..M17 (default
+    `https://clob.polymarket.com`).
     """
 
-    BASE_URL = "https://clob.polymarket.com"
+    DEFAULT_BASE_URL = "https://clob.polymarket.com"
     DEFAULT_TIMEOUT = 5.0
 
     def __init__(
@@ -49,11 +56,15 @@ class ClobOrderbookReader:
         *,
         ttl_seconds: int = 5,
         max_entries: int = 500,
+        settings: Settings | None = None,
     ) -> None:
         self._http = http_client
         self._ttl = timedelta(seconds=ttl_seconds)
         self._max = max_entries
         self._store: OrderedDict[str, tuple[datetime, Orderbook]] = OrderedDict()
+        self._base_url = (
+            settings.polymarket_clob_host if settings is not None else self.DEFAULT_BASE_URL
+        )
 
     async def get_orderbook(self, asset_id: str) -> Orderbook:
         """Retourne le book courant pour ``asset_id``. Cache TTL appliqué."""
@@ -85,7 +96,7 @@ class ClobOrderbookReader:
     async def _fetch(self, asset_id: str) -> Orderbook:
         try:
             response = await self._http.get(
-                f"{self.BASE_URL}/book",
+                f"{self._base_url}/book",
                 params={"token_id": asset_id},
                 timeout=self.DEFAULT_TIMEOUT,
             )

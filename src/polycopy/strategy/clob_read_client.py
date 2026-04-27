@@ -1,6 +1,9 @@
 """Client async read-only pour l'orderbook CLOB Polymarket (`GET /midpoint`)."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
@@ -12,22 +15,36 @@ from tenacity import (
     wait_exponential,
 )
 
+if TYPE_CHECKING:
+    from polycopy.config import Settings
+
 log = structlog.get_logger(__name__)
 _tenacity_log = logging.getLogger(__name__)
 
 
 class ClobReadClient:
-    """Read-only wrapper sur `https://clob.polymarket.com/midpoint`.
+    """Read-only wrapper sur `<polymarket_clob_host>/midpoint`.
 
     Pas de cache : prix temps réel.
     Pas d'auth : endpoint public.
+
+    M18 : `BASE_URL` retiré au profit de `settings.polymarket_clob_host` (D7) —
+    permet override testnet pré-cutover. `settings=None` reste accepté pour
+    rétrocompat tests M2..M17 (default `https://clob.polymarket.com`).
     """
 
-    BASE_URL = "https://clob.polymarket.com"
+    DEFAULT_BASE_URL = "https://clob.polymarket.com"
     DEFAULT_TIMEOUT = 5.0
 
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        settings: Settings | None = None,
+    ) -> None:
         self._http = http_client
+        self._base_url = (
+            settings.polymarket_clob_host if settings is not None else self.DEFAULT_BASE_URL
+        )
 
     async def get_midpoint(self, token_id: str) -> float | None:
         """Retourne le midpoint courant ou `None` si l'orderbook n'existe pas (404)."""
@@ -53,7 +70,7 @@ class ClobReadClient:
     )
     async def _fetch(self, token_id: str) -> dict[str, str]:
         response = await self._http.get(
-            f"{self.BASE_URL}/midpoint",
+            f"{self._base_url}/midpoint",
             params={"token_id": token_id},
             timeout=self.DEFAULT_TIMEOUT,
         )

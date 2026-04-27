@@ -83,7 +83,7 @@ class ExecutorOrchestrator:
         order_repo = MyOrderRepository(self._session_factory)
         position_repo = MyPositionRepository(self._session_factory)
         async with httpx.AsyncClient() as http_client:
-            metadata_client = ClobMetadataClient(http_client)
+            metadata_client = ClobMetadataClient(http_client, settings=self._settings)
             gamma_client = GammaApiClient(http_client)
             wallet_state_reader = WalletStateReader(http_client, self._settings)
             write_client: ClobWriteClient | None = None
@@ -98,6 +98,7 @@ class ExecutorOrchestrator:
                 orderbook_reader = ClobOrderbookReader(
                     http_client,
                     ttl_seconds=self._settings.dry_run_book_cache_ttl_seconds,
+                    settings=self._settings,
                 )
                 resolution_watcher = DryRunResolutionWatcher(
                     self._session_factory,

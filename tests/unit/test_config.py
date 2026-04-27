@@ -117,3 +117,81 @@ def test_m16_strategy_fees_aware_can_be_disabled(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("STRATEGY_FEES_AWARE_ENABLED", "false")
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.strategy_fees_aware_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# M18 — Polymarket V2 settings (cf. spec §7.1 + §7.2)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_polymarket_clob_host_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default `https://clob.polymarket.com` (M18 §7.1)."""
+    _isolated(monkeypatch)
+    monkeypatch.delenv("POLYMARKET_CLOB_HOST", raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.polymarket_clob_host == "https://clob.polymarket.com"
+
+
+def test_settings_polymarket_clob_host_pattern_rejects_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pattern strict ^https:// — refuse http:// (M18 §7.1)."""
+    from pydantic import ValidationError
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("POLYMARKET_CLOB_HOST", "http://insecure.example.com")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_polymarket_clob_host_v2_testnet_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Override testnet pré-cutover (M18 §7.1)."""
+    _isolated(monkeypatch)
+    monkeypatch.setenv("POLYMARKET_CLOB_HOST", "https://clob-v2.polymarket.com")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.polymarket_clob_host == "https://clob-v2.polymarket.com"
+
+
+def test_settings_polymarket_use_server_time_default_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default True — anti clock-skew (M18 §7.2 D8)."""
+    _isolated(monkeypatch)
+    monkeypatch.delenv("POLYMARKET_USE_SERVER_TIME", raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.polymarket_use_server_time is True
+
+
+def test_clob_clients_consume_polymarket_clob_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Les 4 read clients consomment ``settings.polymarket_clob_host`` (D7)."""
+    import httpx
+
+    from polycopy.executor.clob_metadata_client import ClobMetadataClient
+    from polycopy.executor.clob_orderbook_reader import ClobOrderbookReader
+    from polycopy.executor.fee_rate_client import FeeRateClient
+    from polycopy.strategy.clob_read_client import ClobReadClient
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("POLYMARKET_CLOB_HOST", "https://test-host.example")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    http = httpx.AsyncClient()
+    try:
+        assert (
+            ClobReadClient(http, settings=settings)._base_url == "https://test-host.example"
+        )
+        assert (
+            ClobMetadataClient(http, settings=settings)._base_url == "https://test-host.example"
+        )
+        assert (
+            ClobOrderbookReader(http, settings=settings)._base_url == "https://test-host.example"
+        )
+        assert FeeRateClient(http, settings=settings)._base_url == "https://test-host.example"
+    finally:
+        # httpx.AsyncClient must be closed; sync close is fine since no requests issued.
+        import asyncio
+
+        asyncio.run(http.aclose())

@@ -84,7 +84,7 @@ class FeeRateClient:
         plutôt que de re-fetch — économise N-1 round-trips HTTP.
     """
 
-    BASE_URL = "https://clob.polymarket.com"
+    DEFAULT_BASE_URL = "https://clob.polymarket.com"
     DEFAULT_TIMEOUT = 5.0  # cohérent ClobReadClient (read temps réel)
 
     def __init__(
@@ -98,7 +98,12 @@ class FeeRateClient:
         self._cache_max = cache_max
         self._cache: OrderedDict[str, tuple[Decimal, datetime]] = OrderedDict()
         self._inflight: dict[str, asyncio.Future[Decimal]] = {}
-        self._settings = settings  # réservé pour LATENCY_INSTRUMENTATION ext.
+        self._settings = settings
+        # M18 D7 : `polymarket_clob_host` consommé via settings ; fallback
+        # default pour rétrocompat tests M16 sans settings injectés.
+        self._base_url = (
+            settings.polymarket_clob_host if settings is not None else self.DEFAULT_BASE_URL
+        )
 
     async def get_fee_rate(self, token_id: str) -> Decimal:
         """Retourne le ``base_fee`` du marché en Decimal ∈ [0, 1] (= bps / 10000).
@@ -210,7 +215,7 @@ class FeeRateClient:
     )
     async def _fetch(self, token_id: str) -> dict[str, int]:
         response = await self._http.get(
-            f"{self.BASE_URL}/fee-rate",
+            f"{self._base_url}/fee-rate",
             params={"token_id": token_id},
             timeout=self.DEFAULT_TIMEOUT,
         )

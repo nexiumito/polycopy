@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_HOST = "https://clob.polymarket.com"
 _CHAIN_ID = 137
 
 
@@ -50,25 +49,28 @@ class ClobWriteClient:
         log.info(
             "executor_creds_ready",
             signature_type=settings.polymarket_signature_type,
+            use_server_time=settings.polymarket_use_server_time,
         )
 
     @staticmethod
     def _derive_client(settings: "Settings") -> ClobClient:
+        host = settings.polymarket_clob_host
         # Étape 1 : L1 — déterministe pour la même clé+nonce.
         temp_client = ClobClient(
-            _HOST,
+            host,
             chain_id=_CHAIN_ID,
             key=settings.polymarket_private_key,
         )
         api_creds = temp_client.create_or_derive_api_key()
         # Étape 2 : L2 — client signataire complet.
         return ClobClient(
-            _HOST,
+            host,
             chain_id=_CHAIN_ID,
             key=settings.polymarket_private_key,
             creds=api_creds,
             signature_type=settings.polymarket_signature_type,
             funder=settings.polymarket_funder,
+            use_server_time=settings.polymarket_use_server_time,
         )
 
     async def post_order(self, built: BuiltOrder) -> OrderResult:
