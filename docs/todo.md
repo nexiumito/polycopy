@@ -744,21 +744,73 @@ pytest tests/unit/test_watcher_live_reload.py -v
 
 ---
 
+## 15. M19 (Dashboard UX polish) — risques résiduels post-merge 2026-04-27
+
+11 commits MH.1 → MH.11 mergés sur main 2026-04-27 soir. Aucune action
+ops requise (UX polish only, pas de migration Alembic, pas de cutover).
+Smoke validation post-pull recommandée :
+
+```bash
+EXECUTION_MODE=dry_run DASHBOARD_ENABLED=true python -m polycopy --verbose &
+sleep 8
+for path in home detections strategy orders positions pnl activity traders performance scoring; do
+  curl -sf "http://127.0.0.1:8000/$path" > /dev/null && echo "OK $path" || echo "FAIL $path"
+done
+# Vérifier markers M19 visuellement :
+curl -sf http://127.0.0.1:8000/home | grep -E "copy-btn|info-icon|Approve stratégie \(24h\)" | head -3
+curl -sf http://127.0.0.1:8000/scoring | grep -E "Stability|intersection v1∩v2"
+curl -sf http://127.0.0.1:8000/performance | grep -E "Fee drag \(24h\)"
+pkill -f polycopy
+```
+
+### Risques résiduels à surveiller
+
+1. **MH.5 fallback YES sur outcome NULL** : positions M3..M14 historiques
+   sans `DetectedTrade.outcome` matché → `Gain max latent` calculé via
+   formule YES `(1 − avg_price) × size`. Conservateur (cohérent legacy
+   M13), mais surévalue le payoff max pour positions BUY NO historiques.
+   Mitigation : observer `/home` post-restart prod. Si divergence
+   visible vs analyse manuelle, considérer migration Alembic 0011
+   (`MyPosition.outcome_side` + backfill SQL) en M20+ (D4 alternative).
+2. **MH.5 JOIN runtime perf** : `/home` p50 mesurée +N ms à monitorer
+   sur prod 500+ positions. Si dégradation > 50ms, idem migration 0011
+   à reconsidérer.
+3. **MH.9 ranks locaux** : si pool v1 ou v2 trop petit (< 3 wallets),
+   intersection vide → tous rangs locaux `None`, le tableau affiche `—`
+   sur les colonnes Rank. Acceptable v1 (Spearman déjà retourne `None`
+   dans ce cas), tooltip header documente.
+4. **MH.10 wash_risk** : feature flag template strict
+   `{% if scoring_version == "v2.2" %}` — colonne absente tant que MF
+   non shippé. Si on bump `SCORING_VERSION` à v2.2 sans avoir shippé MF
+   (i.e. `wash_score` non peuplé dans `TraderPerformanceRow`), la colonne
+   apparaît avec tous `—`. Solution : ne flip `SCORING_VERSION` qu'après
+   ship MF (cohérent versioning sacré).
+5. **MH.4 tooltips mobile** : `<span title>` natif HTML invisible sur
+   tactile (acceptable v1 desktop-first). Future amélioration via
+   `details/summary` ou bibliothèque tooltip si demande user.
+
+Aucune intervention ops bloquante. Tous les risques sont monitorables
+post-restart sans rollback.
+
+---
+
 ## Documenté (référence rapide)
 
 - Spec M14 complète : [specs/M14-scoring-v2.1-robust.md](specs/M14-scoring-v2.1-robust.md)
 - Spec M15 complète : [specs/M15-anti-toxic-lifecycle.md](specs/M15-anti-toxic-lifecycle.md)
 - Spec M16 complète : [specs/M16-dynamic-fees-ev.md](specs/M16-dynamic-fees-ev.md)
+- Spec M17 complète : [specs/M17-cross-layer-integrity.md](specs/M17-cross-layer-integrity.md)
+- Spec M18 complète : [specs/M18-polymarket-v2-migration.md](specs/M18-polymarket-v2-migration.md)
+- Spec M19 complète : [specs/M19-dashboard-ux-polish.md](specs/M19-dashboard-ux-polish.md)
 - Script H-EMP MA : [scripts/validate_ma_hypotheses.py](../scripts/validate_ma_hypotheses.py)
 - Brief original MA : [next/MA.md](next/MA.md)
 - Brief original MB : [next/MB.md](next/MB.md)
 - Brief original MC (fees) : [next/MC.md](next/MC.md)
+- Brief original MH (UX polish) : [next/MH.md](next/MH.md)
 - Roadmap consolidée : [next/README.md](next/README.md)
-- **Prochain module recommandé** : **MD** (cross-layer integrity patches —
-  5 CRITICALs audit 2026-04-24 qui bloquent le passage live). Indépendant
-  de MA/MB/MC, parallélisable à la collecte 30j d'`internal_pnl_score`.
-  Ship avant le flip `EXECUTION_MODE=live`. Cf. [next/MD.md](next/MD.md).
-  MF (Wash + Mitts-Ofir capstone) reste bloqué jusqu'à 30j post-MB.
+- **Prochain module recommandé** : **MK** (M20 — latency phase 1b WSS
+  market detection p50 13s → 2-4s). Indépendant, parallélisable. MF
+  (Wash + Mitts-Ofir capstone) reste bloqué jusqu'à 30j post-MB.
 - **Migration Polymarket V2** : doc officielle
   [docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration).
   Cutover 28 avril 2026 ~11h UTC, ~1h downtime. Procédure complète §14.
