@@ -769,3 +769,84 @@ class TestMh8StabilityMetric:
         # Au moins un badge stability rendu (🟢/🟡/🔴/⏳).
         assert "Stability" in res.text
         assert ("🟢" in res.text) or ("⏳" in res.text)
+
+
+# ---------------------------------------------------------------------------
+# MH.11 — N+1 fix get_home_alltime_stats (single aggregation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh11_alltime_stats_filter_simulated_strict_under_live_mode(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """M17 MD.1 invariant : live mode n'inclut pas les positions virtuelles."""
+    from datetime import timedelta
+
+    from polycopy.storage.models import MyOrder, MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # 2 positions live closed (1 win 1 loss) + fills BUY+SELL réels.
+        for i, sell_price in enumerate([0.80, 0.20]):
+            cid = f"0xclive{i}"
+            aid = f"alive{i}"
+            session.add(
+                MyPosition(
+                    condition_id=cid,
+                    asset_id=aid,
+                    size=1.0,
+                    avg_price=0.50,
+                    opened_at=now - timedelta(hours=2),
+                    closed_at=now,
+                    simulated=False,
+                    realized_pnl=None,
+                ),
+            )
+            session.add(
+                MyOrder(
+                    source_tx_hash=f"0xtx{i}b",
+                    condition_id=cid,
+                    asset_id=aid,
+                    side="BUY",
+                    size=1.0,
+                    price=0.50,
+                    tick_size=0.01,
+                    status="FILLED",
+                    simulated=False,
+                ),
+            )
+            session.add(
+                MyOrder(
+                    source_tx_hash=f"0xtx{i}s",
+                    condition_id=cid,
+                    asset_id=aid,
+                    side="SELL",
+                    size=1.0,
+                    price=sell_price,
+                    tick_size=0.01,
+                    status="FILLED",
+                    simulated=False,
+                ),
+            )
+        # 5 positions virtuelles à $50k chacune — DOIVENT être ignorées en live.
+        for i in range(5):
+            session.add(
+                MyPosition(
+                    condition_id=f"0xcsim{i}",
+                    asset_id=f"asim{i}",
+                    size=1000.0,
+                    avg_price=0.50,
+                    opened_at=now - timedelta(hours=2),
+                    closed_at=now,
+                    simulated=True,
+                    realized_pnl=50_000.0,
+                ),
+            )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory, pnl_mode="real")
+    # PnL live = (0.80 - 0.50) + (0.20 - 0.50) = 0.0.
+    # Si les virtuelles polluaient, on aurait 250_000 dans realized_pnl_total.
+    assert stats.realized_pnl_total == pytest.approx(0.0, abs=1e-6)
+    assert stats.realized_pnl_total < 1_000.0

@@ -810,34 +810,38 @@ async def get_home_alltime_stats(
         dry_run_pnl = float(dry_run_pnl_raw) if dry_run_pnl_raw is not None else 0.0
 
         # --- PnL réalisé live : Σ(SELL fills) - Σ(BUY fills) sur positions
-        # fermées non-simulées. Calcul en mémoire (volume typique < quelques
-        # centaines de positions, SQLite aurait besoin de plusieurs CTE sinon).
-        live_closed = list(
-            (
-                await session.execute(
-                    select(MyPosition.condition_id, MyPosition.asset_id).where(
-                        MyPosition.simulated.is_(False),
-                        MyPosition.closed_at.is_not(None),
+        # fermées non-simulées. M19 MH.11 : JOIN aggregation single-query
+        # (audit M-008 — boucle N+1 retirée, gain p50 ~600ms → ~50ms sur
+        # 500 positions). Préserve filtre simulated strict M17 MD.1.
+        live_pnl_raw = (
+            await session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (MyOrder.side == "SELL", MyOrder.size * MyOrder.price),
+                                else_=-(MyOrder.size * MyOrder.price),
+                            ),
+                        ),
+                        0.0,
                     ),
                 )
-            ).all(),
-        )
-        live_pnl = 0.0
-        for cond_id, asset_id in live_closed:
-            fills = list(
-                (
-                    await session.execute(
-                        select(MyOrder.side, MyOrder.size, MyOrder.price).where(
-                            MyOrder.condition_id == cond_id,
-                            MyOrder.asset_id == asset_id,
-                            MyOrder.status == "FILLED",
-                        ),
-                    )
-                ).all(),
+                .select_from(MyOrder)
+                .join(
+                    MyPosition,
+                    and_(
+                        MyPosition.condition_id == MyOrder.condition_id,
+                        MyPosition.asset_id == MyOrder.asset_id,
+                    ),
+                )
+                .where(
+                    MyOrder.status == "FILLED",
+                    MyPosition.simulated.is_(False),  # M17 MD.1 strict
+                    MyPosition.closed_at.is_not(None),
+                ),
             )
-            for side, size, price in fills:
-                signed = float(size) * float(price)
-                live_pnl += signed if side == "SELL" else -signed
+        ).scalar_one()
+        live_pnl = float(live_pnl_raw) if live_pnl_raw is not None else 0.0
 
         if pnl_mode == "real":
             realized_pnl_total = live_pnl
