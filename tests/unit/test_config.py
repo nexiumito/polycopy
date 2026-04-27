@@ -188,9 +188,7 @@ def test_settings_polymarket_usdc_e_default(
     _isolated(monkeypatch)
     monkeypatch.delenv("POLYMARKET_USDC_E_ADDRESS", raising=False)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert (
-        settings.polymarket_usdc_e_address == "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-    )
+    assert settings.polymarket_usdc_e_address == "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 
 def test_settings_collateral_onramp_pattern_rejects_invalid_hex(
@@ -239,15 +237,9 @@ def test_clob_clients_consume_polymarket_clob_host(
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     http = httpx.AsyncClient()
     try:
-        assert (
-            ClobReadClient(http, settings=settings)._base_url == "https://test-host.example"
-        )
-        assert (
-            ClobMetadataClient(http, settings=settings)._base_url == "https://test-host.example"
-        )
-        assert (
-            ClobOrderbookReader(http, settings=settings)._base_url == "https://test-host.example"
-        )
+        assert ClobReadClient(http, settings=settings)._base_url == "https://test-host.example"
+        assert ClobMetadataClient(http, settings=settings)._base_url == "https://test-host.example"
+        assert ClobOrderbookReader(http, settings=settings)._base_url == "https://test-host.example"
         assert FeeRateClient(http, settings=settings)._base_url == "https://test-host.example"
     finally:
         # httpx.AsyncClient must be closed; sync close is fine since no requests issued.

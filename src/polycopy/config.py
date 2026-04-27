@@ -1314,10 +1314,7 @@ class Settings(BaseSettings):
         qui passe `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS=` (vide) en live mode
         signale une intention ambiguë → crash boot clair.
         """
-        if (
-            self.execution_mode == "live"
-            and not self.polymarket_collateral_onramp_address
-        ):
+        if self.execution_mode == "live" and not self.polymarket_collateral_onramp_address:
             raise ValueError(
                 "M18 : EXECUTION_MODE=live requires "
                 "POLYMARKET_COLLATERAL_ONRAMP_ADDRESS to be set "

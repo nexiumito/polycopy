@@ -554,117 +554,158 @@ non négligeable. Validation H-EMP-10 (impact fees ≥ 1% post-fees) =
 ## 14. Polymarket V2 cutover — procédure mardi 28 avril 2026 ~11h UTC
 
 **Doc officielle** : [docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration).
+**Spec M18** : [docs/specs/M18-polymarket-v2-migration.md](specs/M18-polymarket-v2-migration.md).
 
-### Phase 1 — Préparation branche V2 (avant cutover)
+**M18 D11 — découverte clé** : le SDK V2 est **dual-version capable** — il
+signe V1 ou V2 selon le résultat de `/version` endpoint backend. **On peut
+shipper AVANT le cutover** (lundi 27 avril ~22h UTC) — le bot tourne en
+continu pendant la fenêtre 11h UTC, le SDK auto-flip à la première erreur
+`order_version_mismatch`. Élimine l'urgence ~30 min critique pré-cutover.
 
-**À faire avant lundi 27 avril soir** :
+### Phase 1 — Ship pré-cutover (lundi 27 avril ~22h UTC)
 
-```bash
-# Crée la branche
-git checkout -b feat/ctf-exchange-v2
-
-# Bumper le SDK Python (nom exact du package à confirmer sur PyPI)
-pip install py-clob-client-v2==1.0.0
-pip uninstall py-clob-client   # remplacement, pas in-place
-# Mettre à jour pyproject.toml en conséquence
-
-# Adapter src/polycopy/executor/ (les 4 points clés) :
-# 1. ClobWriteClient constructeur — options object, `chain` au lieu de `chainId`.
-# 2. Order struct : drop nonce/feeRateBps/taker/expiration, ajout
-#    timestamp(ms)/metadata(bytes32)/builder(bytes32). EIP-712 domain "1" → "2".
-# 3. FeeRateClient : swap `/fee-rate?token_id=` → `getClobMarketInfo()`.
-# 4. Tests intégration via https://clob-v2.polymarket.com (testnet jusqu'au cutover).
-
-# Tests stricts avant merge :
-pytest tests/unit/test_clob_write_client.py tests/integration/ -x
-ruff check . && mypy src --strict
-```
-
-**Décision builder code** : optionnel mais ROI direct. Réclame ton code via
-[polymarket.com/settings?tab=builder](https://polymarket.com/settings?tab=builder)
-et stocke-le dans une nouvelle env var `POLYMARKET_BUILDER_CODE`. Le SDK V2
-le plomb dans chaque `Order.builder` field → fee rebates sur les fills.
-
-### Phase 2 — Cutover (28 avril ~10h30 UTC)
-
-**Séquence stricte ~30 min avant le go-live Polymarket** :
+Objectif : merge sur main + restart bot V2. Le SDK query `/version` au boot
+(backend = V1 prod), signe V1 orders en attendant le cutover.
 
 ```bash
-# 1. Stop le bot V1 (proprement)
-sudo systemctl stop polycopy
-# OU pkill -f polycopy && sleep 5
+# 1. Sur la machine de dev — merge M18 sur main
+cd ~/code/polycopy
+git checkout main
+git pull origin main
+# (s'assurer que les commits ME.1 → ME.7 sont mergés)
 
-# 2. Pull la branche V2 mergée sur main
+# 2. Sur la machine prod — pull + restart
+ssh prod-machine
 cd ~/Documents/GitHub/polycopy
 git pull origin main
 
-# 3. Update les deps
+# 3. Update les deps (récupère py-clob-client-v2)
 source .venv/bin/activate
-pip install -r requirements.txt   # ou poetry install / uv sync selon ton setup
-# Vérifier que py-clob-client-v2 est bien installé :
-pip show py-clob-client-v2
+pip install -e .
+pip uninstall py-clob-client -y   # remplacer V1 par V2 strictement
+# Vérifier :
+python -c "import py_clob_client_v2; print(py_clob_client_v2.__file__)"
+# → ~/.../site-packages/py_clob_client_v2/__init__.py
+python -c "import py_clob_client" 2>&1 | grep ModuleNotFoundError
+# → doit lever (V1 désinstallé)
 
-# 4. Reset DB (cohérent §3 de ce todo)
-cp ~/.polycopy/data/polycopy.db ~/.polycopy/data/polycopy.db.bak.pre-v2
-rm ~/.polycopy/data/polycopy.db
+# 4. Vérifier .env (settings M18 nouveaux ; defaults OK)
+grep -E "POLYMARKET_CLOB_HOST|POLYMARKET_USE_SERVER_TIME" .env  # absent OU defaults
 
-# 5. Wrap USDC.e → Polymarket USD via le contrat CollateralOnramp
-#    Adresse exacte à vérifier sur docs.polymarket.com/concepts/pusd
-#    Action ONE-TIME, à faire APRÈS le cutover Polymarket (~11h UTC)
-#    via cast/foundry ou un petit script Python web3.py.
-#    Approve USDC.e d'abord, puis appel onramp.wrap(USDC.e, funder, amount).
-#    Vérifie ensuite ton solde pUSD avant restart.
-#    
-#    NOTE : en dry-run pur (EXECUTION_MODE=dry_run), ce wrap n'est PAS
-#    nécessaire — le bot ne signe aucun ordre live. Le wrap devient
-#    obligatoire au moment où tu flip EXECUTION_MODE=live.
-
-# 6. Update .env (cf. §3.5) — vérifier que TOUS les paramètres recommandés
-#    sont en place. Confirmer SCORING_VERSION=v2.1.
-
-# 7. Restart
-sudo systemctl start polycopy
-# OU python -m polycopy --verbose
+# 5. Restart
+sudo systemctl restart polycopy
+# OU
+pkill -f polycopy && python -m polycopy --verbose &
 ```
 
-### Phase 3 — Smoke test post-V2 (28 avril ~11h30 UTC)
+**Smoke validation Phase 1** :
 
 ```bash
-# Vérifie que le bot a bien démarré sur l'API V2
-tail -50 ~/.polycopy/logs/polycopy.log | grep -E "ERROR|clob_v2|exchange_v2"
-
-# Le first cycle discovery doit tourner sans erreur signature
-grep "discovery_cycle_started" ~/.polycopy/logs/polycopy.log | tail -3
-
-# Surveiller les events fee_rate côté V2 (nouveau client signature)
-grep "fee_rate_fetched" ~/.polycopy/logs/polycopy.log | head -5
-# Format JSON peut différer vs M16 V1 — les nouveaux events doivent contenir
-# au minimum : token_id, fee_rate (Decimal), source="clob_v2"
-
-# Vérifier qu'aucun ordre dry-run n'est rejeté pour signature_invalid
-sqlite3 ~/.polycopy/data/polycopy.db \
-  "SELECT reason, COUNT(*) FROM strategy_decisions
-   WHERE decided_at >= datetime('now', '-1 hour')
-   GROUP BY reason;"
+tail -50 ~/.polycopy/logs/polycopy.log | grep -E "ERROR|executor_creds|machine_id"
+# Doit montrer (en live mode) :
+# - executor_creds_ready signature_type=2 use_server_time=true builder_code_set=false
+# - machine_id_resolved
+# - aucun ERROR
+# En dry_run : pas de executor_creds_ready (lazy init préservé).
 ```
 
-### Phase 4 — Monitoring 24h post-cutover
+**Décision builder code** : optionnel mais ROI direct (~$50-150/an sur capital
+$1k). Réclame ton code via
+[polymarket.com/settings?tab=builder](https://polymarket.com/settings?tab=builder)
+et set `POLYMARKET_BUILDER_CODE=0x...` (bytes32 hex). Le SDK V2 plomb la
+valeur dans chaque `Order.builder` → fee rebates apparents sur le Builder
+Leaderboard. Default `None` = comportement strict M3..M16 (fallback fonder
+si non set + builder_code set).
 
-- Telegram : surveiller les events `executor_error` ou `executor_auth_fatal`.
-- Dashboard `/strategie` : vérifier que les decisions APPROVED se concrétisent
-  en `MyOrder` avec le nouveau format.
-- Si erreur : `git revert <merge-sha>` + restart V1 IMPOSSIBLE (Polymarket
-  V1 est offline post-cutover). Le rollback se fait sur la branche V2 par
-  hotfix git seulement.
+### Phase 2 — Auto-flip backend (mardi 28 avril ~10h-12h UTC)
+
+**Aucune action utilisateur requise.**
+
+Polymarket bascule backend ~11h UTC. Si le bot POSTe un ordre live :
+
+- Pré-flip (`/version=1`) : SDK signe V1, POST OK.
+- Flip-window : SDK détecte `order_version_mismatch` au prochain POST, call
+  `_resolve_version(force_update=True)`, retry en V2.
+- Post-flip : tous les futurs orders signés V2.
+
+En `dry_run` : pas de POST réel, pas d'opportunité de detect le flip.
+**OK** — la transition se fait automatiquement à la première vraie POST live
+post-flip `EXECUTION_MODE=live`.
+
+### Phase 3 — Smoke post-cutover (mardi 28 avril ~11h30-12h UTC)
+
+```bash
+# 1. Vérifier que le bot tourne sans erreur signature_invalid
+tail -100 ~/.polycopy/logs/polycopy.log | grep -E "ERROR|signature_invalid|order_version_mismatch"
+# → 0 ERROR, 0 signature_invalid
+
+# 2. Vérifier que get_fee_quote V2 path est exercé (au moins 1 BUY fee-aware)
+grep "clob_market_fee_quote_fetched" ~/.polycopy/logs/polycopy.log | tail -5
+# → events JSON avec condition_id, rate, exponent, taker_only
+
+# 3. Surveiller les events fee_rate fallback V2 (instabilité endpoint)
+grep "clob_market_fetch_failed_using_conservative_fallback" ~/.polycopy/logs/polycopy.log | tail -5
+# → vide ou très rare. Si plein → V2 endpoint instable, alert dev.
+
+# 4. Vérifier qu'aucun ordre dry-run n'est rejeté pour signature
+sqlite3 ~/.polycopy/data/polycopy.db \
+  "SELECT status, error_msg, COUNT(*) FROM my_orders \
+   WHERE sent_at >= datetime('now', '-1 hour') GROUP BY 1, 2;"
+# → uniquement SIMULATED (en dry_run) ou FILLED (en live).
+# → AUCUN REJECTED avec error_msg LIKE '%signature%'.
+```
+
+### Phase 4 — Monitoring 24h post-cutover (mercredi 29 avril)
+
+- Telegram heartbeat OK (event `heartbeat_sent` toutes les
+  `TELEGRAM_HEARTBEAT_INTERVAL_HOURS`).
+- Dashboard `/strategie` : decisions APPROVED se concrétisent en `MyOrder`
+  valides.
+- Aucune erreur `executor_error` ou `executor_auth_fatal`.
+- Dashboard `/exécution` : decisions de sizing fee-aware cohérentes (le
+  compteur `ev_negative_after_fees` peut bouger légèrement vs pré-M18 car la
+  formule M16 est plus précise post-D6).
+
+### Wrap pUSD pré-flip live (one-time, optionnel en dry_run)
+
+En dry-run pur (`EXECUTION_MODE=dry_run`), le bot ne signe aucun ordre live
+→ le wrap n'est **PAS** nécessaire. Devient obligatoire au flip live :
+
+```bash
+# Install web3 optional dep (~30MB, dry_run users skip)
+pip install -e ".[live]"
+
+# Set RPC Polygon
+export POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/<KEY>
+
+# Wrap 100 USDC.e → 100 pUSD
+python scripts/wrap_usdc_to_pusd.py --amount 100
+# Logs : wrap_usdc_to_pusd_completed pusd_balance=100.0 gas_total=...
+
+# Flip live mode
+echo "EXECUTION_MODE=live" >> .env
+sudo systemctl restart polycopy
+```
+
+### Rollback (impossible post-cutover, hotfix uniquement)
+
+- **Pré-cutover (lundi 27 ~22h UTC à mardi 28 ~10h59 UTC)** : possible
+  `git revert` + `pip install py-clob-client>=0.20.0` + restart V1.
+  Backend Polymarket V1 encore live. Fenêtre ~13h.
+- **Post-cutover** : Polymarket V1 backend offline. Pas de retour V1 possible.
+  Le rollback se fait par hotfix git sur main uniquement.
 
 ### Risques et mitigations
 
-| Risque | Mitigation |
-|---|---|
-| SDK V2 pas release officielle au 28 avril | Vérifier PyPI dimanche soir. Si retard → repousser le restart d'1 jour. |
-| Adresse `CollateralOnramp` change post-doc | Vérifier l'adresse 1h avant cutover sur la page doc officielle. **Ne pas hardcoder** dans le code — env var `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS`. |
-| `getClobMarketInfo()` schéma diffère du `/fee-rate` V1 | Garder le fallback Decimal(0.018) M16 — protection conservatrice. Test par token actif post-restart. |
-| Ordres dry-run rejetés pour `signature_invalid` | Bug dans la branche V2 — investigation immédiate. Le mode dry-run ne signe pas réellement, donc le seul path testé est le builder de la struct. |
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| SDK V2 PyPI release retiré entre 27/04 et 28/04 | Faible | Bloquant | Pin version exacte `==1.0.0` ; backup wheel locale `pip download py-clob-client-v2==1.0.0` |
+| `clob-v2.polymarket.com` schéma change post-spec writing | Moyen | Tests intégration cassés | Tests intégration opt-in (`-m integration`), pas dans CI critique. |
+| `getClobMarketInfo` rate limit plus strict que V1 | Moyen | Fallback fréquent | Cache TTL 60s amortit. Single-flight évite burst. Si 429 répété → augmenter TTL en hotfix. |
+| Polymarket re-deploy `CollateralOnramp` post-spec writing | Très faible | Wrap script échoue | Setting `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS` permet override sans redeploy code. |
+| Clock drift Macbook prod après suspend nuit | Moyen | Order rejection | `polymarket_use_server_time=True` default — anti drift natif. |
+| Cutover Polymarket repoussé (ex: 29 avril) | Faible | Pas d'urgence | Le SDK V2 est dual-version, continue à signer V1 OK. Ship M18 reste safe. |
+| `polymarket-apis>=0.5.0` incompatible V2 | Faible | Discovery cassée | Cette dep utilise Gamma API publique (pas CLOB write), inchangée par V2. Surveiller. |
 
 ## 13. M16 — Si nouveau feeType apparaît post-rollout
 

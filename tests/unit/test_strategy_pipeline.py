@@ -363,10 +363,7 @@ def _make_fee_client(
     from polycopy.executor.fee_rate_client import FeeQuote
 
     client = AsyncMock()
-    if rate == "0":
-        quote = FeeQuote.zero()
-    else:
-        quote = FeeQuote(rate=Decimal(rate), exponent=exponent)
+    quote = FeeQuote.zero() if rate == "0" else FeeQuote(rate=Decimal(rate), exponent=exponent)
     client.get_fee_quote = AsyncMock(return_value=quote)
     # Backward-compat : alias deprecated retourne quote.rate.
     client.get_fee_rate = AsyncMock(return_value=quote.rate)

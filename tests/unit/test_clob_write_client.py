@@ -165,7 +165,9 @@ def test_clob_write_client_passes_use_server_time_to_sdk(
 # --- M18 ME.5 : Builder code optionnel --------------------------------------
 
 
-def _real_settings_with_builder(*, builder_code: str | None, builder_address: str | None = None) -> Settings:
+def _real_settings_with_builder(
+    *, builder_code: str | None, builder_address: str | None = None
+) -> Settings:
     return Settings(  # type: ignore[call-arg]
         _env_file=None,
         execution_mode="live",

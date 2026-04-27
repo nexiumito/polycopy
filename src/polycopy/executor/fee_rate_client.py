@@ -29,7 +29,7 @@ exponential backoff + structlog events + cache TTL 60 s + LRU 500.
 Single-flight ``dict[str, Future]`` pour dédoublonner les fetches concurrents
 sur le même condition_id.
 
-Cf. spec [docs/specs/M18-polymarket-v2-migration.md](../../../docs/specs/M18-polymarket-v2-migration.md).
+Cf. spec [M18](../../../docs/specs/M18-polymarket-v2-migration.md).
 """
 
 from __future__ import annotations
@@ -333,10 +333,7 @@ class FeeRateClient:
         if not isinstance(fd_raw, dict):
             return FeeQuote.zero()
         rate_raw = fd_raw.get("r")
-        if rate_raw is None or rate_raw == "":
-            rate = Decimal("0")
-        else:
-            rate = Decimal(str(rate_raw))
+        rate = Decimal("0") if rate_raw is None or rate_raw == "" else Decimal(str(rate_raw))
         exponent_raw = fd_raw.get("e", 0)
         try:
             exponent = int(exponent_raw)

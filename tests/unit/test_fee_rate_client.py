@@ -1,7 +1,6 @@
 """Tests du `FeeRateClient` V2 (M18 ME.3) — `/clob-markets/{cid}` endpoint.
 
-Cf. spec [docs/specs/M18-polymarket-v2-migration.md](../../docs/specs/M18-polymarket-v2-migration.md)
-§5.3 + §9.1.
+Cf. spec M18 §5.3 + §9.1.
 
 Le contrat M16 ``get_fee_rate(token_id) -> Decimal`` est préservé comme alias
 deprecated — backward-compat 1 version (M19+ drop).
@@ -20,11 +19,7 @@ import respx
 import tenacity
 
 from polycopy.executor import fee_rate_client as frc_module
-from polycopy.executor.fee_rate_client import (
-    _CONSERVATIVE_FALLBACK_RATE,
-    FeeQuote,
-    FeeRateClient,
-)
+from polycopy.executor.fee_rate_client import FeeQuote, FeeRateClient
 
 
 @pytest.fixture(autouse=True)
@@ -385,9 +380,7 @@ async def test_fee_rate_client_no_secret_leak_in_logs(
         mock.get(f"/clob-markets/{cid_404}").mock(
             return_value=httpx.Response(404, json={"error": "not found"})
         )
-        mock.get(f"/clob-markets/{cid_down}").mock(
-            side_effect=[httpx.ConnectError("net down")] * 5
-        )
+        mock.get(f"/clob-markets/{cid_down}").mock(side_effect=[httpx.ConnectError("net down")] * 5)
         async with httpx.AsyncClient() as http:
             client = FeeRateClient(http)
             await client.get_fee_quote("t1", condition_id=cid_ok)

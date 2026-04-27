@@ -105,7 +105,7 @@ class ClobWriteClient:
         # M18 : SDK V2 attend `PartialCreateOrderOptions` (dataclass), pas dict.
         # `tick_size` est un Literal["0.1","0.01","0.001","0.0001"] côté SDK.
         options = PartialCreateOrderOptions(
-            tick_size=str(built.tick_size),  # type: ignore[arg-type]
+            tick_size=str(built.tick_size),
             neg_risk=built.neg_risk,
         )
         # M18 : SDK V2 expose `OrderType` comme classe à attributs (pas Enum) —

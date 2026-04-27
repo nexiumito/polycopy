@@ -28,8 +28,7 @@ try:
     from web3.middleware import geth_poa_middleware
 except ImportError as e:
     raise SystemExit(
-        'web3.py non installé. Run : pip install -e ".[live]"\n'
-        "Cf. spec M18 §ME.4 + docs/setup.md."
+        'web3.py non installé. Run : pip install -e ".[live]"\nCf. spec M18 §ME.4 + docs/setup.md.'
     ) from e
 
 from polycopy.config import Settings
@@ -145,12 +144,14 @@ def main() -> int:
 
     # Step 1 : approve USDC.e → onramp.
     nonce = w3.eth.get_transaction_count(account.address)
-    approve_tx = usdc.functions.approve(onramp_addr, amount_wei).build_transaction({
-        "from": account.address,
-        "nonce": nonce,
-        "gas": 100_000,
-        "gasPrice": w3.eth.gas_price,
-    })
+    approve_tx = usdc.functions.approve(onramp_addr, amount_wei).build_transaction(
+        {
+            "from": account.address,
+            "nonce": nonce,
+            "gas": 100_000,
+            "gasPrice": w3.eth.gas_price,
+        }
+    )
     signed = account.sign_transaction(approve_tx)
     tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
     log.info("wrap_usdc_to_pusd_approve_sent", tx=tx_hash.hex())
@@ -161,12 +162,14 @@ def main() -> int:
 
     # Step 2 : call onramp.wrap(USDC.e, funder, amount).
     nonce += 1
-    wrap_tx = onramp.functions.wrap(usdc_addr, funder, amount_wei).build_transaction({
-        "from": account.address,
-        "nonce": nonce,
-        "gas": 200_000,
-        "gasPrice": w3.eth.gas_price,
-    })
+    wrap_tx = onramp.functions.wrap(usdc_addr, funder, amount_wei).build_transaction(
+        {
+            "from": account.address,
+            "nonce": nonce,
+            "gas": 200_000,
+            "gasPrice": w3.eth.gas_price,
+        }
+    )
     signed = account.sign_transaction(wrap_tx)
     tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
     log.info("wrap_usdc_to_pusd_wrap_sent", tx=tx_hash.hex())
