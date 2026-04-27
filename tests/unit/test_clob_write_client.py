@@ -115,8 +115,9 @@ async def test_post_order_passes_neg_risk_in_options(
     await client.post_order(built)
     call = instance.create_and_post_order.call_args
     options = call.args[1]
-    assert options["neg_risk"] is True
-    assert options["tick_size"] == "0.01"
+    # M18 ME.6 : options est un PartialCreateOrderOptions dataclass V2.
+    assert options.neg_risk is True
+    assert options.tick_size == "0.01"
 
 
 # --- M18 ME.1 : SDK V1 → V2 swap --------------------------------------------

@@ -16,7 +16,13 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from py_clob_client_v2 import BuilderConfig, ClobClient, OrderArgs, OrderType
+from py_clob_client_v2 import (
+    BuilderConfig,
+    ClobClient,
+    OrderArgs,
+    OrderType,
+    PartialCreateOrderOptions,
+)
 
 from polycopy.executor.dtos import BuiltOrder, OrderResult
 
@@ -96,7 +102,12 @@ class ClobWriteClient:
                 f"{self._settings.execution_mode!r} — MUST be 'live' (bug)",
             )
         args = self._build_order_args(built)
-        options = {"tick_size": str(built.tick_size), "neg_risk": built.neg_risk}
+        # M18 : SDK V2 attend `PartialCreateOrderOptions` (dataclass), pas dict.
+        # `tick_size` est un Literal["0.1","0.01","0.001","0.0001"] côté SDK.
+        options = PartialCreateOrderOptions(
+            tick_size=str(built.tick_size),  # type: ignore[arg-type]
+            neg_risk=built.neg_risk,
+        )
         # M18 : SDK V2 expose `OrderType` comme classe à attributs (pas Enum) —
         # `OrderType.FOK` est `"FOK"` (string), accès via `getattr`.
         order_type_enum = getattr(OrderType, built.order_type)
