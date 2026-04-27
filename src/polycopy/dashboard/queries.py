@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from polycopy.dashboard.dtos import DiscoveryStatus, KpiCard, PnlMilestone
+from polycopy.dashboard.jinja_filters import format_usd
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
@@ -629,14 +630,6 @@ def _delta_sign(delta: float | None) -> Literal["positive", "negative", "neutral
     return "neutral"
 
 
-def _format_card_usd(value: float | None) -> str:
-    """Formatage USD entier arrondi avec séparateurs de milliers (ex. ``$1,024``)."""
-    if value is None:
-        return "—"
-    sign = "-" if value < 0 else ""
-    return f"{sign}${abs(round(value)):,}"
-
-
 def _format_card_delta(delta_pct: float | None) -> str | None:
     """Formate un delta % pour affichage card (None → invisible)."""
     if delta_pct is None:
@@ -708,7 +701,8 @@ async def get_home_kpi_cards(
     return [
         KpiCard(
             title="Total USDC",
-            value=_format_card_usd(total_value),
+            value=format_usd(total_value),
+            value_raw=total_value,
             delta=_format_card_delta(total_delta_pct),
             delta_sign=_delta_sign(total_delta_pct),
             sparkline_points=total_points,
@@ -717,6 +711,7 @@ async def get_home_kpi_cards(
         KpiCard(
             title="Drawdown",
             value=(f"{drawdown_value:.1f}%" if drawdown_value is not None else "—"),
+            value_raw=drawdown_value,
             delta=None,
             delta_sign=("negative" if drawdown_value and drawdown_value > 0 else "neutral"),
             sparkline_points=drawdown_points,
@@ -725,6 +720,7 @@ async def get_home_kpi_cards(
         KpiCard(
             title="Positions ouvertes",
             value=str(open_positions_count),
+            value_raw=float(open_positions_count),
             delta=None,
             delta_sign=None,
             sparkline_points=[],
@@ -733,6 +729,7 @@ async def get_home_kpi_cards(
         KpiCard(
             title="Trades détectés (24 h)",
             value=str(detected_trades_24h),
+            value_raw=float(detected_trades_24h),
             delta=None,
             delta_sign=None,
             sparkline_points=[],

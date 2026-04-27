@@ -22,7 +22,14 @@
 <article class="rounded-xl border p-4 flex flex-col gap-2"
          style="border-color: var(--color-border); background: var(--color-surface);">
   <header class="flex items-center justify-between">
-    <span class="text-xs uppercase tracking-wide" style="color: var(--color-muted);">{{ card.title }}</span>
+    <span class="text-xs uppercase tracking-wide flex items-center" style="color: var(--color-muted);">
+      {{ card.title }}
+      {%- if card.tooltip %}
+      <span class="info-icon" title="{{ card.tooltip }}">
+        <i data-lucide="info" class="w-3 h-3"></i>
+      </span>
+      {%- endif %}
+    </span>
     <i data-lucide="{{ card.icon }}" class="w-4 h-4" style="color: var(--color-muted);"></i>
   </header>
   <p class="text-2xl font-semibold" style="color: var(--color-text);">{{ card.value }}</p>

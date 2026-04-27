@@ -12,17 +12,23 @@ class KpiCard(BaseModel):
     """KPI card rendue par la Home (4 cards, layout grid).
 
     Tous les champs textuels sont **déjà formatés** côté query (cf. spec §6.1) —
-    Jinja se contente d'afficher.
+    Jinja se contente d'afficher. M19 MH.7 : ``value`` reste pré-formaté
+    (rétrocompat tests M6) mais utilise désormais ``format_usd`` côté query
+    pour cohérence /home ↔ /performance ; ``value_raw`` expose la valeur
+    numérique pour audit. M19 MH.4 : ``tooltip`` optionnel rend une icône
+    info à côté du titre.
     """
 
     model_config = ConfigDict(frozen=True)
 
     title: str
     value: str
+    value_raw: float | None = None
     delta: str | None
     delta_sign: Literal["positive", "negative", "neutral"] | None
     sparkline_points: list[tuple[datetime, float]]
     icon: str
+    tooltip: str | None = None
 
 
 class DiscoveryStatus(BaseModel):
