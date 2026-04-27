@@ -80,6 +80,25 @@ class Settings(BaseSettings):
             "tests/debug."
         ),
     )
+    polymarket_collateral_onramp_address: str = Field(
+        "0x93070a847efEf7F70739046A929D47a521F5B8ee",
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description=(
+            "M18 — Adresse Polygon du contrat CollateralOnramp (V2). "
+            "Confirmée live 2026-04-27 via "
+            "docs.polymarket.com/resources/contracts. Consommée UNIQUEMENT "
+            "par scripts/wrap_usdc_to_pusd.py — ClobClient V2 ne touche pas "
+            "ce contrat. Override possible si Polymarket re-deploy."
+        ),
+    )
+    polymarket_usdc_e_address: str = Field(
+        "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description=(
+            "M18 — Adresse USDC.e Polygon canonique pré-V2. Consommée "
+            "UNIQUEMENT par le wrap script (approve USDC.e → Onramp)."
+        ),
+    )
 
     # --- Cibles ---
     # `NoDecode` désactive le JSON-decode auto de pydantic-settings pour ce champ ;
@@ -1263,6 +1282,27 @@ class Settings(BaseSettings):
                 "AUTO_BLACKLIST_PNL_THRESHOLD_USD "
                 f"({self.auto_blacklist_pnl_threshold_usd}) must be ≤ 0 "
                 "(seuil de PnL négatif déclenchant la blacklist).",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_m18_v2_consistency(self) -> "Settings":
+        """Cross-field M18 : EXECUTION_MODE=live requires collateral_onramp_address.
+
+        Le default est valide (confirmé live 2026-04-27) mais un utilisateur
+        qui passe `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS=` (vide) en live mode
+        signale une intention ambiguë → crash boot clair.
+        """
+        if (
+            self.execution_mode == "live"
+            and not self.polymarket_collateral_onramp_address
+        ):
+            raise ValueError(
+                "M18 : EXECUTION_MODE=live requires "
+                "POLYMARKET_COLLATERAL_ONRAMP_ADDRESS to be set "
+                "(default OK : 0x93070a847efEf7F70739046A929D47a521F5B8ee). "
+                "Vérifier que le default est encore valide via "
+                "docs.polymarket.com/resources/contracts.",
             )
         return self
 

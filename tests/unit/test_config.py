@@ -164,6 +164,65 @@ def test_settings_polymarket_use_server_time_default_true(
     assert settings.polymarket_use_server_time is True
 
 
+# ---------------------------------------------------------------------------
+# M18 ME.4 — pUSD collateral onramp settings
+# ---------------------------------------------------------------------------
+
+
+def test_settings_polymarket_collateral_onramp_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default `0x93070a847efEf7F70739046A929D47a521F5B8ee` (M18 §7.3)."""
+    _isolated(monkeypatch)
+    monkeypatch.delenv("POLYMARKET_COLLATERAL_ONRAMP_ADDRESS", raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.polymarket_collateral_onramp_address == (
+        "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+    )
+
+
+def test_settings_polymarket_usdc_e_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` (M18 §7.3)."""
+    _isolated(monkeypatch)
+    monkeypatch.delenv("POLYMARKET_USDC_E_ADDRESS", raising=False)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert (
+        settings.polymarket_usdc_e_address == "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    )
+
+
+def test_settings_collateral_onramp_pattern_rejects_invalid_hex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pattern strict ^0x + 40 hex (M18 §7.3)."""
+    from pydantic import ValidationError
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("POLYMARKET_COLLATERAL_ONRAMP_ADDRESS", "invalid-not-hex")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_live_mode_requires_collateral_onramp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`EXECUTION_MODE=live` + onramp empty → ValueError (M18 §7.5)."""
+    from pydantic import ValidationError
+
+    _isolated(monkeypatch)
+    monkeypatch.setenv("EXECUTION_MODE", "live")
+    monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0x" + "1" * 64)
+    monkeypatch.setenv("POLYMARKET_FUNDER", "0xF0000000000000000000000000000000000000F0")
+    # Empty string overrides default (Pydantic respects "" as a value).
+    with pytest.raises(ValidationError):
+        Settings(  # type: ignore[call-arg]
+            _env_file=None,
+            polymarket_collateral_onramp_address="",
+        )
+
+
 def test_clob_clients_consume_polymarket_clob_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

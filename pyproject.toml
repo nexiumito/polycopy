@@ -42,6 +42,12 @@ dev = [
 docs = [
     "playwright>=1.40",
 ]
+live = [
+    # M18 ME.4 — web3 dep optionnelle pour scripts/wrap_usdc_to_pusd.py.
+    # Évite ~30 MB d'install forcée à 100% des utilisateurs (95%+ tournent
+    # en dry_run). One-time helper avant le flip EXECUTION_MODE=live.
+    "web3>=6.0,<8.0",
+]
 
 [project.scripts]
 polycopy = "polycopy.__main__:main"
