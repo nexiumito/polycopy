@@ -1,6 +1,6 @@
 # Roadmap des specs polycopy
 
-**Mise à jour** : 2026-04-27 (post-ship M14 / M15 / M16 / M17, **M18 V2 migration spec rédigée**, cutover Polymarket le 28 avril ~11h UTC).
+**Mise à jour** : 2026-04-27 soir (post-ship M14 / M15 / M16 / M17 / **M18 V2 migration**, restart prod prévu 2026-04-28 après-midi avec DB reset post-M18 cutover Polymarket ~11h UTC).
 
 **Source de vérité brouillons** : [`docs/next/`](../next/) — modules de
 roadmap consolidés depuis l'audit 2026-04-24 + 3 deep-searches. Convention
@@ -61,7 +61,7 @@ de procédures pull / reset / cutover M14 → M15 → M16.
 
 | Spec | Brief | Titre | Statut | Notes |
 |---|---|---|---|---|
-| **M18** | [ME](../next/ME.md) | Polymarket CLOB V2 + pUSD migration (SDK swap V1→V2, `getClobMarketInfo` + `FeeQuote(rate, exponent)`, `POLYMARKET_CLOB_HOST` configurable, builder code optionnel, wrap helper script `web3.py` optional dep) | 📋 spec rédigée — implémentation pending | Spec [`M18-polymarket-v2-migration.md`](M18-polymarket-v2-migration.md) (~3000 lignes, §0 → §18). 7 commits ME.1 → ME.7. Hard deadline ship lundi 27 avril ~22h UTC pour cutover Polymarket mardi 28 avril ~11h UTC. SDK V2 dual-version capable → ship pré-cutover safe (cf. spec §D11). |
+| **M18** | [ME](../next/ME.md) | Polymarket CLOB V2 + pUSD migration (SDK swap V1→V2, `getClobMarketInfo` + `FeeQuote(rate, exponent)`, `POLYMARKET_CLOB_HOST` configurable, builder code optionnel, wrap helper script `web3.py` optional dep) | ✅ shipped 2026-04-27 | 7 commits ME.1 → ME.7 mergés sur main. Tests : 1489 unit + 3 intégration verts (smoke runtime OK contre `clob-v2.polymarket.com`). Bonus : bug latent `dict` vs `PartialCreateOrderOptions` corrigé (aurait raise au 1er POST live post-cutover). SDK V2 dual-version capable → auto-flip mardi 28 avril ~11h UTC sans intervention. Cf. spec [`M18-polymarket-v2-migration.md`](M18-polymarket-v2-migration.md) + procédure ops [`docs/todo.md §14`](../todo.md#L554). |
 
 ---
 
