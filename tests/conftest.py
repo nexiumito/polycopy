@@ -122,6 +122,32 @@ def sample_fee_rate_zero() -> dict[str, int]:
 
 
 @pytest.fixture
+def sample_clob_v2_market_crypto() -> dict[str, Any]:
+    """M18 — Réponse CLOB V2 /clob-markets/{cid} pour un marché crypto fee-enabled.
+
+    Capture indicative 2026-04-27 (BTC up-or-down crypto) — `fd:{r:0.072,e:1,to:true}`.
+    `effective_rate` à p=0.5 = 0.072 × 0.25^1 = 0.018 (1.80%).
+    """
+    payload: dict[str, Any] = json.loads(
+        (_FIXTURES_DIR / "clob_v2_market_crypto_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
+def sample_clob_v2_market_fee_free() -> dict[str, Any]:
+    """M18 — Réponse CLOB V2 /clob-markets/{cid} pour un marché fee-free.
+
+    Capture indicative 2026-04-27 (politics market) — pas de champ `fd`.
+    Le client doit retourner `FeeQuote.zero()`.
+    """
+    payload: dict[str, Any] = json.loads(
+        (_FIXTURES_DIR / "clob_v2_market_fee_free_sample.json").read_text(),
+    )
+    return payload
+
+
+@pytest.fixture
 def sample_tick_size() -> dict[str, float]:
     """Réponse CLOB /tick-size capturée."""
     payload: dict[str, float] = json.loads(

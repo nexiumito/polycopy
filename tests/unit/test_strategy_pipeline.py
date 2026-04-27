@@ -349,20 +349,36 @@ def _market_with_fee(fee_type: str = "crypto_fees_v2") -> MarketMetadata:
     )
 
 
-def _make_fee_client(rate: str) -> Any:
-    """Mock async FeeRateClient dont get_fee_rate retourne Decimal(rate)."""
+def _make_fee_client(
+    rate: str = "0.072", exponent: int = 1, *, legacy_rate: str | None = None
+) -> Any:
+    """Mock async FeeRateClient.
+
+    M18 ME.3 : pipeline appelle `get_fee_quote(token, condition_id=...)` qui
+    retourne un ``FeeQuote``. ``legacy_rate`` (optionnel) sert pour les tests
+    qui veulent une effective_rate spécifique post-formule.
+    """
     from decimal import Decimal
 
+    from polycopy.executor.fee_rate_client import FeeQuote
+
     client = AsyncMock()
-    client.get_fee_rate = AsyncMock(return_value=Decimal(rate))
+    if rate == "0":
+        quote = FeeQuote.zero()
+    else:
+        quote = FeeQuote(rate=Decimal(rate), exponent=exponent)
+    client.get_fee_quote = AsyncMock(return_value=quote)
+    # Backward-compat : alias deprecated retourne quote.rate.
+    client.get_fee_rate = AsyncMock(return_value=quote.rate)
     return client
 
 
 async def test_position_sizer_subtracts_fee_from_ev_happy_path(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """BUY YES @ 0.30 sur Crypto, EV-after-fee largement > seuil → PASS + ctx enrichi."""
-    fee_client = _make_fee_client("0.10")
+    """BUY YES @ 0.30 sur Crypto réel V2 (fd:{r:0.25,e:2}), EV-after-fee >> seuil → PASS."""
+    # Crypto V2 paramètres : rate=0.25, exponent=2 (cohérent fixture v1 historique).
+    fee_client = _make_fee_client("0.25", exponent=2)
     f = PositionSizer(
         session_factory,
         _settings(max_position_usd=200.0, copy_ratio=0.01),
@@ -370,7 +386,6 @@ async def test_position_sizer_subtracts_fee_from_ev_happy_path(
     )
     ctx = PipelineContext(trade=_trade(price=0.30, size=100.0), market=_market_with_fee())
     result = await f.check(ctx)
-    # raw_size = 100 * 0.01 = 1 ; cap = 200 / 0.30 = 666 ; min = 1.
     assert result.passed is True
     assert ctx.my_size == pytest.approx(1.0)
     # effective_rate = 0.25 × (0.30 × 0.70)^2 = 0.25 × 0.0441 = 0.011025 = 1.1025%
@@ -380,15 +395,18 @@ async def test_position_sizer_subtracts_fee_from_ev_happy_path(
     assert ctx.fee_cost_usd == pytest.approx(0.003308, abs=1e-5)
     # ev_after_fee = max_gain - fee = 1 × 0.70 - 0.003308 = 0.6967
     assert ctx.ev_after_fee_usd == pytest.approx(0.6967, abs=1e-3)
-    # Vérifie qu'on a bien appelé le fee client
-    fee_client.get_fee_rate.assert_awaited_once_with("123")
+    # M18 ME.3 : pipeline appelle get_fee_quote (pas get_fee_rate).
+    fee_client.get_fee_quote.assert_awaited_once()
+    call = fee_client.get_fee_quote.call_args
+    assert call.args[0] == "123"
+    assert call.kwargs["condition_id"]  # cid propagé
 
 
 async def test_position_sizer_rejects_negative_ev_after_fee(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """BUY YES @ 0.97 sur Crypto : upside 3¢/share trop faible vs seuil 0.05$ → REJECT."""
-    fee_client = _make_fee_client("0.10")
+    fee_client = _make_fee_client("0.25", exponent=2)
     f = PositionSizer(
         session_factory,
         _settings(max_position_usd=200.0, copy_ratio=0.01),
@@ -424,7 +442,7 @@ async def test_position_sizer_flag_off_preserves_behavior(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """fee_rate_client injecté MAIS flag off → fee_client jamais appelé."""
-    fee_client = _make_fee_client("0.10")
+    fee_client = _make_fee_client("0.25", exponent=2)
     f = PositionSizer(
         session_factory,
         _settings(
@@ -438,6 +456,7 @@ async def test_position_sizer_flag_off_preserves_behavior(
     result = await f.check(ctx)
     assert result.passed is True
     assert ctx.fee_rate is None
+    fee_client.get_fee_quote.assert_not_awaited()
     fee_client.get_fee_rate.assert_not_awaited()
 
 
@@ -449,7 +468,7 @@ async def test_position_sizer_buy_yes_vs_buy_no_ev_calculation(
     `(p × (1-p))^exp` est invariant sous p → 1-p, donc la fee est la même
     pour 2 BUYs miroirs sur la même condition.
     """
-    fee_client = _make_fee_client("0.10")
+    fee_client = _make_fee_client("0.25", exponent=2)
     f = PositionSizer(
         session_factory,
         _settings(max_position_usd=200.0, copy_ratio=0.01),
@@ -472,12 +491,12 @@ async def test_position_sizer_buy_yes_vs_buy_no_ev_calculation(
 async def test_position_sizer_fee_skipped_when_base_fee_zero(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """`base_fee=0` du endpoint = marché fee-free → court-circuit propre.
+    """`FeeQuote.zero()` du endpoint V2 = marché fee-free → court-circuit propre.
 
     On ne calcule pas la formule (qui appliquerait Crypto fallback même si
     le market n'a pas de fee enabled). Comportement strict M2..M15 préservé.
     """
-    fee_client = _make_fee_client("0")  # marché fee-free
+    fee_client = _make_fee_client("0")  # marché fee-free → FeeQuote.zero()
     f = PositionSizer(
         session_factory,
         _settings(max_position_usd=200.0, copy_ratio=0.01),
@@ -489,51 +508,62 @@ async def test_position_sizer_fee_skipped_when_base_fee_zero(
     assert result.passed is True
     assert ctx.fee_rate == 0.0
     assert ctx.fee_cost_usd == 0.0
-    fee_client.get_fee_rate.assert_awaited_once()
+    fee_client.get_fee_quote.assert_awaited_once()
 
 
 async def test_position_sizer_compute_effective_fee_rate_crypto() -> None:
-    """Formule Crypto v2 : feeRate=0.25, exp=2 → max effective 1.5625% à p=0.5."""
+    """M18 ME.3 D6 : formule Crypto V2 (fd:{r:0.25,e:2}) → 1.5625% à p=0.5."""
     from decimal import Decimal
 
+    from polycopy.executor.fee_rate_client import FeeQuote
+
     rate = PositionSizer._compute_effective_fee_rate(
+        quote=FeeQuote(rate=Decimal("0.25"), exponent=2),
         price=Decimal("0.5"),
-        market=_market_with_fee("crypto_fees_v2"),
     )
-    assert rate == Decimal("0.015625")  # 0.25 × 0.0625 = 0.015625
+    assert rate == Decimal("0.015625")  # 0.25 × 0.0625
 
 
 async def test_position_sizer_compute_effective_fee_rate_sports_v2() -> None:
-    """Formule Sports v2 (post-March 30 2026) : feeRate=0.03, exp=1 → 0.75% à p=0.5."""
+    """M18 ME.3 D6 : Sports V2 (fd:{r:0.03,e:1}) → 0.75% à p=0.5."""
     from decimal import Decimal
 
+    from polycopy.executor.fee_rate_client import FeeQuote
+
     rate = PositionSizer._compute_effective_fee_rate(
+        quote=FeeQuote(rate=Decimal("0.03"), exponent=1),
         price=Decimal("0.5"),
-        market=_market_with_fee("sports_fees_v2"),
     )
-    assert rate == Decimal("0.0075")  # 0.03 × 0.25 = 0.0075
+    assert rate == Decimal("0.0075")  # 0.03 × 0.25
 
 
-async def test_position_sizer_compute_effective_fee_rate_unknown_uses_crypto_fallback() -> None:
-    """fee_type inconnu → fallback Crypto (conservateur)."""
+async def test_position_sizer_compute_effective_fee_rate_v2_real_crypto() -> None:
+    """M18 ME.3 D6 : Crypto réel post-rollout (fd:{r:0.072,e:1}) → 1.80% à p=0.5.
+
+    Cohérent fixture clob_v2_market_crypto_sample.json + spec §1.4 Story B.
+    """
     from decimal import Decimal
 
+    from polycopy.executor.fee_rate_client import FeeQuote
+
     rate = PositionSizer._compute_effective_fee_rate(
+        quote=FeeQuote(rate=Decimal("0.072"), exponent=1),
         price=Decimal("0.5"),
-        market=_market_with_fee("politics_fees_v_future"),
     )
-    assert rate == Decimal("0.015625")  # même que Crypto
+    assert rate == Decimal("0.018")  # 0.072 × 0.25 = 1.80%
 
 
-async def test_position_sizer_compute_effective_fee_rate_no_market_uses_crypto_fallback() -> None:
-    """market=None → fallback Crypto."""
+async def test_position_sizer_compute_effective_fee_rate_zero_short_circuit() -> None:
+    """`FeeQuote.zero()` → effective_rate=0 (court-circuit, pas de math)."""
     from decimal import Decimal
 
+    from polycopy.executor.fee_rate_client import FeeQuote
+
     rate = PositionSizer._compute_effective_fee_rate(
+        quote=FeeQuote.zero(),
         price=Decimal("0.5"),
-        market=None,
     )
-    assert rate == Decimal("0.015625")
+    assert rate == Decimal("0")
 
 
 # --- SlippageChecker ---------------------------------------------------------

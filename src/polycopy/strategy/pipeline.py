@@ -26,12 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from polycopy.storage.dtos import DetectedTradeDTO
 from polycopy.storage.models import MyPosition, TargetTrader
 from polycopy.strategy.clob_read_client import ClobReadClient
-from polycopy.strategy.dtos import FilterResult, MarketMetadata, PipelineContext
+from polycopy.strategy.dtos import FilterResult, PipelineContext
 from polycopy.strategy.gamma_client import GammaApiClient
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
-    from polycopy.executor.fee_rate_client import FeeRateClient
+    from polycopy.executor.fee_rate_client import FeeQuote, FeeRateClient
     from polycopy.storage.repositories import TradeLatencyRepository
     from polycopy.strategy.clob_ws_client import ClobMarketWSClient
 
@@ -214,23 +214,26 @@ class PositionSizer:
             ctx.my_size = raw_my_size
             return FilterResult(passed=True)
 
-        # Fetch base_fee (cache 60s, single-flight, fallback 1.80% si réseau down).
-        # `base_fee` du endpoint est un FLAG binaire (cf. docstring FeeRateClient
-        # + spec §11.5) : >0 = fee-enabled, =0 = fee-free. Court-circuit propre
-        # si =0 — pas de calcul formule sur un marché sans fee.
-        base_fee_rate = await self._fee_rate_client.get_fee_rate(ctx.trade.asset_id)
-        if base_fee_rate == Decimal("0"):
+        # M18 ME.3 D6 : V2 endpoint expose `fd.r` ET `fd.e` directement —
+        # plus de mapping hardcodé `feeType → (rate_param, exponent)` qui
+        # sous-estimait les fees crypto (cf. spec M18 §4.6 + Story B).
+        # Path nominal : passer `condition_id` explicitement → call direct
+        # `/clob-markets/{cid}`, zéro Gamma overhead (D10).
+        fee_quote = await self._fee_rate_client.get_fee_quote(
+            ctx.trade.asset_id,
+            condition_id=ctx.trade.condition_id,
+        )
+        if fee_quote.rate == Decimal("0"):
             ctx.fee_rate = 0.0
             ctx.fee_cost_usd = 0.0
             # Pas d'EV calculation côté polycopy si pas de fee — laisse passer.
             ctx.my_size = raw_my_size
             return FilterResult(passed=True)
 
-        # Marché fee-enabled : calcul effective rate via formule Polymarket
-        # officielle, paramétrée par `market.fee_type` Gamma.
+        # Marché fee-enabled : effective rate consume `quote.exponent` directement.
         effective_fee_rate = self._compute_effective_fee_rate(
+            quote=fee_quote,
             price=Decimal(str(ctx.trade.price)),
-            market=ctx.market,
         )
 
         notional = Decimal(str(raw_my_size)) * Decimal(str(ctx.trade.price))
@@ -293,45 +296,31 @@ class PositionSizer:
     @staticmethod
     def _compute_effective_fee_rate(
         *,
+        quote: FeeQuote,
         price: Decimal,
-        market: MarketMetadata | None,
     ) -> Decimal:
-        """Calcule l'effective fee rate via formule Polymarket officielle.
+        """Calcule l'effective fee rate à partir du ``FeeQuote`` V2 (M18 D6).
 
-        ``fee = C × p × feeRate × (p × (1-p))^exponent`` →
-        ``effective_rate = feeRate × (p × (1-p))^exponent`` (ratio fee/notional).
+        Formule officielle Polymarket V2 :
+            ``effective_rate = quote.rate × (p × (1-p)) ** quote.exponent``
 
-        Mapping ``market.fee_type`` → ``(feeRate_param, exponent)`` :
+        Cas d'usage :
+        - Marché fee-free : ``quote.rate == Decimal("0")`` → court-circuit
+          retour ``Decimal("0")`` (skip math).
+        - Marché fee-enabled (Crypto v2 réel 2026-04-27) :
+          ``quote.rate=Decimal("0.072"), quote.exponent=1``. À p=0.5 →
+          0.072 × 0.25^1 = 0.018 (1.80%). Cohérent doc Polymarket live.
+        - Fallback réseau down : ``FeeQuote.conservative_fallback()`` →
+          ``rate=0.018, exponent=1`` (cohérent worst-case M16 §11.5 préservé).
 
-        - ``crypto_fees_v2`` : (0.25, 2) — max 1.56 % à p=0.5
-        - ``sports_fees_v2`` (post-March 30 2026, doc Polymarket live) :
-          (0.03, 1) — peak 0.75 % à p=0.5. ``sports_fees_v1`` (NCAAB/Serie A
-          pré-rollout) : (0.0175, 1) — peak 0.44 %. On groupe tous via
-          ``startswith("sports_fees")`` avec params v2 (worst case).
-        - autre / unknown / market None : fallback **conservateur Crypto**
-          (0.25, 2). Mieux sur-estimer fee que l'inverse (asymétrie d'impact).
-
-        Si ``market`` est None ou ``fee_type`` est None / "" → fallback Crypto.
-
-        Note : on ne court-circuite PAS sur ``market.fees_enabled=False`` car
-        certains markets pré-rollout ont ``fees_enabled=null`` mais sont
-        fee-free en réalité. Le `base_fee=0` du `/fee-rate` endpoint sert
-        de short-circuit upstream (fee_rate=0 → fee_cost=0 → pas de rejet).
+        Pas de fallback hardcodé ``feeType → (rate, exponent)`` — V2 expose
+        ``fd.e`` directement, on consume ce que le protocole dit. Pipeline
+        marche out-of-the-box si Polymarket ajoute un nouveau feeType post-cutover.
         """
-        fee_type = (market.fee_type if market is not None else None) or ""
-        if fee_type == "crypto_fees_v2":
-            fee_rate_param, exponent = Decimal("0.25"), 2
-        elif fee_type.startswith("sports_fees"):
-            # Post-March 30 2026 rollout : feeRate=0.03 (vs 0.0175 pré-rollout
-            # NCAAB/Serie A). Source : docs Polymarket live 2026-04-25.
-            fee_rate_param, exponent = Decimal("0.03"), 1
-        else:
-            # Inconnu (politics_fees_v*, finance_fees_v*, etc. à venir) →
-            # conservateur (Crypto formula).
-            fee_rate_param, exponent = Decimal("0.25"), 2
-
+        if quote.rate == Decimal("0"):
+            return Decimal("0")
         p_one_minus_p = price * (Decimal("1") - price)
-        return fee_rate_param * (p_one_minus_p**exponent)
+        return quote.rate * (p_one_minus_p**quote.exponent)
 
     async def _check_sell(self, ctx: PipelineContext) -> FilterResult:
         # Match fin (condition_id, asset_id) : un SELL YES ne ferme pas une
