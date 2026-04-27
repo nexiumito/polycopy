@@ -133,6 +133,15 @@ class HomeAllTimeStats:
     - live : pour chaque position ``simulated=False, closed_at NOT NULL``,
       somme ``Σ(SELL.size*SELL.price) - Σ(BUY.size*BUY.price)`` sur les
       ``MyOrder FILLED`` du couple ``(condition_id, asset_id)``.
+
+    M19 MH.3 : ``strategy_approve_rate_pct`` est calculé sur la fenêtre
+    glissante 24h (cohérent ``trades_detected_24h`` /home) — biais reset
+    positions/capital évité. ``approve_rate_window_hours`` rend la fenêtre
+    explicite côté UI.
+
+    M19 MH.6 : ``wins`` / ``losses`` / ``breakeven_count`` exposés
+    séparément ; convention "break-even = neutre, exclu denominator mais
+    compté à part" — cohérence /home ↔ /performance.
     """
 
     realized_pnl_total: float
@@ -147,6 +156,12 @@ class HomeAllTimeStats:
     open_max_profit_usd: float = 0.0
     open_latent_pnl_usd: float = 0.0
     win_rate_pct: float | None = None
+    # M19 MH.3 — fenêtre glissante explicite pour l'UI (label "(24h)").
+    approve_rate_window_hours: int = 24
+    # M19 MH.6 — break-even count exposé séparément.
+    wins: int = 0
+    losses: int = 0
+    breakeven_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -858,12 +873,15 @@ async def get_home_alltime_stats(
         )
 
         # --- Ratio approve/reject strategy.
+        # M19 MH.3 : fenêtre glissante 24h (cohérent trades_detected_24h /home).
+        # Évite le biais "5% all-time" qui persiste après reset positions/capital.
+        approve_rate_since = datetime.now(tz=UTC) - timedelta(hours=24)
         decision_rows = list(
             (
                 await session.execute(
-                    select(StrategyDecision.decision, func.count(StrategyDecision.id)).group_by(
-                        StrategyDecision.decision,
-                    ),
+                    select(StrategyDecision.decision, func.count(StrategyDecision.id))
+                    .where(StrategyDecision.decided_at >= approve_rate_since)
+                    .group_by(StrategyDecision.decision),
                 )
             ).all(),
         )

@@ -209,3 +209,72 @@ class TestMh2FormatSizePrecise:
     def test_legacy_format_size_still_present(self) -> None:
         # MH.2 garde format_size pour rétrocompat.
         assert "format_size" in jf.all_filters()
+
+
+# ---------------------------------------------------------------------------
+# MH.3 — strategy_approve_rate 24h sliding window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh3_strategy_approve_rate_uses_24h_window(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from datetime import timedelta
+
+    from polycopy.storage.models import StrategyDecision
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # 4 récentes : 3 APPROVED + 1 REJECTED → 75% sur 24h
+        for i in range(3):
+            session.add(
+                StrategyDecision(
+                    detected_trade_id=i + 1,
+                    tx_hash=f"0xrecent{i}",
+                    decision="APPROVED",
+                    decided_at=now - timedelta(hours=1),
+                    pipeline_state={},
+                ),
+            )
+        session.add(
+            StrategyDecision(
+                detected_trade_id=99,
+                tx_hash="0xrecentR",
+                decision="REJECTED",
+                decided_at=now - timedelta(hours=2),
+                pipeline_state={},
+            ),
+        )
+        # 5 anciennes (REJECTED) hors fenêtre — ne doivent PAS biaiser le ratio.
+        for i in range(5):
+            session.add(
+                StrategyDecision(
+                    detected_trade_id=200 + i,
+                    tx_hash=f"0xold{i}",
+                    decision="REJECTED",
+                    decided_at=now - timedelta(hours=30),
+                    pipeline_state={},
+                ),
+            )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    assert stats.strategy_approve_rate_pct == pytest.approx(75.0, abs=0.1)
+    assert stats.approve_rate_window_hours == 24
+
+
+@pytest.mark.asyncio
+async def test_mh3_label_shows_window_hours(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        target_wallets=[],
+        dry_run=True,
+    )
+    app = build_app(session_factory, settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get("/home")
+        assert res.status_code == 200
+        assert "Approve stratégie (24h)" in res.text

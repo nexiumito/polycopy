@@ -89,12 +89,14 @@
          subtext=fills_sub) }}
     {% if alltime.strategy_approve_rate_pct is not none %}
       {{ stat_card(
-           "Approve stratégie",
+           "Approve stratégie (" ~ alltime.approve_rate_window_hours ~ "h)",
            alltime.strategy_approve_rate_pct | format_pct(with_sign=False),
            "filter",
-           subtext="décisions APPROVED / total") }}
+           subtext="décisions APPROVED / total sur fenêtre glissante") }}
     {% else %}
-      {{ stat_card("Approve stratégie", "—", "filter", subtext="aucune décision") }}
+      {{ stat_card(
+           "Approve stratégie (" ~ alltime.approve_rate_window_hours ~ "h)",
+           "—", "filter", subtext="aucune décision sur la fenêtre") }}
     {% endif %}
     {% if alltime.top_trader %}
       {% set top_label = alltime.top_trader.label or (alltime.top_trader.wallet_address | short_hash) %}
