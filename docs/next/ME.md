@@ -1,283 +1,803 @@
-# ME — Pipeline latency phase 1b (WSS market detection + counters)
+# ME — Polymarket CLOB V2 + pUSD migration
 
-**Priorité** : 🟠 P2 (important, parallélisable)
-**Charge estimée** : M (3-4 jours)
-**Branche suggérée** : `feat/wss-market-detection`
-**Prérequis** : aucun (indépendant de MA/MB/MC/MD)
-**Bloque** : améliore MF (détection plus rapide → plus de trades capturés pour scoring v2.2)
+**Priorité** : 🔥 P0 (hard deadline imposé, le bot casse mardi 28 avril ~11h UTC sinon)
+**Charge estimée** : M (2-3 jours dev + smoke test cutover day)
+**Branche suggérée** : `feat/ctf-exchange-v2`
+**Prérequis** : aucun (indépendant des autres modules de la roadmap)
+**Bloque** : tous les futurs modules orientés executor/fees/order si pas shippé avant 28 avril
+**Numéro de spec proposé** : **M18** (après MD=M17 cross-layer integrity)
 
 ---
 
 ## 1. Objectif business
 
-Faire passer la latence de détection de trade `source_wallet → local DB` de **p50 8-20s (observed 2026-04-24)** à **p50 2-4s** en remplaçant le polling REST `/activity` par la WSS CLOB `market` channel pour la couche détection (déjà utilisée pour SlippageChecker M11). Gain immédiat : moins de slippage vs source wallet fill price (compétition frontrunner 5-10s window réduite). Fix en parallèle les 2 bugs de comptage latence observés (`filtered > enriched`, `watcher_detected_ms` p99 44min conflation backfill/realtime). Ajoute la gestion HTTP 425 matching engine restart pour robustesse ops.
+Polymarket déploie une **upgrade complète de la stack exchange** annoncée
+officiellement le 2026-04-06 et confirmée par la doc
+[docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration).
+Cutover **mardi 28 avril 2026 ~11h00 UTC**, ~1h de downtime, **aucune
+backward-compat post-go-live**.
+
+3 changements simultanés :
+
+1. **CTF Exchange V2** (nouveaux contrats Polygon) : Order struct simplifiée,
+   matching optimisé, support EIP-1271 (smart contract wallets), builder
+   codes onchain pour fee rebates.
+2. **Polymarket USD (pUSD)** : nouveau collateral token ERC-20 wrappant
+   USDC.e 1:1 via `Collateral Onramp.wrap()`. Action manuelle one-time pour
+   les API-only traders (notre cas) — non requise tant qu'on reste en
+   `EXECUTION_MODE=dry_run` (pas de signature live).
+3. **Nouveau SDK CLOB-Client** : packages `@polymarket/clob-client-v2`
+   (TypeScript) et `py-clob-client-v2` (Python) **séparés** des V1 — pas
+   d'in-place upgrade. Auto-switch V1↔V2 via version endpoint côté backend
+   pour les clients à jour.
+
+**Conséquence pour polycopy** : si on n'adapte pas l'Executor M3 + le
+FeeRateClient M16 + le schema collateral d'ici lundi 27 avril soir, le bot
+qui restart en V1 cassera silencieusement le 28 avril ~11h UTC (signatures
+rejetées par le nouvel orderbook V2). Le mode dry-run **ne nous protège
+pas** : les builders d'order et les queries fee-rate touchent quand même
+les endpoints V2-only après le cutover.
 
 ## 2. Contexte & problème observé
 
-### Observations runtime 2026-04-24
+### 2.1 Source de vérité
 
-- Dashboard `/latence` affiche : `watcher_detected_ms` **p50=13.4s, p95=44.2s, p99=2,675s (44min)** → p99 aberrant.
-- `strategy_filtered_ms count=27493 > strategy_enriched_ms count=27418` → théoriquement impossible (filtered = sous-ensemble de enriched).
-- Funnel latence : enriched 27418 → filtered 27493 (+75) → sized 13153 (-52%) → risk_checked 1556 (-88%) → submitted 1169. L'inversion enriched/filtered fausse les pourcentages.
-- Pipeline current : WalletPoller poll `/activity` toutes les `POLL_INTERVAL_SECONDS=5s` → propagation Data API 1-5s → pipeline 500ms → total 6-10s floor + queue bursts → p50 observé 8-20s.
+- **Doc officielle** : [https://docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration)
+  (page principale migration guide, confirmée 2026-04-26 par le user via
+  screenshot)
+- **Annonce** : @PolymarketDev tweet 2026-04-06 + Discord developer channel
+  hands-on onboarding
+- **Test environnement live depuis 2026-04-17** : `https://clob-v2.polymarket.com`
+  — point ton client ici pour tester avant cutover. Le 28 avril ~11h UTC,
+  l'URL `https://clob.polymarket.com` (prod) bascule sur le backend V2 ;
+  pas de changement client-side post-cutover si on a déjà pointé sur la
+  prod URL.
+- **Repos GitHub à vérifier** :
+  - [github.com/Polymarket/py-clob-client-v2](https://github.com/Polymarket/py-clob-client-v2) (v1.0.0)
+  - [github.com/Polymarket/clob-client-v2](https://github.com/Polymarket/clob-client-v2) (TypeScript v1.0.0)
+  - [github.com/Polymarket/ctf-exchange](https://github.com/Polymarket/ctf-exchange) (contrats V2)
+- **Page contrats** : `docs.polymarket.com/resources/contracts` (référencée
+  par la doc V2 pour les adresses CollateralOnramp + pUSD ; à fetcher
+  pendant la rédaction de la spec)
 
-### Findings référencés
+### 2.2 Order struct V2 — diff exact V1 → V2
 
-- **[F43] 🟢 3/3** (synthèse §4.2) : WS CLOB `market` > REST polling. **Claude §9 item 9** : "market-channel WSS is **free, already mostly-native in py-clob-client-style libraries**, fits single-process asyncio cleanly via websockets or aiohttp.ws". **Gemini §4.1** : "Shifting data ingress strictly to the RTDS WebSocket will instantly compress data ingress latency to ~100ms". **Perplexity D1** : "WSS Quickstart formalizes CLOB vs RTDS split, introduces market and user channels, strongly pushes discovery pipelines toward WebSocket rather than REST polling".
+**Champs supprimés du signed struct V2** :
+- `nonce` (remplacé par `timestamp` ms pour l'unicité)
+- `feeRateBps` (fees calculés à match-time côté protocol, pas signés)
+- `taker` (toujours `address(0)` à zéro)
+- `expiration` (retiré du signed struct V2)
 
-- **[F42] 🟢 3/3** : floor pratique 250-350ms e2e. Validation que 2-4s target ME est réaliste (bien au-dessus du floor, large marge pour python processing + queue).
+**Champs ajoutés** :
+- `timestamp` (uint256, **millisecondes** — order creation time, ne PAS
+  confondre avec V1 expiration)
+- `metadata` (bytes32, opaque — usage non-documenté à date, défaut `0x0`)
+- `builder` (bytes32, builder code attribution onchain, défaut `0x0`)
 
-- **[F33] ⚠️ contradiction résolue** : WSS `user` channel INADAPTÉ copy-trading. **Claude §7.1** : "Polymarket does not support unsubscribing from channels once subscribed. Subscription is by `markets` (condition IDs) for user channel — meaning **you subscribe to market IDs, and receive events for all your orders in those markets**. You cannot subscribe 'to a wallet' — only to your own wallet's orders. **This breaks the copy-trading use case entirely for the user channel.**". Conclusion : utiliser le channel `market` + filtrer côté client par `maker`/`taker` fields.
+**Champs conservés (inchangés)** :
+- `salt` (uint256)
+- `maker` (address)
+- `signer` (address)
+- `tokenId` (uint256)
+- `makerAmount` (uint256)
+- `takerAmount` (uint256)
+- `side` (uint8 : 0=BUY, 1=SELL — encodage uint8 pour signing, le wire body
+  reste string)
+- `signatureType` (uint8 : 0=EOA, 1=Magic/proxy, 2=Gnosis Safe — inchangé
+  vs V1)
 
-- **[F32] 🟡** : WSS market channel pour discovery/detection = bonne idée, déjà partiellement en place M11 pour SlippageChecker. Extension à la détection = ME core.
+**EIP-712 typed data complet V2** :
 
-- **Audit [H-001]** : "strategy_filtered_ms toujours émis même sur early-reject → `count(filtered) > count(enriched)` légal". Location [src/polycopy/strategy/orchestrator.py:128-153](../../src/polycopy/strategy/orchestrator.py#L128-L153) + [pipeline.py:280-335](../../src/polycopy/strategy/pipeline.py#L280-L335). **Cause racine identifiée par audit** : `strategy_filtered_ms` wrappé en `finally` autour de `run_pipeline` → émis même si reject précoce par `TraderLifecycleFilter` ou `EntryPriceFilter`. `strategy_enriched_ms` (stage MarketFilter) émis seulement si boucle atteint le 2e filtre.
+```text
+Order(uint256 salt, address maker, address signer, uint256 tokenId,
+      uint256 makerAmount, uint256 takerAmount, uint8 side,
+      uint8 signatureType, uint256 timestamp, bytes32 metadata,
+      bytes32 builder)
+```
 
-- **Backlog** [docs/backlog.md](../../docs/backlog.md) : `watcher_detected_ms` p99 trompeur. Conflate vraie latence temps-réel **et** rattrapage backlog historique d'un wallet fraîchement promu. Fix retenu (option 1) : split en `watcher_realtime_detected_ms` (trades < 5 min) + `watcher_backfill_duration_ms` (cycle total).
+### 2.3 EIP-712 domain V2
 
-- **[F51] 🔵 Perplexity unique** (synthèse §4.1) : Matching engine restart **Tuesday 7AM ET ~90s**. HTTP 425 (Too Early) à gérer avec exponential backoff. Référence [docs.polymarket.com/trading/matching-engine](https://docs.polymarket.com/trading/matching-engine) + [py-clob-client issue 286](https://github.com/Polymarket/py-clob-client/issues/286).
+- **Version bump** : `"1"` → `"2"` sur le domain Exchange uniquement.
+  `ClobAuthDomain` (utilisé pour L1 API auth) **reste version `"1"`**.
+- **Standard Risk Exchange `verifyingContract`** :
+  `0xE111180000d2663C0091e4f400237545B87B996B`
+- **Neg Risk Exchange `verifyingContract`** :
+  `0xe2222d279d744050d28e00520010520000310F59`
+- chainId reste **137** (Polygon mainnet).
 
-### Session originale mappée
+### 2.4 SDK package
 
-**Session D brouillon** (`docs/bug/session_D_pipeline_metrics_and_ops.md`) items D1 (split watcher) + D2 (filtered>enriched bug) intégrés ici. D3 (shutdown graceful) + D4 (setup script) + D5 (DB queries docs) migrent en **MI** ops hygiene.
+| Lang | Old | New | Note |
+|---|---|---|---|
+| Python | `py-clob-client` | `py-clob-client-v2==1.0.0` | Package séparé, **pas un in-place upgrade**. Désinstaller l'ancien pour éviter shadow imports. |
+| TypeScript | `@polymarket/clob-client` | `@polymarket/clob-client-v2@1.0.0` | Idem |
 
-### Ce que ME NE fait PAS
+### 2.5 Constructor signature change
 
-- **Pas de migration VPS Dublin** : on reste sur le PC uni-debian. La migration geographical est un item hors scope (Claude §7.3 : Option (d) — accepter 2-3s floor et investir en scoring est le choix optimal pour notre capital $1k-10k political/macro). Si besoin futur, spec dédiée.
-- **Pas de RTDS Real-Time Data Stream** : l'endpoint WSS CLOB `market` suffit pour nos besoins. RTDS = alternative payante pour market makers HFT, pas pertinent polycopy.
-- **Pas de Polygon RPC eth_subscribe** : Claude §7.1 (c) démontre que c'est worse than (a) pour copy-trading spécifiquement (on_chain settlement trop tard, proxyWallet vs funder context manquant).
+- **V1 (positional args)** : `ClobClient(host, chainId, signer, creds, signatureType, ...)`
+- **V2 (options object)** :
+  ```python
+  client = ClobClient({
+      "host": ...,
+      "chain": ...,           # renommé depuis chainId
+      "signer": ...,
+      "creds": ...,
+      "signature_type": ...,
+      "funder_address": ...,
+      "use_server_time": ...,
+      "builder_config": ...,
+      "get_signer": ...,
+      "retry_on_error": ...,
+      "throw_on_error": ...,
+  })
+  ```
+- **Removed args V2** : `tickSizeTtlMs`, `geoBlockToken`.
+
+### 2.6 New API endpoint `getClobMarketInfo()`
+
+Remplace les queries directes `/fee-rate?token_id=` du M16 par un endpoint
+consolidé qui retourne (par `condition_id`) :
+
+| Champ | Type | Description |
+|---|---|---|
+| `mts` | float | minimum tick size |
+| `mos` | float | minimum order size |
+| `fd` | object | fee details : `{ r: rate, e: exponent, to: takerOnly }` |
+| `t` | array | tokens array (token_id YES + NO) |
+| `rfqe` | bool | RFQ enabled flag |
+
+**Conséquence pour M16** : le `FeeRateClient.get_fee_rate(token_id)` doit
+swap son backend de `/fee-rate?token_id=` (V1) vers
+`getClobMarketInfo(condition_id)` (V2) puis extraire `fd.r` et `fd.e`. La
+formule polycopy reste **identique** (`fee_rate × (p × (1-p))^exponent`)
+mais les params viennent du nouvel endpoint.
+
+### 2.7 Match-time fee calculation V2
+
+Formule officielle (cf. doc V2) :
+
+```text
+fee = C × feeRate × p × (1 - p)
+```
+
+avec :
+- `C` = collateral amount (collateral notional du fill)
+- `feeRate` = `fd.r` du `getClobMarketInfo()` réponse
+- `p` = probabilité implicite (= prix du side acheté)
+
+**Invariants V2** :
+- **Makers ne paient JAMAIS de fees** (taker-only).
+- **Fees calculés à match-time côté protocol**, pas signés dans l'order
+  (donc `feeRateBps` retiré du signed struct).
+- **`userUSDCBalance` à passer sur market buy orders** pour que le SDK
+  calcule un fill amount post-fees correct.
+
+### 2.8 Polymarket USD (pUSD)
+
+- **Type** : ERC-20 standard sur Polygon, backed 1:1 par USDC onchain.
+- **Decimals** : non explicitement précisé dans la doc V2 (à vérifier sur
+  `/resources/contracts` ; probable 6 decimals comme USDC).
+- **Wrap function** (via contrat `CollateralOnramp`) :
+  ```solidity
+  function wrap(address asset, address to, uint256 amount) external
+  function unwrap(address asset, address to, uint256 amount) external
+  ```
+- **Approval flow** : `approve(USDC.e, onramp_address, amount)` puis
+  `onramp.wrap(USDC.e, funder_address, amount)`.
+- **Frontend polymarket.com** : wrap automatique transparent (one-time
+  approval prompt utilisateur).
+- **API-only traders (nous)** : wrap manuel obligatoire AVANT le premier
+  ordre live V2.
+- **Adresses contrats** : à fetcher sur `docs.polymarket.com/resources/contracts`
+  pendant la spec writing — **ne pas hardcoder**, utiliser une env var
+  `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS` + `POLYMARKET_PUSD_ADDRESS`.
+
+**En mode dry-run (`EXECUTION_MODE=dry_run`)** : aucun wrap requis, le bot
+ne signe aucun ordre live. Le wrap devient obligatoire au flip
+`EXECUTION_MODE=live`.
+
+### 2.9 Builder codes (optionnel, ROI direct)
+
+- **Registration** : récupère ton builder code via la page UI
+  [polymarket.com/settings?tab=builder](https://polymarket.com/settings?tab=builder)
+  (Builder Profile). Pas de signup form séparé.
+- **Attribution onchain** : le code (bytes32) est inclus dans le signed
+  Order struct via le champ `builder`. Apparaît sur le "Builder Leaderboard"
+  Polymarket.
+- **Fee rebate** : la doc mentionne "revenue sharing" mais les % exacts
+  ne sont pas publiés (référence : `docs.polymarket.com/builders/fees`).
+- **Headers V1 supprimés** : `POLY_BUILDER_*` HTTP headers eliminated en V2
+  — l'attribution se fait uniquement via le signed `builder` field.
+- **Plombage SDK V2** : passer une fois en `builderConfig: { builderCode }`
+  dans le constructor, OU per-order via le param `builderCode`.
+
+### 2.10 EIP-1271 smart contract wallet support
+
+Annoncé dans le tweet officiel mais **détails non documentés** sur la page
+migration. Hors scope direct polycopy : on utilise EOA (`signature_type=0`)
+ou Gnosis Safe (`signature_type=2`). À noter pour mémoire — pas de refactor
+requis côté polycopy.
+
+### 2.11 Maintenance window
+
+- **Tous les open orders V1 wiped au cutover** (cancellation forcée). Pas
+  un problème pour polycopy : on est en FOK strict via `OrderType="FOK"`,
+  aucun GTC maintenu côté serveur.
+- **SDK auto-switch** : les clients V2 query un version endpoint côté
+  backend. Au cutover, le backend renvoie la nouvelle version, le SDK
+  switch sans intervention. Mais ça fonctionne uniquement si tu es déjà
+  sur le SDK V2 — sinon V1 client reçoit une erreur signature_invalid sur
+  le nouvel orderbook.
+- **URL switching** : la prod URL `clob.polymarket.com` bascule
+  automatiquement sur V2 backend au cutover. Aucune env var `CLOB_BASE_URL`
+  à changer côté polycopy si on a déjà pointé sur prod.
+
+### 2.12 Pourquoi c'est P0 hard deadline
+
+Contrairement aux autres modules de la roadmap (P1/P2/P3 différables), V2
+migration a un **deadline imposé externe** : Polymarket cutover le 28
+avril, après quoi tout client V1 est cassé. Le scope est **borné et
+documenté** par Polymarket (pas d'invention possible) — donc l'incertitude
+est sur l'**execution timing**, pas sur le scope.
 
 ## 3. Scope (items détaillés)
 
-### ME.1 — Étendre `ClobMarketWSClient` à la couche détection
+### ME.1 — Bumper SDK `py-clob-client` → `py-clob-client-v2`
 
-- **Location** : [src/polycopy/strategy/clob_ws_client.py](../../src/polycopy/strategy/clob_ws_client.py) (déjà M11 pour SlippageChecker) + [src/polycopy/watcher/wallet_poller.py](../../src/polycopy/watcher/wallet_poller.py) + [src/polycopy/watcher/orchestrator.py](../../src/polycopy/watcher/orchestrator.py)
+- **Location** : [pyproject.toml](../../pyproject.toml) +
+  [src/polycopy/executor/clob_client.py](../../src/polycopy/executor/clob_client.py) +
+  [src/polycopy/executor/clob_write_client.py](../../src/polycopy/executor/clob_write_client.py)
+  (ou équivalent — à confirmer en lecture du codebase).
 - **Ce qu'il faut faire** :
-  - **Décision D1** : réutiliser `ClobMarketWSClient` existant (pas créer de nouveau client). Ajouter un consommateur dédié `TradeEventConsumer` qui écoute les events `trade` du channel market et émet des `DetectedTrade` DTOs.
-  - Nouvelle méthode `ClobMarketWSClient.subscribe_to_trade_events(asset_ids: list[str], callback: Callable[[TradeEvent], None])`.
-  - Lister les `asset_ids` à souscrire : union des markets actifs pour les wallets watchés. Dérivé de `MyPosition.asset_id` (positions ouvertes) ∪ `detected_trades.asset_id` last 24h.
-  - **Décision D2** : cap dur `STRATEGY_CLOB_WS_MAX_SUBSCRIBED_DETECT=500` (même cap que le cache existant). Si dépassé, LRU eviction (déjà en place M11).
-  - Côté `WalletPoller` : mode **hybrid** par défaut : le WSS est la source primaire (détection temps réel), Data API polling reste actif en `POLL_INTERVAL_SECONDS=30s` (au lieu de 5s) comme safety net pour les trades qui seraient manqués par le WSS (déconnexions, backfill historique sur wallets fraîchement promus M5_ter).
-  - **Filter côté client** : pour chaque `TradeEvent`, vérifier si `maker` ou `taker` ∈ `list_wallets_to_poll()`. Si oui → émettre `DetectedTrade` vers le strategy pipeline (émit sur la même Queue que Data API path).
-  - Dedup par `transactionHash` (clé unique DB déjà en place M1).
-  - Fallback tenacity : si WSS down > 30s, re-activer `WalletPoller` polling rapide 5s comme fallback temporaire. Auto-revert au WSS primary à reconnexion.
+  - Désinstaller `py-clob-client` strictement (sinon shadow imports en
+    Python). Test : `python -c "import py_clob_client; print(py_clob_client.__file__)"`
+    doit lever `ModuleNotFoundError` après désinstall, puis
+    `python -c "import py_clob_client_v2"` doit succeed.
+  - Bumper la dep dans `pyproject.toml` : `py-clob-client-v2==1.0.0`.
+  - Adapter le constructor : passage en options object dict, renommage
+    `chain_id` → `chain`. Mapping détaillé §2.5.
+  - Vérifier les imports : `from py_clob_client_v2 import ClobClient` (le
+    nom du package change, le nom de la classe peut rester).
 - **Tests requis** :
-  - `test_clob_ws_subscribe_trade_events_filters_by_wallet`
-  - `test_clob_ws_deduplicates_by_tx_hash`
-  - `test_wallet_poller_hybrid_mode_wss_primary_rest_safety_net`
-  - `test_wallet_poller_fallback_on_wss_outage`
-  - `test_wallet_poller_reverts_to_wss_on_reconnect`
-  - `test_clob_ws_asset_subscription_list_derives_from_active_markets`
-- **Sources deep-search** : Claude §7.1 (a) + Gemini §4.1 + Perplexity D1 + F33 arbitrage.
-- **Charge item** : 2 jours
+  - `test_clob_client_v2_construction_options_object`
+  - `test_clob_client_v2_chain_param_replaces_chain_id`
+  - `test_clob_client_v2_no_geoblock_no_tick_size_ttl_args`
+- **Sources** : Doc V2 §SDK Migration + Constructor (§2.4 + §2.5 ci-dessus).
+- **Charge item** : 0.5 jour
 
-### ME.2 — Split `watcher_detected_ms` en realtime + backfill
+### ME.2 — Adapter Order struct V2 + EIP-712 signing path
 
-- **Location** : [src/polycopy/watcher/wallet_poller.py:94-98](../../src/polycopy/watcher/wallet_poller.py#L94-L98) + [src/polycopy/storage/repositories.py](../../src/polycopy/storage/repositories.py) (LatencyRepository) + [src/polycopy/dashboard/queries.py](../../src/polycopy/dashboard/queries.py) (latency route)
+- **Location** : `src/polycopy/executor/order_builder.py` (à confirmer
+  en lecture) + tout fichier qui touche la signature ou le payload `/order`.
 - **Ce qu'il faut faire** :
-  - Migration Alembic 0009 : ajouter stage names dans `trade_latency_samples.stage_name` enum (string-based, pas vrai enum SQL pour SQLite). Pas de migration structurelle, juste nouveaux valeurs acceptées.
-  - Nouveau stage `watcher_realtime_detected_ms` : `now() - trade.timestamp` **uniquement si** `now() - trade.timestamp < 300s` (5 min). Trades plus anciens = backfill, pas realtime.
-  - Nouveau stage `watcher_backfill_duration_ms` : mesure **la durée totale du cycle `get_trades()`** (pas la latence du trade individuel) lorsqu'un wallet est fraîchement promu et qu'un backlog historique est chargé. Émit 1× par cycle de backfill, pas par trade.
-  - Dépréciation `watcher_detected_ms` legacy : conserver les samples historiques, mais stopper l'écriture de nouveaux. Dashboard doit filtrer.
-  - Dashboard `/latency` affiche désormais 7 stages (les 6 existants + `watcher_realtime_detected_ms`) et un panel dédié "Backfill events" listant les `watcher_backfill_duration_ms` récents.
-  - **Attention** : post-M5_ter watcher live-reload, le backfill arrive à chaque nouveau wallet promu. Fréquence potentielle : 1-5 backfills par jour (promotions). Volume `watcher_backfill_duration_ms` reste low-count.
+  - Drop les champs V1 : `nonce`, `feeRateBps`, `taker`, `expiration`.
+  - Add les champs V2 : `timestamp` (ms, `int(time.time() * 1000)`),
+    `metadata` (bytes32 default `b'\x00' * 32`), `builder` (bytes32 default
+    `b'\x00' * 32` ou builder_code si configuré).
+  - Bump EIP-712 domain version `"1"` → `"2"` sur le domain Exchange (mais
+    PAS sur ClobAuthDomain qui reste `"1"` — vérifier que les 2 paths sont
+    bien séparés côté SDK).
+  - Update `verifyingContract` : Standard Risk
+    `0xE111180000d2663C0091e4f400237545B87B996B`, Neg Risk
+    `0xe2222d279d744050d28e00520010520000310F59`. Les exposer en env vars
+    `POLYMARKET_EXCHANGE_V2_ADDRESS` + `POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS`
+    (cohérent avec l'invariant CLAUDE.md "ne pas hardcoder les adresses").
+  - Vérifier que `salt` est toujours généré pareil V2 (random uint256).
+  - `side` reste un uint8 dans le signed struct (0=BUY, 1=SELL) — aucun
+    changement côté polycopy si on utilise déjà des Literal `BUY`/`SELL`
+    qui sont mappés au uint8 par le SDK.
 - **Tests requis** :
-  - `test_watcher_emits_realtime_ms_for_recent_trades`
-  - `test_watcher_emits_backfill_duration_on_new_wallet_promotion`
-  - `test_watcher_does_not_emit_realtime_for_old_trades`
-  - `test_dashboard_latency_shows_split_stages`
-  - `test_migration_0009_new_stage_names_accepted` (si migration structurelle sur enum — sinon skippable)
-- **Sources** : Backlog docs/backlog.md §3 "Latence watcher" + audit D1 + F33.
+  - `test_order_struct_v2_includes_timestamp_metadata_builder`
+  - `test_order_struct_v2_drops_nonce_fee_rate_bps_taker_expiration`
+  - `test_eip712_domain_version_bumped_to_2_for_exchange`
+  - `test_eip712_clob_auth_domain_remains_version_1`
+  - `test_signature_validates_against_v2_test_env`
+- **Sources** : Doc V2 §Order signing flow + EIP-712 domain (§2.2 + §2.3).
 - **Charge item** : 1 jour
 
-### ME.3 — Fix `strategy_filtered_ms count > strategy_enriched_ms count`
+### ME.3 — Migrer FeeRateClient M16 vers `getClobMarketInfo()`
 
-- **Location** : [src/polycopy/strategy/orchestrator.py:128-153](../../src/polycopy/strategy/orchestrator.py#L128-L153) + [src/polycopy/strategy/pipeline.py:280-335](../../src/polycopy/strategy/pipeline.py#L280-L335)
+- **Location** : [src/polycopy/executor/fee_rate_client.py](../../src/polycopy/executor/fee_rate_client.py) +
+  [src/polycopy/strategy/pipeline.py:200-260](../../src/polycopy/strategy/pipeline.py#L200)
+  (`PositionSizer._check_buy` qui consomme le fee rate).
 - **Ce qu'il faut faire** :
-  - Audit [H-001] cause racine : `strategy_filtered_ms` wrappé en `finally` autour de `run_pipeline` → émis même sur early-reject.
-  - **Fix** : émettre `strategy_filtered_ms` **uniquement si** la boucle pipeline atteint au moins le `MarketFilter` (stage 2). Les early-rejects du stage 1 (`TraderLifecycleFilter`) n'émettent pas `filtered_ms`.
-  - **Alternative** (recommandé Claude §H-001) : renommer `strategy_filtered_ms` en `strategy_pipeline_total_ms` et documenter que c'est la durée totale du pipeline **quelque soit** le stage où il s'est arrêté. Plus honnête sémantiquement.
-  - **Décision D3** : prendre l'alternative (rename). Invariant préservé : `count(pipeline_total_ms) ≥ count(enriched_ms) ≥ count(filtered_ms) ≥ count(sized_ms) ≥ count(risk_checked_ms)`. Monotone décroissant strict.
-  - Migration dashboard `/latency` : afficher les 7 stages dans l'ordre de pipeline correct.
+  - **Préserver intact le contrat M16** : `FeeRateClient.get_fee_rate(token_id) -> Decimal`
+    (signature publique inchangée pour ne pas casser MC.5 wiring + tests
+    M16). Le swap est interne au client.
+  - Implémenter le nouveau backend : `getClobMarketInfo(condition_id)`
+    response → extract `fd.r` (rate) et `fd.e` (exponent) → calculer
+    le fee rate effective via la formule M16 existante
+    `fee_rate × (p × (1-p))^exponent`.
+  - **Piège** : `getClobMarketInfo` prend un `condition_id`, pas un
+    `token_id`. Le `FeeRateClient.get_fee_rate(token_id)` doit donc
+    résoudre `token_id → condition_id` en interne (cache LRU déjà en place
+    M16, conserver) avant le call.
+  - **Conserver** la cache TTL 60s + LRU 500 + single-flight + tenacity
+    + fallback `Decimal("0.018")` (M16 §11). Pas de refactor de
+    l'infrastructure cache — uniquement le HTTP path interne.
+  - **Conserver** le check `base_fee == 0` court-circuit (§M16) : V2
+    expose la même sémantique via `fd.to` (takerOnly) et la valeur de
+    `fd.r` qui peut être 0 sur les markets fee-free.
+  - **Vérifier** que `/fee-rate?token_id=` est définitivement supprimé
+    en V2 (la doc semble l'indiquer mais à confirmer en testant le 404
+    sur clob-v2.polymarket.com).
 - **Tests requis** :
-  - `test_pipeline_total_ms_count_monotonic_decreasing_with_stages`
-  - `test_early_reject_stage1_does_not_emit_filtered_ms`
-  - `test_pipeline_total_ms_emitted_on_every_trade`
-  - `test_dashboard_latency_renames_filtered_to_pipeline_total`
-- **Sources** : Audit H-001 + Session D D2.
+  - `test_fee_rate_client_uses_get_clob_market_info_v2`
+  - `test_fee_rate_client_resolves_token_id_to_condition_id_via_cache`
+  - `test_fee_rate_client_extracts_fd_r_and_fd_e_from_response`
+  - `test_fee_rate_client_preserves_m16_signature_get_fee_rate(token_id) -> Decimal`
+  - `test_fee_rate_client_fallback_018_on_v2_endpoint_down`
+  - `test_position_sizer_unchanged_post_v2_fee_client_swap` (régression)
+- **Sources** : Doc V2 §getClobMarketInfo + Match-time fee (§2.6 + §2.7).
+- **Charge item** : 1 jour
+
+### ME.4 — Polymarket USD collateral (env vars + helper wrap)
+
+- **Location** : [src/polycopy/config.py](../../src/polycopy/config.py) +
+  nouveau `scripts/wrap_usdc_to_pusd.py` (helper one-time, hors run).
+- **Ce qu'il faut faire** :
+  - Add settings :
+    - `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS: str | None = None`
+    - `POLYMARKET_PUSD_ADDRESS: str | None = None`
+    - `POLYMARKET_USDC_E_ADDRESS: str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"`
+      (USDC.e Polygon canonique, pré-V2)
+  - Validator Pydantic : si `EXECUTION_MODE=live` ET (`onramp_address` OU
+    `pusd_address`) absent → raise au boot avec message clair "set both for
+    Polymarket V2 live trading". En `EXECUTION_MODE=dry_run` → no-op
+    (settings restent None, pas de wrap requis).
+  - Helper script `scripts/wrap_usdc_to_pusd.py` (~80 LOC) :
+    - Lit `POLYMARKET_PRIVATE_KEY` + `POLYMARKET_FUNDER` + onramp address.
+    - Approve USDC.e → onramp pour `amount`.
+    - Call `onramp.wrap(USDC.e_addr, funder, amount)`.
+    - Vérifie le solde pUSD post-wrap.
+    - Logs structlog uniquement (pas de `print` cf. CLAUDE.md
+      conventions).
+  - **Pas de modification du DB schema** : les `MyOrder` / `MyPosition` ne
+    stockent pas l'adresse collateral, juste `condition_id`/`asset_id`.
+  - **Adresses définitives à fetcher** sur
+    `docs.polymarket.com/resources/contracts` au moment de la spec writing.
+- **Tests requis** :
+  - `test_settings_v2_collateral_env_vars_optional_in_dry_run`
+  - `test_settings_v2_collateral_env_vars_required_in_live_mode`
+  - `test_wrap_script_smoke` (mock web3, vérifier l'ordre approve → wrap)
+- **Sources** : Doc V2 §pUSD mechanics (§2.8).
+- **Charge item** : 0.5 jour (pas urgent en dry-run, le wrap script peut
+  être ajouté en post-cutover si seulement live env)
+
+### ME.5 — Builder code support (optionnel mais ROI direct)
+
+- **Location** : [src/polycopy/config.py](../../src/polycopy/config.py) +
+  fichier executor V2 (post-ME.1).
+- **Ce qu'il faut faire** :
+  - Setting : `POLYMARKET_BUILDER_CODE: str | None = None` (bytes32
+    représenté en hex, ex `0x...`).
+  - Validator : si set, doit être un valid hex 32 bytes (regex `^0x[0-9a-f]{64}$`).
+  - Plombage : passer `builderConfig={"builderCode": settings.builder_code}`
+    une fois dans le ClobClient V2 constructor (cf. §2.5). Le SDK le plomb
+    automatiquement dans chaque Order.builder à la signature.
+  - **Pas de plombage per-order** : on évite la duplication, le constructor
+    config suffit.
+  - **Aucun secret** : le builder code est public (apparaît onchain) — pas
+    de discipline TELEGRAM_BOT_TOKEN-style. Loggé OK.
+- **Tests requis** :
+  - `test_settings_builder_code_validator_accepts_valid_hex32`
+  - `test_settings_builder_code_validator_rejects_invalid_format`
+  - `test_clob_client_constructor_includes_builder_config_when_set`
+- **Sources** : Doc V2 §Builder codes (§2.9).
+- **Charge item** : 0.5 jour
+- **Décision** : à shipper **avec ou après ME.1-ME.3** selon bandwidth.
+  Pas critique pour le cutover (default `None` = aucun builder code, cohérent
+  M3..M16). À activer post-restart en setting le code en `.env`.
+
+### ME.6 — Update tests intégration vs `clob-v2.polymarket.com`
+
+- **Location** : [tests/integration/](../../tests/integration/) (à
+  enrichir).
+- **Ce qu'il faut faire** :
+  - Add fixture env var `POLYMARKET_CLOB_HOST_TEST=https://clob-v2.polymarket.com`
+    pour les tests intégration opt-in (`pytest -m integration`).
+  - 2-3 tests intégration ciblés :
+    - Smoke test `getClobMarketInfo(condition_id)` retourne la structure
+      attendue (`mts/mos/fd/t/rfqe`).
+    - Smoke test signature flow : créer un Order V2 dummy en dry-run mode
+      du SDK, vérifier qu'il valide localement (pas de POST réel).
+    - Smoke test fee rate calculation : feed un token_id réel, vérifier
+      que la formule retourne un Decimal cohérent.
+  - **Capturer les fixtures** dans `tests/fixtures/clob_v2_*.json` (cohérent
+    pattern M2/M11) pour les tests unit ne dépendant pas du réseau.
+- **Tests requis** :
+  - `test_integration_clob_v2_get_market_info_real`
+  - `test_integration_clob_v2_signature_local_validation`
+  - `test_integration_fee_rate_v2_real_token`
+- **Sources** : test environnement Polymarket §2.1.
 - **Charge item** : 0.5 jour
 
-### ME.4 — Gestion HTTP 425 matching engine restart
+### ME.7 — Procédure cutover ops + rollback
 
-- **Location** : [src/polycopy/executor/clob_write_client.py](../../src/polycopy/executor/clob_write_client.py) + [src/polycopy/executor/pipeline.py](../../src/polycopy/executor/pipeline.py)
+- **Location** : [docs/todo.md §14](../todo.md#14-polymarket-v2-cutover) +
+  enrichir avec les détails post-spec writing.
 - **Ce qu'il faut faire** :
-  - Perplexity D1 : "Matching engine restart Tuesday 7AM ET ~90s, returns HTTP 425 (Too Early) on order endpoints".
-  - Dans `ClobWriteClient.post_order()` : catch `httpx.HTTPStatusError` si `status_code == 425`, appliquer exponential backoff tenacity (déjà en place dans d'autres clients). Retry max 6 fois avec backoff 15s, 30s, 60s, 120s, 240s, 480s (total ~15 min — couvre le restart 90s + marge).
-  - Log structlog `clob_write_client_engine_restart_backoff` avec `retry_count`, `next_wait_s`. Niveau INFO (pas WARNING — c'est prévu).
-  - Alerter Telegram INFO `matching_engine_restart_detected` au premier HTTP 425 reçu (once per 24h), pour traçabilité ops.
-  - **Attention** : pendant le restart, le path dry-run M8 `_persist_realistic_simulated` **n'appelle pas CLOB write** (read-only `/book`). Pas d'impact dry-run, seulement live.
-  - Pour le path **read** (Gamma, `/midpoint`, `/book`) — si 425, même backoff pattern.
-- **Tests requis** :
-  - `test_clob_write_client_retries_on_http_425`
-  - `test_clob_write_client_emits_telegram_alert_once_per_day`
-  - `test_clob_write_client_eventually_succeeds_after_engine_restart`
-- **Sources** : Perplexity D1 + Session D (new item) + Claude §12 key discrepancy.
-- **Charge item** : 0.5 jour
-
-### ME.5 — Instrumentation comparative WSS vs REST latency
-
-- **Location** : [src/polycopy/watcher/wallet_poller.py](../../src/polycopy/watcher/wallet_poller.py) + [src/polycopy/dashboard/templates/latency.html](../../src/polycopy/dashboard/templates/latency.html)
-- **Ce qu'il faut faire** :
-  - Ajouter 2 nouveaux sub-stages dans `watcher_realtime_detected_ms` : `detection_path: Literal["wss", "rest"]` (tag structlog).
-  - Dashboard `/latency` ajoute toggle "WSS vs REST comparison" qui plot les deux distributions côte-à-côte.
-  - Utile pour **valider empiriquement** que WSS amène bien le gain attendu post-ship.
-  - Réponse directe à Q2 (synthèse §11) : "quelle est la vraie latence WSS market channel end-to-end pour polycopy ?".
-- **Tests requis** :
-  - `test_detection_path_tag_wss`
-  - `test_detection_path_tag_rest`
-  - `test_dashboard_latency_toggles_wss_vs_rest`
-- **Sources** : Q2 synthèse §11 + F43.
+  - Documenter la procédure exacte cutover dans la spec :
+    - Phase 1 (lundi 27 avril soir) : merger `feat/ctf-exchange-v2` sur
+      main si tests verts, ne PAS restart.
+    - Phase 2 (mardi 28 ~10h30 UTC) : stop bot, reset DB (cohérent §3
+      todo.md), wrap pUSD si EXECUTION_MODE=live (sinon skip), restart.
+    - Phase 3 (mardi 28 ~11h30 UTC) : smoke test post-V2 (3 vérifications
+      dans la spec).
+    - Phase 4 (mercredi 29) : monitoring 24h.
+  - Documenter le rollback : si erreur post-V2, **pas de retour V1
+    possible** (Polymarket V1 offline post-cutover). Le rollback se fait
+    via `git revert` + hotfix sur la branche V2 uniquement.
+  - Documenter les risques connus + mitigations (cf. §15 todo.md tableau).
+- **Pas de tests** (spec ops/runbook).
 - **Charge item** : 0.5 jour
 
 ## 4. Architecture / décisions clefs
 
-- **D1** : réutiliser `ClobMarketWSClient` existant (pas créer nouveau client). Justification : déjà robuste M11 (reconnect tenacity, watchdog, LRU cap), cohérent invariant single-process.
-- **D2** : cap `STRATEGY_CLOB_WS_MAX_SUBSCRIBED_DETECT=500` (même cap que cache slippage). Justification : probable overlap des `asset_ids` (même markets utilisés pour slippage et detection).
-- **D3** : renommer `strategy_filtered_ms` → `strategy_pipeline_total_ms`. Justification : sémantique correcte sans breaking change invasif. Dashboard gère le rename.
-- **D4** : mode hybride WSS primary + REST safety net (pas pure WSS). Justification : résilience aux déconnexions WSS, compat M5_ter live-reload (nouveaux wallets peuvent nécessiter backfill REST initial), pas de régression fonctionnelle.
-- **D5** : `watcher_backfill_duration_ms` émis 1× par cycle (pas par trade). Justification : c'est une métrique ops, pas une métrique per-trade. Cohérent avec backlog docs/backlog.md "audit pur, pas comparé aux autres stages".
-- **D6** : backoff HTTP 425 exponential tenacity max 6 retries (~15 min total). Justification : restart engine ~90s, marge x10 pour imprévus, stop avant de spammer.
+- **D1** : SDK swap sans abstraction custom — on utilise `py-clob-client-v2`
+  directement, pas de wrapper polycopy autour. Cohérent M3 décision originale
+  (trust py-clob-client). Si le SDK V2 introduit un bug, c'est un upstream
+  fix Polymarket.
+- **D2** : `FeeRateClient` (M16) garde sa **signature publique inchangée**
+  (`get_fee_rate(token_id) -> Decimal`). Le swap V1→V2 est strictement
+  interne au client. Préserve M16 MC.5 wiring + tests sans modification.
+- **D3** : pas de wrap automatique USDC.e → pUSD en startup. **Action
+  manuelle one-time via script Python** quand on flip live. Évite des
+  appels onchain non-attendus au boot du bot.
+- **D4** : adresses contrats Polymarket en env vars, **pas hardcodées**.
+  Cohérent invariant CLAUDE.md + facilite les changes futurs (nouveaux
+  exchanges, multi-chain).
+- **D5** : EIP-712 `ClobAuthDomain` **reste version `"1"`** — uniquement
+  l'Exchange domain bump à `"2"`. Confusion fréquente côté implémenteur,
+  documenter explicitement dans la spec §11 piège.
+- **D6** : `metadata` field bytes32 = `0x0` par défaut. Pas d'usage
+  documenté côté Polymarket à date. Si futur usage (ex: tags d'analyse),
+  reportable en feature add-on.
+- **D7** : builder code optionnel par défaut. Default `None` → pas de
+  plombage builder, comportement strict M3..M16 préservé. À activer
+  via env var setting post-restart.
+- **D8** : tests intégration opt-in via `pytest -m integration` pour ne
+  pas casser CI dev (cohérent M2/M11).
 
 ## 5. Invariants sécurité
 
-- **Triple garde-fou M3 + 4ᵉ M8** : intact. ME touche uniquement couche détection (watcher) + instrumentation + retry write. Aucune nouvelle surface signature.
-- **WSS CLOB `market` = public read-only** : cohérent M11. Aucune creds consommée.
-- **Zéro secret loggé** : les nouveaux events structlog (`trade_event_received_wss`, `detection_path=wss`) n'incluent que wallets publics + numeric. Test grep `test_no_secret_leak_in_me_logs`.
-- **M5_ter watcher live-reload compat** : le cycle `list_wallets_to_poll()` continue à tourner, émet des updates au consommateur WSS et au REST fallback simultanément. Aucune régression lifecycle M5_bis.
-- **Dedup tx_hash préservée** : les trades arrivant via WSS et REST sur le même `tx_hash` ne sont comptabilisés qu'une fois en DB (contrainte unique M1).
+### 5.1 Triple garde-fou M3 + 4ᵉ M8 strictement préservés
+
+- ❌ **Pas de modification de** `_persist_realistic_simulated` (M8) ni
+  `_persist_sent_order` (M3) hors du strict nécessaire (constructor
+  arguments).
+- ❌ **Pas de modification de** `WalletStateReader.get_state()` (re-fetch
+  pré-POST).
+- ✅ **L'assert `dry_run=False` AVANT chaque `create_and_post_order`**
+  reste intact dans la branche V2.
+- ✅ **Lazy init `ClobClient`** : pas instancié si `EXECUTION_MODE=dry_run`
+  (préserve la sémantique M3).
+
+### 5.2 Discipline credentials
+
+- `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER`, CLOB L2 creds
+  (`api_key`/`api_secret`/`api_passphrase`) — discipline IDENTIQUE M3.
+  Aucun log même partiel, même en debug.
+- Le seul log nouveau autorisé : `clob_v2_client_initialized` SANS aucun
+  champ creds (juste le host + chain id + signature_type).
+- **Builder code N'EST PAS un secret** (apparaît onchain) — discipline
+  publique cohérente `MACHINE_ID`.
+
+### 5.3 Signature V2 — anti-replay
+
+- `salt` reste un uint256 random — anti-replay strict V2 cohérent V1.
+- `timestamp` ms ajouté en V2 protège aussi contre les replays old-orders.
+- **Piège** : `signature_type` mismatch en V2 = transactions rejetées
+  silencieusement par CLOB V2 (cohérent V1). Documenter clairement les 3
+  valeurs (0/1/2) dans la spec §11 pour éviter la confusion.
+
+### 5.4 Wrap USDC.e → pUSD en mode dry-run
+
+- **NE PAS exécuter le wrap script en dry-run**. Le bot dry-run ne signe
+  aucun ordre live, donc le wrap n'a pas d'effet utile. Mais déclencher
+  le wrap consume de la fee onchain (~$0.01-0.05 Polygon).
+- Validator Pydantic : si script `wrap_usdc_to_pusd.py` lancé avec
+  `EXECUTION_MODE=dry_run` → log WARNING + abort (sauf flag explicite
+  `--force-dry-run`).
+
+### 5.5 Versioning sacré (M14/M15)
+
+V2 migration **n'introduit aucune nouvelle version de scoring**. Les
+formules `compute_score_v2` (M14 v2.1) et `compute_score_v2_1_1` (M15)
+sont 100% indépendantes de la couche executor. Aucun changement scoring.
 
 ## 6. Hypothèses empiriques à valider AVANT ship
 
-- **H-EMP-4** (synthèse §8) : post-ship ME, latence p50 détection passe de 8-20s à 2-4s. **Méthode** : post-ship, 24h d'observation, comparer p50 `watcher_realtime_detected_ms` pre/post. **Seuil go** : p50 post-ship < 5s. Si ≥5s, investiguer (WSS lag, WSL overhead).
-- **H-EMP-6** (synthèse §8, Q2) : latence WSS market channel réelle sur notre stack. **Méthode** : instrument `t_ws_message_received → t_detected_trade_persisted`. **Seuil informatif** : si > 1s, le gain ME est mangé par internal processing. Si < 200ms, marge excellente.
-- **Q1** (synthèse §11) : "250ms taker delay" vs "250-300ms matching latency" — instrumenter `t_order_sent → t_order_confirmed` sur 100 FOK orders live (post-ME.4 qui ajoute le retry context). Seuil informatif : si delta 250ms stable, c'est probablement le même phénomène. Si très variable, plus complexe.
+Cette migration est **hard deadline imposé externe** — pas d'hypothèses
+empiriques bloquantes au sens habituel des autres modules MA/MB/MC.
+**Validations factuelles à confirmer avant rédaction de la spec** :
+
+- **H-V2-1** : `py-clob-client-v2==1.0.0` est-il publié sur PyPI au moment
+  de la spec writing ? (vérifier `pip index versions py-clob-client-v2`).
+  Si retard côté Polymarket → repousser la spec d'1 jour.
+- **H-V2-2** : la doc `/resources/contracts` liste-t-elle les adresses
+  Polymarket USD + CollateralOnramp en clair ? À fetcher et confirmer
+  pendant la spec writing. Si absence → bloquer ME.4 (spec ne peut pas
+  être écrite avec adresses TBD).
+- **H-V2-3** : le test environnement `clob-v2.polymarket.com` retourne
+  bien `getClobMarketInfo(...)` avec le schéma documenté ? Smoke test
+  curl à exécuter pendant la spec writing pour confirmer.
+- **H-V2-4** : les fees calculés par V2 sur un trade dummy sont
+  numériquement cohérents avec notre formule M16 actuelle ? Vérifier sur
+  un token fee-enabled connu (crypto_fees_v2 ou sports_fees_v2).
 
 ## 7. Out of scope
 
-- **Migration VPS Dublin / Frankfurt** : hors scope. Claude §7.3 recommande Option (d) — accepter 2-3s floor, invest en scoring. Si besoin futur, spec dédiée.
-- **RTDS Real-Time Data Stream intégration** : alternative payante Polymarket (Perplexity C5). Hors scope, WSS market channel suffit.
-- **Polygon RPC eth_subscribe OrderFilled** : Claude §7.1 (c) démontre inadéquation copy-trading (settlement on-chain trop tard). Hors scope.
-- **Goldsky Turbo Pipelines webhook** : alternative Claude §7.1 (b), coût ~$50/mo, hors scope tant que WSS market suffit.
-- **Parallelization strategy pipeline (phase 2)** : si post-ME.1-5 on mesure p95 > 4s, futur M17+. Claude §7.3 : "add market-channel WSS (item 9) only if measured post-fix residual p50 exceeds ~4s".
-- **Shutdown graceful timeout 10s** : migre en **MI** (ops hygiene, même famille D3 Session D).
-- **HTTP 425 alerting sophistiqué** (histograms, SLA tracking) : v1 simple log + one-time Telegram suffit.
+- ❌ **EIP-1271 smart contract wallets support** — annoncé V2 mais pas
+  documenté en détail. polycopy utilise EOA ou Gnosis Safe (legacy V1
+  pattern). Reportable feature future si on a besoin de plomber un compte
+  smart contract.
+- ❌ **Market making algorithmique V2** (Avellaneda-Stoikov, etc.) — hors
+  scope. polycopy reste un copy-trader.
+- ❌ **Migration des positions historiques V1 vers schema V2** — pas
+  applicable, on reset la DB au cutover (cf. todo.md §3).
+- ❌ **Multi-collateral support** (USDC.e + pUSD coexistant) — V2
+  élimine USDC.e du collateral. Pas de besoin de support dual.
+- ❌ **Builder code marketplace / fee tier optimization** — feature
+  business future, pas dev infra.
+- ❌ **Backward-compat layer V1↔V2** — Polymarket le fait côté backend
+  (auto-switch via version endpoint). Inutile de réimplémenter côté
+  polycopy.
+- ❌ **Refactor du DB schema collateral_token** — `MyOrder` /
+  `MyPosition` ne stockent pas le collateral. Aucune migration DB requise.
 
 ## 8. Success criteria
 
-1. **Tests ciblés verts** : ~14 nouveaux tests unit + 2 integration.
-2. **Latence p50 détection post-ship** : sur 24h d'observation, `watcher_realtime_detected_ms` p50 < **5s** (idéalement < 3s).
-3. **p99 détection non-aberrant** : `watcher_realtime_detected_ms` p99 < **30s** (vs 44min actuel conflation). `watcher_backfill_duration_ms` reste un metric séparé.
-4. **Counter invariants restaurés** : `count(pipeline_total_ms) ≥ count(enriched_ms)` strictement sur 24h samples.
-5. **WSS stable** : post-ship, WSS connection uptime > 95% sur 7 jours (mesuré via `ws_connection_status` existant M11).
-6. **HTTP 425 handled** : E2E test simulé → post-ME.4, bot survit à un restart engine simulé sans crash, retry propre.
-7. **Dashboard `/latency` migré** : affiche 7 stages, panel backfill séparé, toggle WSS vs REST.
+1. **Branche `feat/ctf-exchange-v2` mergée sur `main` avant lundi 27 avril
+   minuit UTC**, tests verts (ruff + mypy + pytest unit ≥ 80% coverage
+   sur fichiers modifiés).
+2. **Tests intégration sur `clob-v2.polymarket.com`** passent (3 tests
+   §ME.6 verts).
+3. **Mardi 28 avril ~11h UTC post-cutover** : le bot redémarre sans erreur
+   en dry-run, premier cycle discovery + 1 trade simulé OK.
+4. **Pas de régression M16** : le rejet `ev_negative_after_fees` continue
+   de fonctionner sur les markets fee-enabled (test smoke post-restart).
+5. **Telegram heartbeat OK** post-restart (`heartbeat` event arrive
+   normalement).
+6. **DB schema cohérent** : `alembic upgrade head` n'apporte aucune
+   nouvelle migration (V2 ne change pas le schema polycopy).
 
 ## 9. Mapping origines (traçabilité)
 
-| Item | Audit | Session | Deep-search | Synthèse roadmap |
-|---|---|---|---|---|
-| ME.1 | — | D (new major) | F43 (3/3), Claude §9 item 9 + §7.1 | #12 |
-| ME.2 | — | D (D1) | Backlog docs/backlog.md §3 | #14 |
-| ME.3 | [H-001] | D (D2) | Claude §6 audit mapping | #13 |
-| ME.4 | — | D (new) | Perplexity D1 + F51 | #26 |
-| ME.5 | — | D (new) | Q2 synthèse §11 | — |
+| Item | Source primaire | Source secondaire |
+|---|---|---|
+| ME.1 | Doc V2 §SDK Migration | py-clob-client-v2 GitHub README |
+| ME.2 | Doc V2 §Order signing flow + EIP-712 | EIP-712 spec ([eips.ethereum.org/EIPS/eip-712](https://eips.ethereum.org/EIPS/eip-712)) |
+| ME.3 | Doc V2 §getClobMarketInfo | M16 spec [docs/specs/M16-dynamic-fees-ev.md](../specs/M16-dynamic-fees-ev.md) §11 (rétrocompat path) |
+| ME.4 | Doc V2 §Polymarket USD + Collateral Onramp | docs.polymarket.com/resources/contracts |
+| ME.5 | Doc V2 §Builder Program | polymarket.com/settings?tab=builder UI |
+| ME.6 | Test environnement V2 | tests/integration/ pattern M2/M11 |
+| ME.7 | docs/todo.md §14 | Discord Polymarket Dev hands-on onboarding |
 
 ## 10. Prompt de génération de spec
+
+Bloc à coller dans une nouvelle conversation Claude Code pour générer
+`docs/specs/M18-polymarket-v2-migration.md`.
 
 ````markdown
 # Contexte
 
-Lis `docs/next/ME.md` en entier. C'est le brief actionnable du module ME
-(Pipeline latency phase 1b). WSS CLOB market channel extension à la couche
-détection + fix counters latence + HTTP 425 backoff.
+Lis [docs/next/ME.md](docs/next/ME.md) en entier.
+C'est le brief actionnable de la migration Polymarket CLOB V2 + pUSD.
+Il regroupe les détails techniques exhaustifs extraits de la doc officielle
+[docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration)
++ les 7 items ME.1 → ME.7 de scope.
 
 # Tâche
 
-Produire `docs/specs/M18-latency-phase-1b.md` suivant strictement le format
-des specs M1..M17 existantes.
+Produire `docs/specs/M18-polymarket-v2-migration.md` suivant strictement
+le format des specs M14/M15/M16 récentes (§ numérotées : TL;DR, Motivation,
+Scope, User stories, Architecture, Algorithmes, DTOs, Settings, Invariants
+sécurité, Test plan, Impact existant, Migration, Commandes vérif, Hors
+scope, Notes implémentation, Prompt implémentation, Commit message proposé,
+Critères d'acceptation).
 
-Numéro : M18 (après MA=M14, MB=M15, MC=M16, MD=M17).
+Numéro : M18 (après MA=M14, MB=M15, MC=M16, MD=M17 cross-layer integrity).
+
+**Hard deadline externe** : Polymarket cutover **mardi 28 avril 2026
+~11h UTC**. La spec doit être actionnable d'ici lundi 27 avril soir
+maximum.
 
 # Prérequis (à lire avant de rédiger)
 
-- `CLAUDE.md` §Conventions (WSS market = public read-only, cohérent M11) +
-  §Sécurité (pas de creds sur WSS market)
-- `docs/specs/M11-realtime-pipeline-phase1.md` comme référence contenu WSS CLOB
-  (déjà en place pour SlippageChecker, à étendre)
-- `docs/specs/M13_dry_run_observability_spec.md` comme template de forme
-- `docs/backlog.md` §3 "Latence watcher_detected_ms" (cause racine + fix option 1)
-- Audit H-001 (filtered > enriched)
-- Synthèse §4.2 F43 WSS > REST + §4.3 F32+F33 channel market vs user
-- Perplexity D1 (matching engine restart HTTP 425)
+- `CLAUDE.md` §Conventions + §Sécurité (triple garde-fou M3 + 4ᵉ M8,
+  discipline credentials POLYMARKET_PRIVATE_KEY/CLOB L2, pas de hardcode
+  d'adresses contrats)
+- `docs/specs/M3-executor.md` (référence Executor original — section
+  Triple garde-fou + ClobWriteClient signature path à adapter)
+- `docs/specs/M16-dynamic-fees-ev.md` (référence FeeRateClient + formule
+  fee polycopy à préserver pendant le swap V1→V2 endpoint)
+- `docs/specs/M13_dry_run_observability_spec.md` comme **template de
+  forme** (le plus récent, section structure + style cohérent)
+- **Lire en live** la doc officielle Polymarket V2 :
+  - https://docs.polymarket.com/v2-migration (page principale)
+  - https://docs.polymarket.com/concepts/pusd (Polymarket USD)
+  - https://docs.polymarket.com/resources/contracts (adresses contrats —
+    récupérer pUSD + CollateralOnramp à JOUR au moment de la spec writing)
+  - https://docs.polymarket.com/builders/fees (builder codes fees, optionnel)
+- Confirmer la disponibilité PyPI :
+  `pip index versions py-clob-client-v2` doit retourner `1.0.0`
+  (ou supérieur si Polymarket re-released entre-temps). Si absent → STOP
+  et signale à l'utilisateur (la spec ne peut pas être écrite si le SDK
+  V2 n'existe pas encore officiellement).
+- Hypothèses H-V2-1 → H-V2-4 du brief §6 — exécuter les checks factuels
+  avant la rédaction.
 
 # Contraintes
 
-- Lecture seule src/ + docs
-- Écriture uniquement `docs/specs/M18-latency-phase-1b.md`
-- Longueur cible : 1000-1300 lignes
-- Migration Alembic : **optionnel** (0009 si besoin d'un schéma column,
-  sinon pur code change sur `stage_name` valeurs acceptées)
-- Ordre commits recommandé : ME.3 (fix counter bug isolé) → ME.2 (split
-  watcher) → ME.4 (HTTP 425) → ME.1 (WSS extension, plus gros) → ME.5
-  (instrumentation comparative post-ME.1)
+- **Lecture seule** sur `src/`, `tests/`, docs sources, doc officielle
+  Polymarket
+- **Écriture uniquement** `docs/specs/M18-polymarket-v2-migration.md`
+- **Longueur cible** : 1100-1400 lignes (cohérent M13/M14/M15)
+- **Pas de migration DB Alembic** : le schema collateral n'est pas stocké
+  côté polycopy (cf. brief §7 Out of scope). Si la rédaction révèle un
+  besoin contraire, signale à l'utilisateur AVANT d'écrire la migration.
+- **Préserver le contrat M16 `FeeRateClient.get_fee_rate(token_id) -> Decimal`** :
+  le swap V1→V2 est strictement interne. Aucune modification de
+  `PositionSizer._check_buy` (M16 MC.2) ni des tests M16 existants.
+- **Triple garde-fou M3 + 4ᵉ M8 strictement préservés** : aucune
+  modification des asserts `dry_run=False` ni du re-fetch
+  `WalletStateReader.get_state()` pré-POST.
+- **Adresses contrats en env vars** : pas de hardcode (cohérent CLAUDE.md).
+  Setting names alignés sur le pattern existant (ex
+  `POLYMARKET_EXCHANGE_V2_ADDRESS`, `POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS`,
+  `POLYMARKET_COLLATERAL_ONRAMP_ADDRESS`, `POLYMARKET_PUSD_ADDRESS`,
+  `POLYMARKET_BUILDER_CODE`).
+- **Ordre commits recommandé** : ME.1 (SDK bump) → ME.2 (Order struct +
+  signature) → ME.3 (FeeRateClient swap) → ME.4 (env vars + wrap helper) →
+  ME.5 (builder code optionnel) → ME.6 (tests intégration) → ME.7 (procédure
+  cutover dans spec). 7 commits atomiques.
+
+# Demande-moi confirmation AVANT
+
+- Modifier `pyproject.toml` (bumper `py-clob-client` → `py-clob-client-v2`).
+- Modifier le constructor de `ClobWriteClient` ou équivalent (signature
+  options object).
+- Toucher la chaîne EIP-712 signing (Order struct fields V2).
+- Refactor `FeeRateClient` (swap endpoint).
+- Update CLAUDE.md (§Conventions + §Sécurité).
+
+# STOP et signale si
+
+- `py-clob-client-v2` n'est pas encore publié sur PyPI au moment de la
+  spec writing → impossible de rédiger ME.1 avec confiance.
+- Les adresses pUSD ou CollateralOnramp ne sont pas publiées sur
+  `/resources/contracts` au moment de la spec writing → ME.4 inactionnable.
+- Le test environnement `clob-v2.polymarket.com` retourne 404 ou erreur
+  inattendue sur `getClobMarketInfo` → schéma de l'endpoint à confirmer
+  avant ME.3.
+- Discovery Polymarket Discord d'un délai du cutover (ex: 28 avril →
+  29 avril) → ajuster les success criteria de la spec.
+
+# Smoke test final obligatoire avant merge
+
+```bash
+# 1. Tests unitaires
+pytest tests/unit/test_clob_*v2* tests/unit/test_fee_rate_client*v2* \
+       tests/unit/test_order_builder_v2* -x --tb=short
+
+# 2. Tests intégration opt-in (vs clob-v2.polymarket.com)
+pytest -m integration tests/integration/test_clob_v2_*.py -x --tb=short
+
+# 3. Lint + types
+ruff check . && ruff format --check . && mypy src --strict
+
+# 4. Smoke runtime (dry-run, contre clob-v2 testnet) — doit démarrer
+#    sans erreur, premier cycle discovery OK.
+EXECUTION_MODE=dry_run \
+SCORING_VERSION=v2.1 \
+DISCOVERY_ENABLED=true \
+POLYMARKET_CLOB_HOST=https://clob-v2.polymarket.com \
+python -m polycopy --verbose
+# Wait ~30s, vérifier les logs : aucun ERROR, presence de
+# "clob_v2_client_initialized" + "discovery_cycle_started".
+```
 
 # Livrable
 
-- Le fichier `docs/specs/M18-latency-phase-1b.md` complet
-- Un ping final ≤ 10 lignes : tests estimés, charge cumulée, hypothèses
-  empiriques H-EMP-4/H-EMP-6 à planifier post-ship
+- Le fichier `docs/specs/M18-polymarket-v2-migration.md` complet
+- Un ping final ≤ 12 lignes :
+  - Tests estimés (cible : ~18-24 unit + 3 intégration)
+  - Charge cumulée (cible : 2-3 jours dev avant lundi 27 avril)
+  - Ordre commits recommandé (cohérent §10 du brief)
+  - Risques résiduels post-spec writing (ex: SDK pas encore release)
+  - Procédure cutover ops mardi 28 ~11h UTC (référence todo.md §14)
 ````
 
 ## 11. Notes d'implémentation
 
-### Piège : WSS market channel subscription par `asset_id`, pas par `wallet`
+### Piège : EIP-712 domain version dual
 
-**Claude §7.1 critique** : "subscribe per asset_id, not per wallet, so you need to know which markets each watched wallet is active in — that dependency means your /holders or /trades discovery still runs underneath; WSS is only the low-latency detection layer on top".
+Confusion fréquente : V2 bump `Exchange` domain à `"2"` MAIS `ClobAuthDomain`
+(utilisé pour L1 API auth signing) **reste `"1"`**. Si l'implémenteur
+bump les deux par erreur, l'auth headers L1 deviennent invalides → `401
+Unauthorized` au premier API call. Documenter explicitement dans la spec
+§Architecture + §Tests (`test_eip712_clob_auth_domain_remains_version_1`).
 
-Implication concrète : on ne peut **pas** se désabonner de tous les assets et s'abonner juste aux "wallets watchés" — il faut **d'abord** savoir sur quels asset_ids ces wallets tradent. D'où hybrid mode (D4) : REST polling reste actif low-frequency, WSS capture high-frequency sur les asset_ids déjà connus.
+### Piège : token_id ↔ condition_id resolution
 
-Source dynamique des asset_ids à souscrire :
-1. `MyPosition.asset_id` (positions ouvertes — highest priority)
-2. `detected_trades.asset_id` last 24h (trades récents des wallets watchés)
-3. `strategy_decisions.asset_id` last 24h (évaluation récente)
-4. (optionnel) Top markets Gamma `/events` (bootstrap coverage)
+`getClobMarketInfo()` V2 prend un `condition_id` en input, alors que le
+`FeeRateClient` M16 expose `get_fee_rate(token_id)`. Le mapping
+`token_id → condition_id` doit être en cache LRU (idéalement réutiliser
+le cache market metadata Gamma déjà en place dans `MarketFilter`). Si pas
+de cache → 1 query Gamma par token_id par cycle = ~50× plus de calls
+qu'avec le cache.
 
-Budget de subscription : 500 max (D2). Si dépassé, LRU eviction priorise (3) > (2) > (1) (oldest first).
+### Piège : `salt` toujours unique
 
-### Piège : dédup tx_hash entre WSS et REST
+V2 conserve `salt` dans le signed struct (cf. §2.2). Le SDK V2 le génère
+random, ne pas le forcer côté polycopy. Si un test passe un `salt` fixe,
+2 ordres consécutifs sur le même `tokenId/maker` au même `timestamp` ms
+seraient strictement identiques → l'un des deux rejeté pour replay.
 
-Un trade peut arriver via WSS (rapide) puis via REST (lent) sur le même `tx_hash`. Le premier gagne, le second est silencieusement drop via contrainte unique DB. **Confirmer** : le code actuel `DetectedTradeRepository.insert_if_new` retourne `bool` (True si inserted, False si duplicate) — utiliser ce signal pour ne pas émettre `watcher_realtime_detected_ms` 2× pour le même trade.
+### Piège : `timestamp` ms vs sec
 
-### Piège : filtrage maker/taker côté client
+V2 `timestamp` est en **millisecondes** (`int(time.time() * 1000)`). V1
+`expiration` était en secondes. Si un dev confond les deux unités lors de
+la migration, les ordres sont signés avec un timestamp énorme (futur dans
+~50 millénaires) ou minuscule (1970), et le matching engine peut rejeter
+ou tolérer selon implem upstream. Test : `test_order_v2_timestamp_is_milliseconds_int`.
 
-L'event WSS `trade` contient probablement `{maker: "0xabc", taker: "0xdef", ...}`. On vérifie `maker in watched_wallets or taker in watched_wallets`. **Attention** : dans CTF Polymarket, maker vs taker sont différents contextuellement de DEX standard. Un "maker" ici peut être un ordre limit. Un "taker" est l'ordre FOK qui cross. **Les deux sont intéressants** pour nous (on veut suivre le wallet quel que soit son side dans l'exchange).
+### Piège : `metadata` field bytes32
 
-### Piège : WSS reconnexion pendant backfill M5_ter
+Doc V2 ne précise pas l'usage de `metadata`. Polymarket reserve
+probablement ce champ pour des extensions futures (analytics tags ?
+internal correlation ?). **Default `0x0000...0000`** strict — ne pas
+inventer de contenu. Si jamais `metadata != 0x0` est rejeté par le
+backend (à tester sur clob-v2), forcer `0x0` partout.
 
-M5_ter live-reload promote un nouveau wallet → `WalletPoller` lance le backfill via REST. Pendant ce temps, le WSS doit ajouter les asset_ids du wallet à la souscription. Race possible : le backfill finit avant que le WSS ait subscribed. **Mitigation** : le WSS subscribe en parallèle du backfill (non-blocking), coûts couvrent les trades pendant la fenêtre.
+### Piège : test environnement post-cutover
+
+Après le cutover (28 avril ~11h UTC), `clob-v2.polymarket.com` peut être
+maintenu en parallèle de `clob.polymarket.com` (testnet permanent) ou
+être déprécié. La doc V2 dit "test against V2 before go-live" suggère
+qu'il devient redondant post-cutover. Pour les tests intégration
+post-cutover, utiliser directement la prod URL.
+
+### Piège : dry-run et wrap pUSD
+
+En `EXECUTION_MODE=dry_run`, le bot ne signe aucun ordre live → le wrap
+USDC.e → pUSD n'est PAS requis. Mais le validator Pydantic doit quand
+même accepter des onramp/pusd addresses None en dry-run (config valide).
+Au flip live, validator raise si l'un des deux manque + le user doit
+exécuter le wrap script avant de relaunch en live.
+
+### Piège : `signature_type` dans Order V2
+
+Conserve la sémantique V1 (0=EOA, 1=Magic/proxy, 2=Gnosis Safe). Aucun
+changement requis si l'utilisateur trade depuis un wallet déjà connu en
+V1 (cas de polycopy). Mais ouvrir prochainement EIP-1271 (smart contract
+wallet) en V2 → ajouter `signature_type=3` ou similaire (TBD doc V2,
+non documenté à date).
 
 ### Références externes
 
-- **WSS Quickstart Polymarket** : [polymarket mintlify quickstart](https://polymarket-292d1b1b.mintlify.app/quickstart/websocket/WSS-Quickstart). Market + user channels docs officielles.
-- **PolytrackHQ WebSocket tutorial** : [polytrackhq.app/blog/polymarket-websocket-tutorial](https://www.polytrackhq.app/blog/polymarket-websocket-tutorial). 500 instruments/connection limit cité.
-- **NautilusTrader integration** : [nautilustrader.io/docs/latest/integrations/polymarket](https://nautilustrader.io/docs/latest/integrations/polymarket/). "No unsubscribe support" critical constraint.
-- **nevuamarkets/poly-websockets** : [GitHub](https://github.com/nevuamarkets/poly-websockets). Reconnect logic reference.
-- **Polymarket/real-time-data-client** : [GitHub](https://github.com/Polymarket/real-time-data-client). Official RTDS (pour reference alternative, hors scope).
-- **Matching Engine Restarts docs** : [docs.polymarket.com/trading/matching-engine](https://docs.polymarket.com/trading/matching-engine). Tuesday 7AM ET ~90s.
-- **py-clob-client issue 286** : [GitHub issue](https://github.com/Polymarket/py-clob-client/issues/286). HTTP 425 handling reference.
+- **Doc officielle** : [docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration)
+- **Polymarket USD** : [docs.polymarket.com/concepts/pusd](https://docs.polymarket.com/concepts/pusd)
+- **Adresses contrats** : [docs.polymarket.com/resources/contracts](https://docs.polymarket.com/resources/contracts)
+- **Builder fees** : [docs.polymarket.com/builders/fees](https://docs.polymarket.com/builders/fees)
+- **EIP-712 spec** : [eips.ethereum.org/EIPS/eip-712](https://eips.ethereum.org/EIPS/eip-712)
+- **EIP-1271 spec** : [eips.ethereum.org/EIPS/eip-1271](https://eips.ethereum.org/EIPS/eip-1271)
+- **py-clob-client-v2 GitHub** : [github.com/Polymarket/py-clob-client-v2](https://github.com/Polymarket/py-clob-client-v2)
+- **clob-client-v2 (TS) GitHub** : [github.com/Polymarket/clob-client-v2](https://github.com/Polymarket/clob-client-v2)
+- **CTF Exchange contracts repo** : [github.com/Polymarket/ctf-exchange](https://github.com/Polymarket/ctf-exchange)
 
-### Questions ouvertes pertinentes à ME
+### Questions ouvertes pertinentes
 
-- **Q1** (synthèse §11) : "250ms taker delay" vs "250-300ms matching latency" — instrumentation ME.5 aide à trancher post-ship.
-- **Q2** (synthèse §11) : latence WSS market channel sur notre stack — H-EMP-6 planifié post-ship.
-- **Q7** (synthèse §11) : Polycop 340ms claim reproductible ? Après ME.1 + ME.5, mesure comparative directe possible. Attente : 2-4s p50 (WSL + non-Dublin) vs 340ms Polycop. OK si Option (d) retenu.
+- **Q-V2-1** : EIP-1271 implémentation timing — Polymarket activera-t-il
+  le support smart contract wallet au cutover du 28 avril, ou en
+  rolling release post-V2 ? À surveiller via Discord Polymarket Dev.
+- **Q-V2-2** : Builder code fee rebate % exact non documenté — solliciter
+  Polymarket Dev pour clarifier avant d'investir le temps de plombage
+  builder côté polycopy. Si rebate < 10 bps → ROI faible, ME.5 reportable.
+- **Q-V2-3** : `getClobMarketInfo` rate limit — la doc V2 ne précise pas
+  les rate limits. Tester via load test avant cutover. Si plus restrictif
+  que V1 `/fee-rate` → revoir le TTL cache 60s du M16.
+- **Q-V2-4** : `metadata` field future usage — Polymarket Dev annoncera-t-il
+  un usage spec dans les 30 jours post-cutover ? Si oui, polycopy peut y
+  plomber un correlation_id structlog.

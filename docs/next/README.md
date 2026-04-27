@@ -14,7 +14,7 @@ Refactor consolidé des brouillons éparpillés (`docs/bug/` sessions A-E, `docs
 | 2 | [MB](MB.md) | Anti-toxic lifecycle + internal PnL | 🔥 P1 | M (4-5j) | MA shipped | MF |
 | 3 | [MC](MC.md) | Fees dynamic + EV adjustment | 🔥 P1 | M (2-3j) | aucun | — |
 | 4 | [MD](MD.md) | Cross-layer integrity patches | 🟠 P2 | M (3-4j) | aucun | (bloque passage live) |
-| 5 | [ME](ME.md) | Pipeline latency phase 1b (WSS + counters) | 🟠 P2 | M (3-4j) | aucun | MF (partiel) |
+| 5 | [MK](MK.md) | Pipeline latency phase 1b (WSS + counters) | 🟠 P2 | M (3-4j) | aucun | MF (partiel) |
 | 6 | [MF](MF.md) | Wash detection + Mitts-Ofir (v2.2 capstone) | 🟠 P2 | L (6-8j) | MA + MB + 30j data | — |
 | 7 | [MG](MG.md) | Additional scoring factors (CLV + Kelly + λ) | 🟠 P2 | M (3-4j) | MA shipped | MF (optionnel) |
 | 8 | [MH](MH.md) | Dashboard UX polish + consistency | 🟡 P3 | M (2-3j) | aucun | — |
@@ -41,7 +41,7 @@ Refactor consolidé des brouillons éparpillés (`docs/bug/` sessions A-E, `docs
 
 **Parallélisable** :
 - **MB** Anti-toxic lifecycle + internal PnL (4-5j) — nécessite MA shippé (scoring stable). Démarre la collecte de 30j d'internal_pnl_data.
-- **ME** Pipeline latency phase 1b (3-4j) — ship WSS market channel pour détection. Indépendant.
+- **MK** Pipeline latency phase 1b (3-4j) — ship WSS market channel pour détection. Indépendant.
 
 **Slack time** : **MH** Dashboard UX polish (2-3j) peut s'insérer
 
@@ -67,14 +67,14 @@ Refactor consolidé des brouillons éparpillés (`docs/bug/` sessions A-E, `docs
 
 **Groupe B (semaine 3-4, dépend de MA)** : MB, MG
 
-**Groupe C (semaine 3-4, indépendant de MA)** : ME
+**Groupe C (semaine 3-4, indépendant de MA)** : MK
 
 **Groupe D (semaine 7-8, dépend MA + MB + 30j)** : MF
 
 ## Charge totale estimée
 
 - **Base (P1)** : MA + MB + MC = **9-12 jours** (ship 2 semaines avec parallélisation)
-- **Blockers pré-live (P2)** : MD + ME + MF + MG = **14-19 jours** (ship 4-5 semaines)
+- **Blockers pré-live (P2)** : MD + MK + MF + MG = **14-19 jours** (ship 4-5 semaines)
 - **Slack (P3)** : MH + MI = **4-6 jours**
 - **Optionnel (P4)** : MJ = **1-3 jours**
 
@@ -99,7 +99,7 @@ Mapping session → modules pour référence rapide :
 - Session A (anti-toxic) → absorbée dans **MA** (scoring fix) + **MB** (lifecycle + internal PnL)
 - Session B (scoring v2 reliability) → absorbée principalement dans **MA**, partiellement dans **MF**
 - Session C (dashboard UX) → absorbée dans **MH**
-- Session D (pipeline metrics + ops) → scindée entre **ME** (latence + counters) et **MI** (ops hygiene)
+- Session D (pipeline metrics + ops) → scindée entre **MK** (latence + counters, ex-`ME` renommé pour éviter collision avec M18 V2 migration) et **MI** (ops hygiene)
 - Session E (cross-layer integrity) → absorbée dans **MD**
 
 ## Workflow de démarrage d'un module
@@ -126,9 +126,9 @@ hypothèses pertinentes.
 
 10 questions (Q1-Q10, synthèse §11) que les deep-searches n'ont pas pu trancher.
 À résoudre empiriquement via instrumentation :
-- Q1 : "250ms taker delay" réel ou network+matching ? → instrumenter post-ME
+- Q1 : "250ms taker delay" réel ou network+matching ? → instrumenter post-MK
 - Q3 : corrélation Brier/PnL négative Convexly tient-elle sur nos wallets ? → valider post-MB
-- Q4 : MEV réel sur nos tailles ? → MJ instrumentation
+- Q4 : MKV réel sur nos tailles ? → MJ instrumentation
 - Q5 : impact fees sur notre EV ? → mesurer post-MC
 - ...
 
