@@ -22,11 +22,7 @@ from polycopy.dashboard import queries
 from polycopy.dashboard.routes import build_app
 
 _TEMPLATES_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "src"
-    / "polycopy"
-    / "dashboard"
-    / "templates"
+    Path(__file__).resolve().parents[2] / "src" / "polycopy" / "dashboard" / "templates"
 )
 
 
@@ -131,9 +127,7 @@ class TestMh7FormatUsdUnified:
     def test_format_card_usd_helper_removed(self) -> None:
         from polycopy.dashboard import queries as q
 
-        assert not hasattr(q, "_format_card_usd"), (
-            "_format_card_usd doit être retiré (MH.7)"
-        )
+        assert not hasattr(q, "_format_card_usd"), "_format_card_usd doit être retiré (MH.7)"
 
     def test_kpi_card_value_raw_field_present(self) -> None:
         from polycopy.dashboard.dtos import KpiCard
@@ -317,7 +311,8 @@ def test_mh4_stat_card_macro_renders_tooltip_attribute() -> None:
     env = _macros_env()
     tpl = env.from_string(
         "{% from 'macros.html' import stat_card %}"
-        "{{ stat_card('PnL', '+$1.50', 'dollar-sign', subtext='abc', tooltip='explanation here') }}",
+        "{{ stat_card('PnL', '+$1.50', 'dollar-sign',"
+        " subtext='abc', tooltip='explanation here') }}",
     )
     out = tpl.render()
     assert 'title="explanation here"' in out
@@ -873,9 +868,9 @@ async def test_mh10_compute_fee_drag_24h_aggregates_per_wallet(
             session.add(
                 DetectedTrade(
                     tx_hash=tx,
-                    target_wallet="0xwa" if tx.startswith("0xa") else (
-                        "0xwb" if tx == "0xb1" else "0xwold"
-                    ),
+                    target_wallet="0xwa"
+                    if tx.startswith("0xa")
+                    else ("0xwb" if tx == "0xb1" else "0xwold"),
                     condition_id="0xc",
                     asset_id="ax",
                     side="BUY",

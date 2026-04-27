@@ -1025,9 +1025,7 @@ async def get_home_alltime_stats(
         # M19 MH.6 : break-even = neutre ; exclu du dénominateur (status quo)
         # MAIS compté séparément pour exposer dans le label /home + cohérence
         # /performance (audit M-010 : 1W/0L/5BE = 100% WR faux signal).
-        breakeven_count = sum(
-            1 for p in closed_pnls if p is not None and float(p) == 0
-        )
+        breakeven_count = sum(1 for p in closed_pnls if p is not None and float(p) == 0)
         decided = wins + losses
         win_rate_pct: float | None = (wins / decided * 100.0) if decided > 0 else None
 
