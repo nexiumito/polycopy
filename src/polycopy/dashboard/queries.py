@@ -184,6 +184,8 @@ class TraderPerformanceRow:
     positions_open_count: int
     win_count: int
     loss_count: int
+    # M19 MH.6 — break-even count exposé séparément (cohérence /home).
+    breakeven_count: int
     win_rate_pct: float | None
     realized_pnl_total: float
     last_trade_at: datetime | None
@@ -971,6 +973,12 @@ async def get_home_alltime_stats(
         )
         wins = sum(1 for p in closed_pnls if p is not None and float(p) > 0)
         losses = sum(1 for p in closed_pnls if p is not None and float(p) < 0)
+        # M19 MH.6 : break-even = neutre ; exclu du dénominateur (status quo)
+        # MAIS compté séparément pour exposer dans le label /home + cohérence
+        # /performance (audit M-010 : 1W/0L/5BE = 100% WR faux signal).
+        breakeven_count = sum(
+            1 for p in closed_pnls if p is not None and float(p) == 0
+        )
         decided = wins + losses
         win_rate_pct: float | None = (wins / decided * 100.0) if decided > 0 else None
 
@@ -1022,6 +1030,9 @@ async def get_home_alltime_stats(
         open_max_profit_usd=open_max_profit_usd,
         open_latent_pnl_usd=open_latent_pnl_usd,
         win_rate_pct=win_rate_pct,
+        wins=wins,
+        losses=losses,
+        breakeven_count=breakeven_count,
     )
 
 
@@ -1837,6 +1848,8 @@ async def list_trader_performance(
         positions_open: int = 0
         wins: int = 0
         losses: int = 0
+        # M19 MH.6 — break-even count exposé séparément (cohérence /home).
+        breakevens: int = 0
 
     aggregates: dict[str, _Agg] = {}
     for p in positions:
@@ -1859,6 +1872,8 @@ async def list_trader_performance(
                     agg.wins += 1
                 elif pnl < 0:
                     agg.losses += 1
+                else:
+                    agg.breakevens += 1
         else:
             agg.positions_open += 1
 
@@ -1883,6 +1898,7 @@ async def list_trader_performance(
                 positions_open_count=agg.positions_open,
                 win_count=agg.wins,
                 loss_count=agg.losses,
+                breakeven_count=agg.breakevens,
                 win_rate_pct=win_rate,
                 realized_pnl_total=agg.realized_pnl_total,
                 last_trade_at=last_trade_by_wallet.get(wallet),

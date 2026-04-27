@@ -324,6 +324,75 @@ def test_mh4_stat_card_macro_renders_tooltip_attribute() -> None:
     assert "info-icon" in out
 
 
+# ---------------------------------------------------------------------------
+# MH.6 — Win rate exposes break-even count separately
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mh6_win_rate_excludes_break_even_from_denominator(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from datetime import timedelta
+
+    from polycopy.storage.models import MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        # 1W + 0L + 5BE → win_rate=100%, breakeven_count=5.
+        for i, pnl in enumerate([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+            session.add(
+                MyPosition(
+                    condition_id=f"0xc{i}",
+                    asset_id=f"a{i}",
+                    size=1.0,
+                    avg_price=0.5,
+                    opened_at=now - timedelta(hours=1),
+                    closed_at=now,
+                    simulated=True,
+                    realized_pnl=pnl,
+                ),
+            )
+        await session.commit()
+
+    stats = await queries.get_home_alltime_stats(session_factory)
+    assert stats.win_rate_pct == pytest.approx(100.0)
+    assert stats.wins == 1
+    assert stats.losses == 0
+    assert stats.breakeven_count == 5
+
+
+@pytest.mark.asyncio
+async def test_mh6_home_label_shows_break_even_count(
+    session_factory: async_sessionmaker[AsyncSession],
+    m19_client: AsyncClient,
+) -> None:
+    from datetime import timedelta
+
+    from polycopy.storage.models import MyPosition
+
+    now = datetime.now(tz=UTC)
+    async with session_factory() as session:
+        for i, pnl in enumerate([1.0, 0.0, 0.0]):
+            session.add(
+                MyPosition(
+                    condition_id=f"0xclb{i}",
+                    asset_id=f"alb{i}",
+                    size=1.0,
+                    avg_price=0.5,
+                    opened_at=now - timedelta(hours=1),
+                    closed_at=now,
+                    simulated=True,
+                    realized_pnl=pnl,
+                ),
+            )
+        await session.commit()
+    res = await m19_client.get("/home")
+    assert res.status_code == 200
+    # Subtext win rate = "1W / 0L / 2 break-even"
+    assert "1W / 0L / 2 break-even" in res.text
+
+
 @pytest.mark.asyncio
 async def test_mh4_home_renders_six_tooltips(
     m19_client: AsyncClient,

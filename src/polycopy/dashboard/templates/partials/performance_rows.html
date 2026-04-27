@@ -41,7 +41,7 @@
           {% if r.win_rate_pct is not none %}
             {{ r.win_rate_pct | format_pct(with_sign=False) }}
             <span class="text-[10px]" style="color: var(--color-muted);">
-              ({{ r.win_count }}W/{{ r.loss_count }}L)
+              ({{ r.win_count }}W/{{ r.loss_count }}L{% if r.breakeven_count %}/{{ r.breakeven_count }}BE{% endif %})
             </span>
           {% else %}
             <span style="color: var(--color-muted);">—</span>
