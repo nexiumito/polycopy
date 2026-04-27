@@ -1,6 +1,6 @@
 # Roadmap des specs polycopy
 
-**Mise à jour** : 2026-04-27 soir (post-ship M14 / M15 / M16 / M17 / **M18 V2 migration**, restart prod prévu 2026-04-28 après-midi avec DB reset post-M18 cutover Polymarket ~11h UTC).
+**Mise à jour** : 2026-04-27 soir (post-ship M14 / M15 / M16 / M17 / M18 / **M19 dashboard UX polish**, restart prod prévu 2026-04-28 après-midi avec DB reset post-M18 cutover Polymarket ~11h UTC).
 
 **Source de vérité brouillons** : [`docs/next/`](../next/) — modules de
 roadmap consolidés depuis l'audit 2026-04-24 + 3 deep-searches. Convention
@@ -63,6 +63,12 @@ de procédures pull / reset / cutover M14 → M15 → M16.
 |---|---|---|---|---|
 | **M18** | [ME](../next/ME.md) | Polymarket CLOB V2 + pUSD migration (SDK swap V1→V2, `getClobMarketInfo` + `FeeQuote(rate, exponent)`, `POLYMARKET_CLOB_HOST` configurable, builder code optionnel, wrap helper script `web3.py` optional dep) | ✅ shipped 2026-04-27 | 7 commits ME.1 → ME.7 mergés sur main. Tests : 1489 unit + 3 intégration verts (smoke runtime OK contre `clob-v2.polymarket.com`). Bonus : bug latent `dict` vs `PartialCreateOrderOptions` corrigé (aurait raise au 1er POST live post-cutover). SDK V2 dual-version capable → auto-flip mardi 28 avril ~11h UTC sans intervention. Cf. spec [`M18-polymarket-v2-migration.md`](M18-polymarket-v2-migration.md) + procédure ops [`docs/todo.md §14`](../todo.md#L554). |
 
+### Phase dashboard UX polish (slack time, P3)
+
+| Spec | Brief | Titre | Statut | Notes |
+|---|---|---|---|---|
+| **M19** | [MH](../next/MH.md) | Dashboard UX polish + consistency (render_address copy button, format_size_precise 4-tier, format_usd unified, approve 24h, KPI tooltips, win rate break-even, scoring stability, gain max side-aware, N+1 fix, fee_drag column) | ✅ shipped 2026-04-27 | 11 commits MH.1 → MH.11 mergés sur main. Tests : ~50 unit M19 verts + 1541 unit régression verts. Aucune migration Alembic (head reste 0010). Aucune nouvelle dep CDN (Tailwind 3.4.16 / HTMX 2.0.4 / Chart.js 4.4.7 / Lucide 0.469.0 strict). Audit findings résolus : L-004, L-005, L-027, M-008, M-010, M-011, I-008. Cf. spec [`M19-dashboard-ux-polish.md`](M19-dashboard-ux-polish.md). |
+
 ---
 
 ## Roadmap restante
@@ -72,16 +78,16 @@ synthèse deep-search §40 items + 4 sessions bug A-D.
 
 | # | Brief | Spec à produire | Priorité | Charge | Prérequis | Bloque |
 |---|---|---|---|---|---|---|
-| 1 | [MK](../next/MK.md) (ex-`ME` renommé 2026-04-27) | M19 Pipeline latency phase 1b (WSS market detection p50 13s → 2-4s) | 🟠 P2 | M (3-4j) | aucun | (améliore MF) |
+| 1 | [MK](../next/MK.md) (ex-`ME` renommé 2026-04-27) | M20 Pipeline latency phase 1b (WSS market detection p50 13s → 2-4s) | 🟠 P2 | M (3-4j) | aucun | (améliore MF) |
 | 2 | [MG](../next/MG.md) | M?? CLV + Kelly + Kyle's λ + latency tolerance scoring factors | 🟠 P2 | M (3-4j) | M14 | (optionnel pour MF) |
 | 3 | [MF](../next/MF.md) | M?? Wash detection (Sirolly) + Mitts-Ofir composite — v2.2-DISCRIMINATING capstone | 🟠 P2 | L (6-8j) | M14 + M15 + **30j data** | — |
-| 4 | [MH](../next/MH.md) | M?? Dashboard UX polish (adresses non-tronquées, Size 0.00, divergences PnL) | 🟡 P3 | M (2-3j) | aucun | — |
-| 5 | [MI](../next/MI.md) | M?? Ops hygiene (shutdown lent, setup script, Goldsky Starter free) | 🟡 P3 | M (2-3j) | aucun | — |
-| 6 | [MJ](../next/MJ.md) | M?? (opt) MEV Private Mempool instrumentation | 🟢 P4 | S-M (1-3j) | M11 | — |
+| 4 | [MI](../next/MI.md) | M?? Ops hygiene (shutdown lent, setup script, Goldsky Starter free) | 🟡 P3 | M (2-3j) | aucun | — |
+| 5 | [MJ](../next/MJ.md) | M?? (opt) MEV Private Mempool instrumentation | 🟢 P4 | S-M (1-3j) | M11 | — |
 
 **Numérotation** : M18 a été consommé par la migration V2 (urgent, hors
-séquence). Le prochain spec à produire (MK / latency) prend M19. Les
-suivants se numérotent dans l'ordre temporel de production.
+séquence) ; M19 par MH (dashboard UX polish, shipped 2026-04-27 soir).
+Le prochain spec à produire (MK / latency) prend M20. Les suivants se
+numérotent dans l'ordre temporel de production.
 
 **Légende priorité** :
 - 🔥 **P1** : débloque le test business (déjà shippé avec M14/M15/M16)
@@ -96,13 +102,13 @@ suivants se numérotent dans l'ordre temporel de production.
   backend mardi 28 avril ~11h UTC, smoke post-cutover.
 
 **Semaines 1-2 — préparer le passage live (parallélisable)** :
-- **MK** (M19) : remplacer le polling REST `/activity` par WSS market
+- **MK** (M20) : remplacer le polling REST `/activity` par WSS market
   channel — gain immédiat dry-run (latence p50 13s observée → 2-4s).
 - **MG** : CLV + Kelly + Kyle's λ — facteurs académiquement validés,
   enrichit MF capstone. Indépendant.
 
 **Semaines 3-4 — slack + UX polish** :
-- **MH** : UX polish dashboard (slack time si bandwidth).
+- **MH (M19)** : UX polish dashboard ✅ shipped 2026-04-27 soir.
 - **MI** : ops hygiene (shutdown graceful, Goldsky free tier).
 
 **Semaines 5-6 — MF capstone v2.2-DISCRIMINATING** :
@@ -114,13 +120,13 @@ suivants se numérotent dans l'ordre temporel de production.
 
 ### Parallélisation
 
-- **Indépendants** (peuvent ship en parallèle) : MK, MG, MH, MI
+- **Indépendants** (peuvent ship en parallèle) : MK, MG, MI
 - **Dépend de M14 (✅)** : MG (déjà débloqué)
 - **Dépend de M14 + M15 + 30j data** : MF (capstone)
 - **Dépend de M16 + M17 + cutover réussi** : tous les modules post-M18
 
-**Charge totale estimée roadmap restante** : ~24-35 jours dev single-person,
-~5-6 semaines avec parallélisation modérée (M17 + M18 retirés du compte).
+**Charge totale estimée roadmap restante** : ~22-32 jours dev single-person,
+~5-6 semaines avec parallélisation modérée (M17 + M18 + M19 retirés du compte).
 
 ---
 
