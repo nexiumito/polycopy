@@ -10,7 +10,7 @@
       </p>
       <p class="text-xs flex items-center gap-1" style="color: var(--color-muted);">
         {{ render_address(trade.target_wallet, kind="wallet") }}
-        <span>· {{ trade.size | format_size }} shares @ {{ trade.price | format_usd }}</span>
+        <span>· <span title="{{ trade.size }}">{{ trade.size | format_size_precise }}</span> shares @ {{ trade.price | format_usd }}</span>
       </p>
     </div>
     <div class="text-right">

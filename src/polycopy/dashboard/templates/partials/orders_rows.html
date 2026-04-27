@@ -6,7 +6,7 @@
     {{ side_pill(o.side) }}
     <div class="flex-1 min-w-0">
       <p class="text-sm font-medium">
-        {{ o.size | format_size }} @ {{ o.price | format_usd }}
+        <span title="{{ o.size }}">{{ o.size | format_size_precise }}</span> @ {{ o.price | format_usd }}
         {% if o.simulated %}<span class="text-xs ml-1" style="color: var(--color-muted);">(sim)</span>{% endif %}
       </p>
       <p class="text-xs flex flex-wrap items-center gap-1" style="color: var(--color-muted);">

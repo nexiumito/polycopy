@@ -13,7 +13,7 @@
         {{ p.outcome_label | outcome_pill | safe }}
       </p>
       <p class="text-xs mt-0.5" style="color: var(--color-muted);">
-        {{ p.size | format_size }} outcomes ·
+        <span title="{{ p.size }}">{{ p.size | format_size_precise }}</span> outcomes ·
         <span style="color: var(--color-text);">{{ p.usdc_invested | format_usd }}</span> misé ·
         cote {{ "%.2f" | format(p.avg_price) }} →
         payoff max <span style="color: var(--color-profit);">{{ p.payoff_max | format_usd }}</span>

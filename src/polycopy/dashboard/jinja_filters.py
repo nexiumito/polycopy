@@ -49,6 +49,36 @@ def format_size(value: float | None) -> str:
     return f"{value:.2f}"
 
 
+def format_size_precise(value: float | None) -> str:
+    """Formate une size avec précision adaptative 4-tier (M19 MH.2).
+
+    Évite ``"0.00"`` pour les sizes < 0.005 (cas typique copy_ratio 0.01 ×
+    source 0.05 = 0.0005 share). Tooltip ``<span title="{{ size }}">`` côté
+    template expose la valeur exacte au hover.
+
+    Tiers (cf. spec M19 §4.2 D2) :
+    - ``|x| ≥ 1`` → 2 décimales (``"1.50"``).
+    - ``|x| ≥ 0.01`` → 3 décimales (``"0.023"``).
+    - ``|x| ≥ 0.0001`` → 4 décimales (``"0.0005"``).
+    - ``|x| > 0`` → notation scientifique (``"1.00e-05"``).
+    - ``x == 0`` → ``"0"`` (pas de notation scientifique parasite).
+    - ``None`` → ``"—"``.
+    """
+    if value is None:
+        return _EMPTY
+    if value == 0:
+        return "0"
+    abs_value = abs(value)
+    sign = "-" if value < 0 else ""
+    if abs_value >= 1:
+        return f"{sign}{abs_value:.2f}"
+    if abs_value >= 0.01:
+        return f"{sign}{abs_value:.3f}"
+    if abs_value >= 0.0001:
+        return f"{sign}{abs_value:.4f}"
+    return f"{sign}{abs_value:.2e}"
+
+
 def format_pct(value: float | None, with_sign: bool = True) -> str:
     """Formate un pourcentage déjà en unité ``%`` (pas une fraction).
 
@@ -266,6 +296,7 @@ def all_filters() -> dict[str, Any]:
     return {
         "format_usd": format_usd,
         "format_size": format_size,
+        "format_size_precise": format_size_precise,
         "format_pct": format_pct,
         "format_duration": format_duration,
         "humanize_dt": humanize_dt,
@@ -284,6 +315,7 @@ __all__ = [
     "format_duration",
     "format_pct",
     "format_size",
+    "format_size_precise",
     "format_usd",
     "humanize_dt",
     "outcome_pill",

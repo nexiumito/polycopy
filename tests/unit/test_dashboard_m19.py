@@ -176,3 +176,36 @@ class TestMh7FormatUsdUnified:
         # entier "$1006" produit par _format_card_usd.
         assert total_card.value == "$1.0k"
         assert "1006" not in total_card.value
+
+
+# ---------------------------------------------------------------------------
+# MH.2 — format_size_precise 4-tier filter
+# ---------------------------------------------------------------------------
+
+
+class TestMh2FormatSizePrecise:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, "—"),
+            (0, "0"),
+            (0.0, "0"),
+            (0.00001, "1.00e-05"),
+            (0.0005, "0.0005"),
+            (0.0234, "0.023"),
+            (0.5, "0.500"),
+            (1.5, "1.50"),
+            (123.456, "123.46"),
+            (-0.0023, "-0.0023"),
+            (-1.5, "-1.50"),
+        ],
+    )
+    def test_4_tiers(self, value: float | None, expected: str) -> None:
+        assert jf.format_size_precise(value) == expected
+
+    def test_filter_registered(self) -> None:
+        assert "format_size_precise" in jf.all_filters()
+
+    def test_legacy_format_size_still_present(self) -> None:
+        # MH.2 garde format_size pour rétrocompat.
+        assert "format_size" in jf.all_filters()

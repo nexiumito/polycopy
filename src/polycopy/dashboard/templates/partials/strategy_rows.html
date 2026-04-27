@@ -8,7 +8,7 @@
       <p class="text-sm font-medium">{{ render_address(d.tx_hash, kind="tx") }}</p>
       <p class="text-xs" style="color: var(--color-muted);">
         {{ d.reason or "—" }}
-        {% if d.my_size is not none %}· size {{ d.my_size | format_size }}{% endif %}
+        {% if d.my_size is not none %}· size <span title="{{ d.my_size }}">{{ d.my_size | format_size_precise }}</span>{% endif %}
         {% if d.my_price is not none %}· prix {{ d.my_price | format_usd }}{% endif %}
         {% if d.slippage_pct is not none %}· slippage {{ d.slippage_pct | format_pct }}{% endif %}
       </p>

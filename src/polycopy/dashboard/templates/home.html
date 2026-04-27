@@ -137,8 +137,8 @@
           {{ render_address(trade.target_wallet, kind="wallet") }}
           {% if trade.slug %}<span style="color: var(--color-muted);">· {{ trade.slug }}</span>{% endif %}
         </span>
-        <span class="text-xs" style="color: var(--color-muted);">
-          {{ trade.size | format_size }} @ {{ trade.price | format_usd }}
+        <span class="text-xs" style="color: var(--color-muted);" title="{{ trade.size }}">
+          {{ trade.size | format_size_precise }} @ {{ trade.price | format_usd }}
         </span>
         <span class="text-xs whitespace-nowrap" style="color: var(--color-muted);">
           {{ trade.timestamp | humanize_dt }}
