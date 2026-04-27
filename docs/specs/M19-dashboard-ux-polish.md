@@ -1625,10 +1625,148 @@ Cf. §2.2. Récapitulation pour easier search :
 
 ---
 
-## 16. Prompt de génération de spec
+## 16. Prompt d'implémentation pour `/implement-module`
 
-Cf. message session 2026-04-27 soir (ce document est le résultat).
-Prompt corrigé du brief MH.md §10 disponible dans la session de chat.
+```markdown
+# Tâche
+
+Implémenter M19 (Dashboard UX polish + consistency) selon la spec
+[docs/specs/M19-dashboard-ux-polish.md](docs/specs/M19-dashboard-ux-polish.md).
+
+11 commits atomiques (cf. spec §17), ordre recommandé du plus simple au
+plus structurant :
+
+1. MH.1 — `render_address` macro + clipboard copy button (vanilla JS, 11 vues)
+2. MH.7 — Unify `format_usd`, retire `_format_card_usd` (cohérence cards)
+3. MH.2 — `format_size_precise` 4-tier filter + tooltip valeur exacte
+4. MH.3 — `strategy_approve_rate` 24h sliding window + label UI
+5. MH.4 — Tooltips explicatifs KPI cards /home (6 cartes)
+6. MH.6 — Win rate exposes break-even count separately + cohérence /performance
+7. MH.9 — Spearman rangs locaux intersection v1∩v2 + tooltip explicatif
+8. MH.5 — Gain max latent side-aware via JOIN `DetectedTrade.outcome`
+9. MH.8 — Scoring stability metric + cutover panel + side-by-side top-10
+10. MH.11 — N+1 fix `get_home_alltime_stats` single aggregation
+11. MH.10 — `/performance` fee_drag column + wash_risk feature flag
+
+# Prérequis (à lire avant)
+
+- [docs/specs/M19-dashboard-ux-polish.md](docs/specs/M19-dashboard-ux-polish.md)
+- [docs/specs/M4.5-dashboard.md](docs/specs/M4.5-dashboard.md) (read-only
+  strict invariant — strict no-touch sur `@router.post/put/delete`)
+- [docs/specs/M6-dashboard-2026.md](docs/specs/M6-dashboard-2026.md) (CDN
+  versions pinned Tailwind 3.4.16, HTMX 2.0.4, Chart.js 4.4.7, Lucide 0.469.0
+  — strict no-bump)
+- [docs/specs/M17-cross-layer-integrity.md](docs/specs/M17-cross-layer-integrity.md)
+  §MD.1 (filtre `simulated` strict) + §MD.6 (`realized_pnl`/`unrealized_pnl`
+  populated) — invariants strict no-touch
+- [docs/specs/M18-polymarket-v2-migration.md](docs/specs/M18-polymarket-v2-migration.md)
+  §ME.3 (`FeeQuote` + `get_fee_quote()` — MH.10 doit consommer le path V2,
+  pas l'alias deprecated `get_fee_rate`)
+- [CLAUDE.md](CLAUDE.md) §M6 Front-end + §Sécurité Dashboard
+- [docs/audit/2026-04-24-polycopy-code-audit.md](docs/audit/2026-04-24-polycopy-code-audit.md)
+  findings L-004, L-005, L-027, M-008, M-010, M-011, I-008
+- [docs/bug/session_C_dashboard_ux_and_consistency.md](docs/bug/session_C_dashboard_ux_and_consistency.md)
+  items C1-C8 (sources originales)
+
+# Contraintes
+
+- **Lecture seule** sur `src/`, `tests/`, docs sources, audit + sessions
+  bug.
+- **Dashboard read-only strict** ([M4.5 invariant](docs/specs/M4.5-dashboard.md)) :
+  M19 ajoute 0 POST/PUT/DELETE. Toutes les nouvelles routes en
+  `@router.get(...)`. Vérifié par grep automatisé.
+- **CDN versions pinned** ([CLAUDE.md §M6](CLAUDE.md)) inchangées :
+  Tailwind 3.4.16, HTMX 2.0.4, Chart.js 4.4.7, Lucide 0.469.0. Aucune
+  nouvelle dep CDN. MH.1 = vanilla JS (~15 lignes, ~200 bytes).
+- **Grep security anti-leak** : `test_dashboard_security.py` +
+  `test_dashboard_security_m6.py` doivent passer inchangés (zéro fuite
+  `POLYMARKET_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN`, `CLOB_API_SECRET`,
+  `REMOTE_CONTROL_TOTP_SECRET`).
+- **Filtre `simulated` strict M17 MD.1** : MH.5 + MH.11 préservent
+  `MyPosition.simulated == (execution_mode != "live")` aux queries.
+- **Convergence /home ↔ /performance M17 MD.6** : MH.6 + MH.7 garantissent
+  < 1 cent divergence (régression test C-005 préservé).
+- **`FeeQuote` M18 ME.3** : MH.10 fee_drag column consume `get_fee_quote()`,
+  **PAS** l'alias deprecated `get_fee_rate()` (sinon warning structlog 1×
+  par token).
+- **Versioning sacré** : aucune fonction `compute_score_*` touchée. MH.8
+  est read-only sur `trader_scores`.
+- **Pas de migration Alembic** (D4 — JOIN runtime retenu vs column).
+  `alembic upgrade head` retourne "no migrations to apply" post-M19. Head
+  reste **0010**.
+- **Append-only DB** : aucune row réécrite.
+- **`localStorage` discipline M9/M10** : aucune nouvelle clé en v1.
+
+# Demande-moi confirmation AVANT
+
+- Migration Alembic 0011 (`MyPosition.outcome_side` column + backfill SQL)
+  — la spec retient l'option JOIN runtime (D4), donc une migration
+  signalerait un changement de décision à valider.
+- Refactor `format_usd` lui-même (la spec ne le touche pas — seul
+  `_format_card_usd` est retiré). Si refactor `format_usd` nécessaire,
+  signaler avant.
+- Toucher `_format_card_usd` au-delà du retrait simple (ex: réécriture
+  signature impactant les sparklines /home — risque de régression L-004).
+- Ajouter une dépendance CDN supplémentaire (recommandé : zéro).
+- Update `CLAUDE.md` §Conventions ou §Sécurité (MH = UX polish, ne
+  devrait pas nécessiter de bloc CLAUDE.md dédié — confirmer si exception).
+- Modifier le schéma DTOs au-delà des extensions §6 (HomeAllTimeStats,
+  TraderScoringRow, PerformanceRow, KpiCard).
+
+# STOP et signale si
+
+- MH.5 JOIN runtime dégrade /home p50 > +50ms en bench local sur 500
+  positions seedées → revisiter D4 (migration 0011 column dédiée).
+- L'audit révèle un consommateur de `_format_card_usd` ou `format_size`
+  hors dashboard (ex: alert templates Telegram, exports CSV) — élargir
+  scope MH.7 / MH.2.
+- Le test `test_dashboard_security.py` casse à cause d'un nouveau template
+  ou d'une macro — enquêter sur la fuite avant tout workaround.
+- La fenêtre 24h MH.3 nécessite un index DB sur
+  `detected_trades.detected_at` qui n'existe pas (perf hit) — vérifier
+  l'index existant avant ; si manquant, signaler avant d'ajouter (impact
+  migration sinon).
+- Les fixtures dashboard existantes ne couvrent pas BUY NO positions →
+  proposer un fixture neuf avant de tester MH.5.
+- Le helper `compute_scoring_stability_for_pool` (MH.8) prend > 100ms p50
+  sur 500 wallets en seed bench → considérer un cache 5 min explicite ou
+  un précompute background.
+- `DetectedTrade.outcome` n'est pas peuplé pour les positions historiques
+  M3 → M14 (legacy) → MH.5 fallback YES doit être documenté + warning
+  structlog `gain_max_latent_outcome_unknown_fallback_yes` au boot.
+
+# Smoke test final obligatoire avant merge
+
+Cf. spec §12.1 + §12.2 + §12.3 + §12.4 (4 commandes vérification).
+Notamment :
+
+- `pytest tests/unit/test_dashboard*.py -x --tb=short` — 0 failure.
+- `ruff check . && ruff format --check . && mypy src --strict` — 0 erreur.
+- `grep -rn "_format_card_usd" src/ tests/ --include="*.py"` — 0 ligne
+  post-merge (retrait complet MH.7).
+- `alembic upgrade head` — "no migrations to apply" (head reste 0010).
+- Smoke runtime `EXECUTION_MODE=dry_run DASHBOARD_ENABLED=true python -m
+  polycopy --verbose` boot < 10s, fetch /home + /scoring + /performance
+  rendent 200 + HTML contient `copy-btn`, `info-icon`, `format_usd`,
+  `stability`.
+- Vérification visuelle ~5 min (cf. user stories §3) : copy address,
+  hover tooltips KPI, Size precision, TOTAL USDC 2-décimales.
+
+# Livrable
+
+- 11 commits sur `main` (pas de branche, pas de PR — règle projet).
+- Spec M19 mise à jour si la rédaction révèle un facteur non-anticipé
+  (sinon laisser intacte).
+- ROADMAP.md mis à jour : MH/M19 marqué shipped.
+- Ping final ≤ 10 lignes :
+  - 11 commits MH.1 → MH.11 mergés
+  - Tests : ~19 unit + 8 régressions + 2 integration verts
+  - Smoke runtime OK (curl /home + /scoring + /performance)
+  - Charge réelle dev (vs estimé 2-3 jours)
+  - Décision finale D4 (JOIN runtime confirmé OU migration 0011 si bench
+    impose)
+  - Risques résiduels post-merge (notamment MH.5 outcome NULL fallback)
+```
 
 ---
 
