@@ -7,6 +7,67 @@ Ordre recommandé. Garde ce fichier à jour ou raye au fur et à mesure.
 
 ---
 
+## §0bis. SUIVI EN COURS — Test 30j scoring v2.1 (démarré 2026-04-29)
+
+**Reboot complet effectué 2026-04-29 12:47 CEST sur UNI-DEBIAN** :
+- Stop systemd user → wipe DB → migration SDK V1→V2 (`py-clob-client-v2==1.0.0`)
+- Nouveau `.env` (backup `.env.bak.20260429`) avec :
+  - `SCORING_VERSION=v2.1` (décisionnel direct, pas de shadow v1)
+  - `SCORING_V2_COLD_START_MODE=true` (gate ≥20 trades, pool plus dense)
+  - `EVICTION_ENABLED=true`, `EVICTION_SCORE_MARGIN=0.10`
+  - `EXECUTION_MODE=dry_run`, `DRY_RUN_INITIAL_CAPITAL_USD=1000`
+  - `MAX_POSITION_USD=20`, `MAX_ACTIVE_TRADERS=10`, `KILL_SWITCH=20%`
+  - `TARGET_WALLETS=`, `BLACKLISTED_WALLETS=` (vides — Discovery remplit)
+- DB schéma : Alembic `0010_m17_pnl_snapshot_execution_mode` (head)
+- Boot 0 erreur, Telegram startup envoyé, tous les modules up.
+
+### Calendrier de surveillance
+
+| Échéance | Date | Action |
+|---|---|---|
+| **J+1** | 2026-04-30 | Vérifier 1ᵉʳ cycle Discovery complet (4 cycles/jour). Pool ACTIVE doit commencer à se peupler depuis shadow |
+| **J+2** | 2026-05-01 | Confirmer `daily_summary` Telegram (21h Europe/Paris) bien reçu |
+| **J+7** | 2026-05-06 | Recalibrer `EVICTION_SCORE_MARGIN` via log `eviction_margin_empirical_recommendation` (cf. §11). Vérifier ≥5 wallets ACTIVE stables |
+| **J+7 → J+14** | 2026-05-06 → 13 | Surveiller `my_positions.realized_pnl` se cristallise (collecte cold-start internal_pnl pour M15 — cf. §7) |
+| **J+14** | 2026-05-13 | Audit pool : ratio `gate_rejected/scored`, distribution des scores v2.1, σ pool (cf. §11) |
+| **J+30** | 2026-05-29 | **DÉCISION CUTOVER v2.1.1**. Lancer `scripts/validate_ma_hypotheses.py` + check H-EMP-3/H-EMP-11 (§5 + §8). Si OK → flip `SCORING_VERSION=v2.1.1` (§9). Sinon investigate ou rester v2.1. |
+
+### Points d'attention quotidiens
+
+1. **Telegram** : heartbeat toutes les 8h, daily_summary 21h
+2. **Dashboard** Tailscale : `http://uni-debian.<tailnet>.ts.net:8787/`
+   - `/traders` : pool ACTIVE, status, `is_probation`
+   - `/performance` : PnL par wallet, fee_drag M19 MH.10
+   - `/home` : drawdown vs kill switch 20%
+3. **Logs erreurs** : `grep '"level":\s*"error"' ~/.polycopy/logs/polycopy.log`
+
+### Erreurs attendues / acceptables
+
+- `gamma_categories_batch_failed` (HTTP 414 URI Too Long) : observé au 1ᵉʳ cycle.
+  Discovery dégrade gracieusement, scoring continue. À reporter en MF/MK pour batch
+  size paginé côté GammaClient si récurrent.
+- `scoring_v2_wrong_metrics_type` : transitoire en boot frais (3 wallets).
+- Premiers cycles Discovery : `gate_rejected` élevé (~90%) cohérent
+  `COLD_START_MODE=true` qui rejette toujours <20 trades 90j.
+
+### Limitations UX connues (non bloquantes)
+
+- **Dashboard `/traders/scoring`** : page M12 (`v1` vs `v2` hardcodés) **sera
+  vide pendant tout ce test**. Utiliser `/traders` + `/performance` + SQL
+  direct à la place. **Refactor scopé en §16 ci-dessous** pour MK ou MF.
+
+### Rollback si échec critique avant J+30
+
+```bash
+# Revert vers v1 (mais DB neuve donc pool minimal)
+sed -i 's/^SCORING_VERSION=v2.1/SCORING_VERSION=v1/' .env
+systemctl --user restart polycopy
+```
+
+Pas de migration DB à rollback (versioning sacré, append-only).
+
+---
+
 ## ⚠️ §0. PRÉ-RESTART : timing Polymarket V2 (cutover 28 avril 2026 ~11h UTC)
 
 **Polymarket annonce officiellement** ([docs.polymarket.com/v2-migration](https://docs.polymarket.com/v2-migration)) :
@@ -791,6 +852,61 @@ pkill -f polycopy
 
 Aucune intervention ops bloquante. Tous les risques sont monitorables
 post-restart sans rollback.
+
+---
+
+## §16. Refactor `/traders/scoring` page (dette technique M20+)
+
+**Constat 2026-04-29** (post-reboot test 30j v2.1) : la page dashboard
+`/traders/scoring` est conçue **M12** pour comparer `v1` (pilote) vs `v2`
+(shadow). Les chaînes `'v1'` et `'v2'` sont **hardcodées** dans :
+
+- Les colonnes du template (`Score v1`, `Score v2`, `Rank v1`, `Rank v2`).
+- Les filtres SQL côté repository / route handler (`WHERE scoring_version IN ('v1', 'v2')`).
+- Le KPI "Pilot version" (affichage statique vs dynamique depuis `Settings.scoring_version`).
+- Le bloc "Cutover status" (`SCORING_V2_CUTOVER_READY` flag M12, plus pertinent post-M14).
+
+**Symptôme** : avec `SCORING_VERSION=v2.1` (notre cas), la page est
+**totalement vide** car aucune row `trader_scores` n'a `scoring_version`
+∈ {`v1`, `v2`}. Spearman correlation, top-10 delta, table de comparaison —
+tout retourne 0/—.
+
+**Scope refactor** :
+
+1. **Renommer les colonnes** template → "Score pilote" / "Score shadow" /
+   "Rank pilote" / "Rank shadow" (génériques, indépendant de la version).
+2. **Header de colonne dynamique** : insérer la version réelle (ex.
+   `Score v2.1 (pilote)` / `Score v2.1.1 (shadow)`) lue depuis :
+   - `Settings.scoring_version` pour la version pilote actuelle.
+   - Détection de la 2ᵉ version la plus fréquente dans `trader_scores`
+     (30 derniers jours) pour la version shadow.
+3. **Adapter SQL** : `WHERE scoring_version IN (:pilot, :shadow)` paramétré.
+4. **Cutover status** : si `pilot == 'v2.1'` et la version shadow
+   détectée est `'v2.1.1'`, afficher "Préparation cutover v2.1.1"
+   (cohérent §9 todo). Si shadow est `None`, masquer le bloc.
+5. **Spearman** + **Top-N delta** : génériques sur 2 versions arbitraires.
+6. **Documenter** dans la spec M19 ou créer une mini-spec dédiée
+   (M20 MK ou MF — dette UX).
+
+**Tests à ajouter / adapter** :
+
+- `test_dashboard_scoring_render_with_v2_1_only` : page rend correctement
+  même quand seule v2.1 est calculée (cas test 30j actuel — colonnes
+  vides cohérentes au lieu de "Aucun score v1 ou v2").
+- `test_dashboard_scoring_dynamic_version_header` : la version pilote
+  affichée matche `Settings.scoring_version`.
+- `test_dashboard_scoring_v2_1_vs_v2_1_1_shadow` : quand v2.1.1 est
+  calculé en shadow (cas après J+30 si flip retardé), la comparaison
+  fonctionne avec les bonnes versions.
+
+**Priorité** : pas urgente (la page est utilisée pour les **cutovers**,
+pas le quotidien). Bloquant pour la décision de cutover v2.1 → v2.1.1
+à J+30 si on veut une vue UI plutôt que SQL manuel. À insérer dans
+le module **MK** (M20 latency phase 1b) ou **MF** (Wash + capstone),
+selon ce qui est shippé en premier.
+
+**Workaround pendant le test 30j** : utiliser `/traders` + `/performance`
++ requêtes SQL directes sur `trader_scores`.
 
 ---
 
