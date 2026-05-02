@@ -1403,36 +1403,46 @@ async def detect_comparison_versions(
 
 @dataclass(frozen=True)
 class ScoringComparisonRow:
-    """Row pour le tableau v1|v2|delta_rank de ``/traders/scoring``.
+    """Row pour le tableau pilot|shadow|delta_rank de ``/traders/scoring``.
 
-    ``score_v1`` / ``score_v2`` = latest per wallet (pas forcément du même
-    cycle — peut arriver transitoirement, documenté dans la template).
-    ``delta_rank`` = ``rank_v1 - rank_v2`` signed (positif = améliore le rang).
+    M21 MN.2 — alias génériques ``score_pilot`` / ``score_shadow`` /
+    ``rank_pilot_*`` / ``rank_shadow_*`` consommés par le template post-M21.
+    Les anciens alias ``score_v1`` / ``score_v2`` / ``rank_v1*`` / ``rank_v2*``
+    restent populés (rétrocompat 1 release pour tests M12/M19) avec les
+    mêmes valeurs que les alias génériques. Convention : ``_pilot`` =
+    ``pilot_version`` score, ``_shadow`` = ``shadow_version`` score. Drop des
+    legacy aliases prévu M22+.
 
-    M19 MH.9 : ``rank_v1`` / ``rank_v2`` restent pool-wide (rétrocompat).
-    ``rank_v1_pool`` / ``rank_v2_pool`` sont des alias explicites. Les
-    nouveaux ``rank_v1_local`` / ``rank_v2_local`` représentent les rangs sur
-    **l'intersection v1∩v2** (les wallets qui ont les deux scores) — c'est
-    sur cette intersection que Spearman est calculé. ``None`` si le wallet
-    n'est pas dans l'intersection (audit I-008 : la spec UI affichait des
-    rangs pool-wide à côté de ρ calculé sur intersection, confusion).
+    M19 MH.9 préservé : les rangs ``_local`` sont calculés sur l'intersection
+    pilot∩shadow (les wallets qui ont les deux scores) — c'est sur cette
+    intersection que Spearman est calculé. ``None`` si le wallet n'est pas
+    dans l'intersection.
     """
 
     wallet_address: str
     label: str | None
     status: str
     pinned: bool
-    score_v1: float | None
-    score_v2: float | None
-    rank_v1: int | None
-    rank_v2: int | None
-    delta_rank: int | None
-    last_scored_at: datetime | None
-    # M19 MH.9 — alias pool + rangs locaux (intersection v1∩v2).
+    # M21 MN.2 — alias génériques (consommés par le template post-M21).
+    score_pilot: float | None = None
+    score_shadow: float | None = None
+    rank_pilot_pool: int | None = None
+    rank_shadow_pool: int | None = None
+    rank_pilot_local: int | None = None
+    rank_shadow_local: int | None = None
+    # M12 legacy aliases (deprecated, retire M22+ ; populés avec les mêmes
+    # valeurs que pilot/shadow pour rétrocompat tests).
+    score_v1: float | None = None
+    score_v2: float | None = None
+    rank_v1: int | None = None
+    rank_v2: int | None = None
     rank_v1_pool: int | None = None
     rank_v2_pool: int | None = None
     rank_v1_local: int | None = None
     rank_v2_local: int | None = None
+    # Communs.
+    delta_rank: int | None = None
+    last_scored_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -1456,88 +1466,109 @@ class ScoringComparisonAggregates:
 async def list_scoring_comparison(
     session_factory: async_sessionmaker[AsyncSession],
     *,
+    pilot_version: str = "v1",
+    shadow_version: str | None = "v2.1",
     limit: int = 100,
 ) -> list[ScoringComparisonRow]:
-    """Liste les wallets avec leurs derniers scores v1 et v2.
+    """M12 + M21 MN.2 — liste les wallets avec leurs scores pilot + shadow.
 
-    Pour chaque wallet ayant au moins 1 row `trader_scores`, on récupère le
-    score v1 et v2 les plus récents (via sous-requêtes `MAX(cycle_at)` par
-    version). Le rank est calculé côté Python sur l'échantillon filtré.
-    Retourne au plus ``limit`` rows triées ``score_v2 DESC NULLS LAST``.
+    Pour chaque wallet ayant au moins 1 row ``trader_scores``, on récupère le
+    score pilot et shadow les plus récents (via sous-requêtes
+    ``MAX(cycle_at)`` par version). Le rank est calculé côté Python sur
+    l'échantillon filtré. Retourne au plus ``limit`` rows triées
+    ``score_shadow DESC NULLS LAST``.
+
+    M21 MN.2 : les littéraux ``'v1'`` et ``'v2.1'`` hardcodés sont remplacés
+    par les paramètres ``pilot_version`` + ``shadow_version`` (defaults
+    ``"v1"`` / ``"v2.1"`` pour rétrocompat tests M12/M19, drop M22+). Si
+    ``shadow_version is None`` → mode single-version (la sous-requête shadow
+    est skippée, ``score_shadow=None`` partout).
+
+    Préserve M19 MH.9 ranks locaux intersection (pilot∩shadow).
     """
     limit = _clamp_limit(limit)
     async with session_factory() as session:
-        # Latest v1 score per wallet
-        latest_v1_subq = (
+        # Latest pilot score per wallet (toujours évalué).
+        latest_pilot_subq = (
             select(
                 TraderScore.wallet_address,
                 func.max(TraderScore.cycle_at).label("max_cycle_at"),
             )
-            .where(TraderScore.scoring_version == "v1")
+            .where(TraderScore.scoring_version == pilot_version)
             .group_by(TraderScore.wallet_address)
             .subquery()
         )
-        v1_stmt = (
+        pilot_stmt = (
             select(TraderScore)
             .join(
-                latest_v1_subq,
-                (TraderScore.wallet_address == latest_v1_subq.c.wallet_address)
-                & (TraderScore.cycle_at == latest_v1_subq.c.max_cycle_at),
+                latest_pilot_subq,
+                (TraderScore.wallet_address == latest_pilot_subq.c.wallet_address)
+                & (TraderScore.cycle_at == latest_pilot_subq.c.max_cycle_at),
             )
-            .where(TraderScore.scoring_version == "v1")
+            .where(TraderScore.scoring_version == pilot_version)
         )
-        v1_rows = list((await session.execute(v1_stmt)).scalars().all())
+        pilot_rows = list((await session.execute(pilot_stmt)).scalars().all())
 
-        latest_v2_subq = (
-            select(
-                TraderScore.wallet_address,
-                func.max(TraderScore.cycle_at).label("max_cycle_at"),
+        # Latest shadow score per wallet (skippé si shadow_version is None).
+        shadow_rows: list[TraderScore] = []
+        if shadow_version is not None:
+            latest_shadow_subq = (
+                select(
+                    TraderScore.wallet_address,
+                    func.max(TraderScore.cycle_at).label("max_cycle_at"),
+                )
+                .where(TraderScore.scoring_version == shadow_version)
+                .group_by(TraderScore.wallet_address)
+                .subquery()
             )
-            .where(TraderScore.scoring_version == "v2.1")
-            .group_by(TraderScore.wallet_address)
-            .subquery()
-        )
-        v2_stmt = (
-            select(TraderScore)
-            .join(
-                latest_v2_subq,
-                (TraderScore.wallet_address == latest_v2_subq.c.wallet_address)
-                & (TraderScore.cycle_at == latest_v2_subq.c.max_cycle_at),
+            shadow_stmt = (
+                select(TraderScore)
+                .join(
+                    latest_shadow_subq,
+                    (TraderScore.wallet_address == latest_shadow_subq.c.wallet_address)
+                    & (TraderScore.cycle_at == latest_shadow_subq.c.max_cycle_at),
+                )
+                .where(TraderScore.scoring_version == shadow_version)
             )
-            .where(TraderScore.scoring_version == "v2.1")
-        )
-        v2_rows = list((await session.execute(v2_stmt)).scalars().all())
+            shadow_rows = list((await session.execute(shadow_stmt)).scalars().all())
 
-        # TargetTrader metadata
+        # TargetTrader metadata (toujours évalué).
         traders_stmt = select(TargetTrader)
         traders = list((await session.execute(traders_stmt)).scalars().all())
         trader_by_wallet = {t.wallet_address: t for t in traders}
 
-    v1_by_wallet = {r.wallet_address: float(r.score) for r in v1_rows}
-    v2_by_wallet = {r.wallet_address: float(r.score) for r in v2_rows}
+    pilot_by_wallet = {r.wallet_address: float(r.score) for r in pilot_rows}
+    shadow_by_wallet = {r.wallet_address: float(r.score) for r in shadow_rows}
 
-    # Ranks 1-based (1 = meilleur), None si absent (pool-wide).
-    v1_ranked = sorted(v1_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
-    v2_ranked = sorted(v2_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
-    rank_v1 = {w: i + 1 for i, (w, _) in enumerate(v1_ranked)}
-    rank_v2 = {w: i + 1 for i, (w, _) in enumerate(v2_ranked)}
+    # Ranks 1-based pool-wide (1 = meilleur), None si absent.
+    pilot_ranked = sorted(pilot_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
+    shadow_ranked = sorted(shadow_by_wallet.items(), key=lambda kv: kv[1], reverse=True)
+    rank_pilot_pool = {w: i + 1 for i, (w, _) in enumerate(pilot_ranked)}
+    rank_shadow_pool = {w: i + 1 for i, (w, _) in enumerate(shadow_ranked)}
 
-    # M19 MH.9 : rangs **locaux** sur l'intersection v1∩v2 (cohérent calcul
-    # Spearman). Évite la confusion "Rank v1 33 / Spearman 0.92" sur N=13.
-    intersection = set(v1_by_wallet) & set(v2_by_wallet)
-    v1_local_sorted = sorted(intersection, key=lambda w: v1_by_wallet[w], reverse=True)
-    v2_local_sorted = sorted(intersection, key=lambda w: v2_by_wallet[w], reverse=True)
-    rank_v1_local = {w: i + 1 for i, w in enumerate(v1_local_sorted)}
-    rank_v2_local = {w: i + 1 for i, w in enumerate(v2_local_sorted)}
+    # M19 MH.9 — ranks **locaux** sur l'intersection pilot∩shadow (cohérent
+    # calcul Spearman). Évite la confusion "Rank pilot 33 / Spearman 0.92"
+    # sur N=13.
+    intersection = set(pilot_by_wallet) & set(shadow_by_wallet)
+    pilot_local_sorted = sorted(intersection, key=lambda w: pilot_by_wallet[w], reverse=True)
+    shadow_local_sorted = sorted(intersection, key=lambda w: shadow_by_wallet[w], reverse=True)
+    rank_pilot_local = {w: i + 1 for i, w in enumerate(pilot_local_sorted)}
+    rank_shadow_local = {w: i + 1 for i, w in enumerate(shadow_local_sorted)}
 
-    all_wallets = set(v1_by_wallet) | set(v2_by_wallet) | set(trader_by_wallet)
+    all_wallets = set(pilot_by_wallet) | set(shadow_by_wallet) | set(trader_by_wallet)
     rows: list[ScoringComparisonRow] = []
     for wallet in all_wallets:
-        s1 = v1_by_wallet.get(wallet)
-        s2 = v2_by_wallet.get(wallet)
-        r1 = rank_v1.get(wallet)
-        r2 = rank_v2.get(wallet)
-        delta = (r1 - r2) if (r1 is not None and r2 is not None) else None
+        s_pilot = pilot_by_wallet.get(wallet)
+        s_shadow = shadow_by_wallet.get(wallet)
+        r_pilot_pool = rank_pilot_pool.get(wallet)
+        r_shadow_pool = rank_shadow_pool.get(wallet)
+        r_pilot_local = rank_pilot_local.get(wallet)
+        r_shadow_local = rank_shadow_local.get(wallet)
+        delta = (
+            (r_pilot_pool - r_shadow_pool)
+            if (r_pilot_pool is not None and r_shadow_pool is not None)
+            else None
+        )
         t = trader_by_wallet.get(wallet)
         rows.append(
             ScoringComparisonRow(
@@ -1545,23 +1576,31 @@ async def list_scoring_comparison(
                 label=t.label if t is not None else None,
                 status=t.status if t is not None else "absent",
                 pinned=bool(t.pinned) if t is not None else False,
-                score_v1=s1,
-                score_v2=s2,
-                rank_v1=r1,
-                rank_v2=r2,
-                rank_v1_pool=r1,
-                rank_v2_pool=r2,
-                rank_v1_local=rank_v1_local.get(wallet),
-                rank_v2_local=rank_v2_local.get(wallet),
+                # M21 MN.2 — alias génériques (consommés par template post-M21).
+                score_pilot=s_pilot,
+                score_shadow=s_shadow,
+                rank_pilot_pool=r_pilot_pool,
+                rank_shadow_pool=r_shadow_pool,
+                rank_pilot_local=r_pilot_local,
+                rank_shadow_local=r_shadow_local,
+                # M12 legacy aliases (rétrocompat tests, drop M22+).
+                score_v1=s_pilot,
+                score_v2=s_shadow,
+                rank_v1=r_pilot_pool,
+                rank_v2=r_shadow_pool,
+                rank_v1_pool=r_pilot_pool,
+                rank_v2_pool=r_shadow_pool,
+                rank_v1_local=r_pilot_local,
+                rank_v2_local=r_shadow_local,
                 delta_rank=delta,
                 last_scored_at=(t.last_scored_at if t is not None else None),
             ),
         )
-    # Sort: score_v2 desc (None last), tiebreak score_v1 desc.
+    # Sort: score_shadow desc (None last), tiebreak score_pilot desc.
     rows.sort(
         key=lambda r: (
-            -(r.score_v2 if r.score_v2 is not None else -1),
-            -(r.score_v1 if r.score_v1 is not None else -1),
+            -(r.score_shadow if r.score_shadow is not None else -1),
+            -(r.score_pilot if r.score_pilot is not None else -1),
         ),
     )
     return rows[:limit]
@@ -1572,17 +1611,43 @@ async def scoring_comparison_aggregates(
     *,
     shadow_days: int,
     cutover_ready: bool,
+    pilot_version: str = "v1",
+    shadow_version: str | None = "v2.1",
 ) -> ScoringComparisonAggregates:
-    """Agrégats pool-wide pour la section header de ``/traders/scoring``.
+    """M12 + M21 MN.2 — agrégats pool-wide pour la section header.
 
-    - ``spearman_rank`` : corrélation de rang sur les wallets ayant v1 ET v2.
-      ``None`` si < 3 wallets (pas significatif).
-    - ``top10_delta`` : nombre de wallets dans le top-10 v2 absents du top-10 v1.
-    - ``shadow_days_elapsed`` : depuis la 1ère row v2 (None si pas encore commencé).
+    - ``spearman_rank`` : corrélation de rang sur les wallets ayant pilot ET
+      shadow. ``None`` si < 3 wallets (pas significatif).
+    - ``top10_delta`` : nombre de wallets dans le top-10 shadow absents du
+      top-10 pilot.
+    - ``shadow_days_elapsed`` : depuis la 1ère row shadow (None si pas encore
+      commencé OU si single-version mode).
     - ``cutover_ready`` : passé-through depuis settings.
+
+    M21 MN.2 : si ``shadow_version is None`` → court-circuit immédiat
+    (single-version mode). Defaults ``pilot_version="v1"`` /
+    ``shadow_version="v2.1"`` pour rétrocompat tests M12/M19, drop M22+.
     """
-    rows = await list_scoring_comparison(session_factory, limit=_MAX_LIMIT)
-    with_both = [r for r in rows if r.score_v1 is not None and r.score_v2 is not None]
+    if shadow_version is None:
+        return ScoringComparisonAggregates(
+            wallets_compared=0,
+            median_delta_rank=None,
+            spearman_rank=None,
+            top10_delta=0,
+            shadow_days_elapsed=None,
+            shadow_days_remaining=None,
+            cutover_ready=cutover_ready,
+        )
+
+    rows = await list_scoring_comparison(
+        session_factory,
+        pilot_version=pilot_version,
+        shadow_version=shadow_version,
+        limit=_MAX_LIMIT,
+    )
+    with_both = [
+        r for r in rows if r.score_pilot is not None and r.score_shadow is not None
+    ]
 
     median_delta: float | None = None
     spearman: float | None = None
@@ -1596,40 +1661,56 @@ async def scoring_comparison_aggregates(
                 else (deltas[mid - 1] + deltas[mid]) / 2.0
             )
     if len(with_both) >= 3:
-        # Spearman calculé sur les ranks **locaux à l'intersection v1∩v2**, pas
-        # sur les ranks pool-wide affichés dans le tableau. Sans ça, un pool v1
-        # beaucoup plus large que v2 biaise mécaniquement la corrélation : un
-        # wallet 29e sur 34 en v1 vs 1er sur 10 en v2 donne d²=784 alors qu'il
-        # serait peut-être 8e sur 10 vs 1er sur 10 (d²=49) sur l'intersection.
-        # Les rank_v1/rank_v2 des ``ScoringComparisonRow`` restent pool-wide
-        # côté UI — seul le calcul de ρ utilise les ranks locaux.
-        v1_sorted = sorted(with_both, key=lambda r: r.score_v1 or 0.0, reverse=True)
-        local_rank_v1 = {r.wallet_address: i + 1 for i, r in enumerate(v1_sorted)}
-        v2_sorted = sorted(with_both, key=lambda r: r.score_v2 or 0.0, reverse=True)
-        local_rank_v2 = {r.wallet_address: i + 1 for i, r in enumerate(v2_sorted)}
+        # M19 MH.9 — Spearman calculé sur les ranks **locaux à
+        # l'intersection pilot∩shadow**, pas sur les ranks pool-wide affichés
+        # dans le tableau. Sans ça, un pool pilot beaucoup plus large que
+        # shadow biaise mécaniquement la corrélation. Les rank_pilot_pool /
+        # rank_shadow_pool restent pool-wide côté UI — seul le calcul de ρ
+        # utilise les ranks locaux.
+        pilot_sorted = sorted(
+            with_both, key=lambda r: r.score_pilot or 0.0, reverse=True,
+        )
+        local_rank_pilot = {
+            r.wallet_address: i + 1 for i, r in enumerate(pilot_sorted)
+        }
+        shadow_sorted = sorted(
+            with_both, key=lambda r: r.score_shadow or 0.0, reverse=True,
+        )
+        local_rank_shadow = {
+            r.wallet_address: i + 1 for i, r in enumerate(shadow_sorted)
+        }
         spearman = _spearman_rank(
-            [float(local_rank_v1[r.wallet_address]) for r in with_both],
-            [float(local_rank_v2[r.wallet_address]) for r in with_both],
+            [float(local_rank_pilot[r.wallet_address]) for r in with_both],
+            [float(local_rank_shadow[r.wallet_address]) for r in with_both],
         )
 
-    top10_v1 = {r.wallet_address for r in rows if r.rank_v1 is not None and r.rank_v1 <= 10}
-    top10_v2 = {r.wallet_address for r in rows if r.rank_v2 is not None and r.rank_v2 <= 10}
-    top10_delta = len(top10_v2 - top10_v1)
+    top10_pilot = {
+        r.wallet_address
+        for r in rows
+        if r.rank_pilot_pool is not None and r.rank_pilot_pool <= 10
+    }
+    top10_shadow = {
+        r.wallet_address
+        for r in rows
+        if r.rank_shadow_pool is not None and r.rank_shadow_pool <= 10
+    }
+    top10_delta = len(top10_shadow - top10_pilot)
 
     async with session_factory() as session:
-        first_v2_cycle = (
+        first_shadow_cycle = (
             await session.execute(
                 select(func.min(TraderScore.cycle_at)).where(
-                    TraderScore.scoring_version == "v2.1",
+                    TraderScore.scoring_version == shadow_version,
                 ),
             )
         ).scalar_one_or_none()
     shadow_elapsed: int | None = None
     shadow_remaining: int | None = None
-    if first_v2_cycle is not None:
-        if first_v2_cycle.tzinfo is None:
-            first_v2_cycle = first_v2_cycle.replace(tzinfo=UTC)
-        shadow_elapsed = (datetime.now(tz=UTC) - first_v2_cycle).days
+    if first_shadow_cycle is not None:
+        # Cf. spec M21 §13.3 — SQLite naïve datetime, ré-injection UTC.
+        if first_shadow_cycle.tzinfo is None:
+            first_shadow_cycle = first_shadow_cycle.replace(tzinfo=UTC)
+        shadow_elapsed = (datetime.now(tz=UTC) - first_shadow_cycle).days
         shadow_remaining = max(0, shadow_days - shadow_elapsed)
 
     return ScoringComparisonAggregates(
