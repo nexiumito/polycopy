@@ -1357,7 +1357,48 @@ async def get_app_version() -> str:
         return _APP_VERSION_CACHE
 
 
-# --- M12 : scoring v2 comparison queries ------------------------------------
+# --- M12 + M21 : scoring vN comparison queries ------------------------------
+
+
+async def detect_comparison_versions(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    settings: Settings,
+    window_days: int = 30,
+) -> tuple[str, str | None]:
+    """M21 MN.1 — détection dynamique des 2 versions à comparer.
+
+    Retourne ``(pilot_version, shadow_version)`` :
+
+    - ``pilot_version`` = ``settings.scoring_version`` (source de vérité config —
+      la version qui pilote ``DecisionEngine``).
+    - ``shadow_version`` = la 2ᵉ ``scoring_version`` la plus fréquente dans
+      ``trader_scores`` sur les ``window_days`` derniers jours, EXCLUSION faite
+      de ``pilot_version``.
+    - ``shadow_version=None`` si aucune row trader_scores (DB neuve), ou si
+      pilot est la seule version présente dans la fenêtre.
+
+    Si ``shadow_version=None`` → page rend en single-version mode (template
+    branche ``{% if shadow_version %}``).
+
+    Race condition transitoire : si appelé entre le 1ᵉʳ cycle pilot complete
+    et le 1ᵉʳ cycle shadow complete (~6h), retour ``(pilot, None)`` cohérent.
+
+    Cf. spec M21 §4.2 (D2 fenêtre 30j) + §4.3 (D3 fallback None silent).
+    """
+    cutoff = datetime.now(tz=UTC) - timedelta(days=window_days)
+    async with session_factory() as session:
+        stmt = (
+            select(TraderScore.scoring_version, func.count().label("n"))
+            .where(TraderScore.cycle_at >= cutoff)
+            .where(TraderScore.scoring_version != settings.scoring_version)
+            .group_by(TraderScore.scoring_version)
+            .order_by(func.count().desc())
+            .limit(1)
+        )
+        result = (await session.execute(stmt)).first()
+    shadow_version = str(result.scoring_version) if result is not None else None
+    return settings.scoring_version, shadow_version
 
 
 @dataclass(frozen=True)

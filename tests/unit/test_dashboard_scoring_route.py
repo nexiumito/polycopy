@@ -215,6 +215,75 @@ async def test_sidebar_link_present_in_base_template(
     assert "Scoring v1/v2" in resp.text
 
 
+@pytest.mark.asyncio
+async def test_detect_comparison_versions_returns_pilot_only_when_db_empty(
+    session_factory: Any,
+) -> None:
+    """M21 MN.1 — DB vide → ``(pilot=settings.scoring_version, shadow=None)``."""
+    pilot, shadow = await dashboard_queries.detect_comparison_versions(
+        session_factory,
+        settings=_settings(scoring_version="v2.1"),
+    )
+    assert pilot == "v2.1"
+    assert shadow is None
+
+
+@pytest.mark.asyncio
+async def test_detect_comparison_versions_picks_second_most_frequent(
+    session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
+) -> None:
+    """M21 MN.1 — pool {v2.1: 5, v2.1.1: 3, v1: 1} pilot=v2.1 → shadow=v2.1.1.
+
+    Le filtre ``WHERE scoring_version != pilot_version`` garantit qu'on ne
+    retourne pas le pilot lui-même comme shadow. La 2ᵉ version la plus
+    fréquente sur la fenêtre 30j gagne (v2.1.1 = 3 rows > v1 = 1 row).
+    """
+    for i in range(5):
+        t = await target_trader_repo.insert_shadow(f"0xa{i:03d}")
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=f"0xa{i:03d}",
+                score=0.5,
+                scoring_version="v2.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+    for i in range(3):
+        t = await target_trader_repo.insert_shadow(f"0xb{i:03d}")
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=f"0xb{i:03d}",
+                score=0.6,
+                scoring_version="v2.1.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+    t = await target_trader_repo.insert_shadow("0xc000")
+    await trader_score_repo.insert(
+        TraderScoreDTO(
+            target_trader_id=t.id,
+            wallet_address="0xc000",
+            score=0.7,
+            scoring_version="v1",
+            low_confidence=False,
+            metrics_snapshot={},
+        ),
+    )
+
+    pilot, shadow = await dashboard_queries.detect_comparison_versions(
+        session_factory,
+        settings=_settings(scoring_version="v2.1"),
+    )
+    assert pilot == "v2.1"
+    assert shadow == "v2.1.1"
+
+
 def test_spearman_rank_function_edge_cases() -> None:
     """Spearman : None pour n < 3, 1.0 pour ranks identiques, -1.0 inversés."""
     from polycopy.dashboard.queries import _spearman_rank
