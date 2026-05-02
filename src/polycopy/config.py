@@ -1097,6 +1097,22 @@ class Settings(BaseSettings):
             "alertes sur petits échantillons."
         ),
     )
+    # MB.9 — shadow compute v2.1.1 quand v2.1 est pilote (cutover prep).
+    scoring_v2_1_1_shadow_days: int = Field(
+        0,
+        ge=0,
+        le=90,
+        description=(
+            "M15 MB.9 — durée de coexistence v2.1/v2.1.1 en shadow (parallèle "
+            "à scoring_v2_shadow_days qui couvre v1/v2.1). Pendant la fenêtre, "
+            "v2.1.1 calcule + écrit trader_scores avec scoring_version='v2.1.1' "
+            "mais NE PILOTE PAS DecisionEngine (v2.1 reste autoritaire). 0 = "
+            "pas de calcul parallèle (default). Pattern strict copy-paste de "
+            "scoring_v2_shadow_days. Débloque la décision cutover v2.1 → "
+            "v2.1.1 prévue J+30 + alimente la page /traders/scoring (M21) en "
+            "mode dual-version."
+        ),
+    )
 
     @field_validator("blacklisted_wallets", mode="before")
     @classmethod
@@ -1321,6 +1337,30 @@ class Settings(BaseSettings):
                 "(default OK : 0x93070a847efEf7F70739046A929D47a521F5B8ee). "
                 "Vérifier que le default est encore valide via "
                 "docs.polymarket.com/resources/contracts.",
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mb9_v2_1_1_shadow(self) -> "Settings":
+        """Cross-field M15 MB.9 : v2.1.1 shadow uniquement sous pilote v2.1.
+
+        ``SCORING_V2_1_1_SHADOW_DAYS > 0`` exige ``SCORING_VERSION="v2.1"``.
+        Tout autre couple est incohérent :
+
+        - Pilote v1 + shadow v2.1.1 → on saute la version intermédiaire v2.1
+          qui doit être validée avant ; ambigu côté décision cutover.
+        - Pilote v2.1.1 (déjà la cible) → v2.1.1 est calculé via le path
+          pilote, le shadow serait redondant (et écrirait des doublons).
+
+        Off (default 0) → pas de validation, comportement M15 strict préservé.
+        """
+        if self.scoring_v2_1_1_shadow_days > 0 and self.scoring_version != "v2.1":
+            raise ValueError(
+                f"MB.9 : SCORING_V2_1_1_SHADOW_DAYS="
+                f"{self.scoring_v2_1_1_shadow_days} (> 0) exige "
+                f'SCORING_VERSION="v2.1" (actuel: "{self.scoring_version}"). '
+                "La shadow v2.1.1 n'a de sens qu'avec le pilote v2.1 — "
+                "set SCORING_V2_1_1_SHADOW_DAYS=0 ou flippe le pilote.",
             )
         return self
 

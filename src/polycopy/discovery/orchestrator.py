@@ -51,6 +51,7 @@ from polycopy.discovery.scoring.v2 import (
     bind_pool_context,
     check_all_gates,
     compute_score_v2,
+    compute_score_v2_1_1,
 )
 from polycopy.discovery.trader_daily_pnl_writer import TraderDailyPnlWriter
 from polycopy.monitoring.dtos import Alert
@@ -109,6 +110,7 @@ class DiscoveryOrchestrator:
             backend=cfg.discovery_backend,
             scoring_version=cfg.scoring_version,
             scoring_v2_shadow_days=cfg.scoring_v2_shadow_days,
+            scoring_v2_1_1_shadow_days=cfg.scoring_v2_1_1_shadow_days,
             max_active_traders=cfg.max_active_traders,
             trader_shadow_days=cfg.trader_shadow_days,
             trader_daily_pnl_enabled=cfg.trader_daily_pnl_enabled,
@@ -292,6 +294,9 @@ class DiscoveryOrchestrator:
         # M12 — décide si v2 doit être calculé (pilote OU shadow actif).
         compute_v2 = await self._should_compute_v2()
         is_v2_1_pilot = self._settings.scoring_version == "v2.1"
+        # M15 MB.9 — décide si v2.1.1 shadow doit être calculé en parallèle.
+        # Off par défaut. Activable uniquement si pilote=v2.1 (cf. validator).
+        compute_v2_1_1 = await self._should_compute_v2_1_1()
 
         # M12 — pre-build PoolContext si v2 impliqué (1 appel MetricsCollectorV2
         # par wallet × fetch metrics, puis agrégation pool-wide).
@@ -459,6 +464,44 @@ class DiscoveryOrchestrator:
                             ),
                         )
                         v2_scored_count += 1
+                    # M15 MB.9 — shadow compute v2.1.1 en parallèle de v2.1
+                    # pilote. Strictement opt-in (off par défaut). Try/except
+                    # défensif : une exception v2.1.1 ne doit JAMAIS faire
+                    # planter le scoring v2.1 pilote (logique pilote intacte).
+                    if compute_v2_1_1 and metrics_v2 is not None and pool_context is not None:
+                        try:
+                            v2_1_1_breakdown = compute_score_v2_1_1(
+                                metrics_v2,
+                                pool_context,
+                            )
+                            await score_repo.insert(
+                                TraderScoreDTO(
+                                    target_trader_id=target_trader_id,
+                                    wallet_address=wallet,
+                                    score=v2_1_1_breakdown.score,
+                                    scoring_version="v2.1.1",
+                                    low_confidence=False,
+                                    metrics_snapshot={
+                                        "v2_1_1_raw": v2_1_1_breakdown.raw.model_dump(
+                                            mode="json",
+                                        ),
+                                        "v2_1_1_normalized": (
+                                            v2_1_1_breakdown.normalized.model_dump(
+                                                mode="json",
+                                            )
+                                        ),
+                                        "cold_start_internal_pnl": (
+                                            v2_1_1_breakdown.cold_start_internal_pnl
+                                        ),
+                                    },
+                                ),
+                            )
+                        except Exception:
+                            log.warning(
+                                "scoring_v2_1_1_shadow_failed",
+                                wallet=wallet,
+                                exc_info=True,
+                            )
                     await target_repo.update_score(
                         wallet,
                         score=pilot_score,
@@ -624,26 +667,66 @@ class DiscoveryOrchestrator:
         return await self._is_v2_shadow_active()
 
     async def _is_v2_shadow_active(self) -> bool:
-        """Shadow period encore active ?
+        """Shadow period encore active pour v2.1 ?
+
+        Wrapper backward-compat M12 vers le helper paramétré
+        :meth:`_is_shadow_active` (M15 MB.9 — factorisation pour réutiliser
+        la logique avec ``version="v2.1.1"``).
+        """
+        return await self._is_shadow_active(
+            shadow_version="v2.1",
+            shadow_days=self._settings.scoring_v2_shadow_days,
+        )
+
+    async def _is_shadow_active(
+        self,
+        *,
+        shadow_version: str,
+        shadow_days: int,
+    ) -> bool:
+        """M15 MB.9 — shadow period encore active pour ``shadow_version`` ?
 
         Query DB : ``MIN(cycle_at) FROM trader_scores WHERE
-        scoring_version='v2'``. Si aucune row v2 → shadow period pas encore
-        démarrée, retourne True (on va la démarrer ce cycle). Si première row
-        v2 < ``SCORING_V2_SHADOW_DAYS`` jours → shadow encore active.
+        scoring_version=:version``. Si aucune row → shadow period pas encore
+        démarrée, retourne True (on va la démarrer ce cycle). Si première
+        row < ``shadow_days`` jours → shadow encore active.
         """
-        cfg = self._settings
         async with self._sf() as session:
             stmt = select(func.min(TraderScore.cycle_at)).where(
-                TraderScore.scoring_version == "v2.1",
+                TraderScore.scoring_version == shadow_version,
             )
-            first_v2_cycle = (await session.execute(stmt)).scalar_one_or_none()
-        if first_v2_cycle is None:
+            first_cycle = (await session.execute(stmt)).scalar_one_or_none()
+        if first_cycle is None:
             return True
         # SQLite ne persiste pas tzinfo → ré-injecte UTC si naïf.
-        if first_v2_cycle.tzinfo is None:
-            first_v2_cycle = first_v2_cycle.replace(tzinfo=UTC)
-        elapsed = datetime.now(tz=UTC) - first_v2_cycle
-        return elapsed < timedelta(days=cfg.scoring_v2_shadow_days)
+        if first_cycle.tzinfo is None:
+            first_cycle = first_cycle.replace(tzinfo=UTC)
+        elapsed = datetime.now(tz=UTC) - first_cycle
+        return elapsed < timedelta(days=shadow_days)
+
+    async def _should_compute_v2_1_1(self) -> bool:
+        """M15 MB.9 — décide si v2.1.1 doit être calculé ce cycle (shadow strict).
+
+        Logique :
+
+        - ``SCORING_VERSION != "v2.1"`` → False (pilote v1 → v2.1.1 saute la
+          version intermédiaire ; pilote v2.1.1 → déjà calculé via path
+          pilote, shadow redondant). Garanti côté boot par
+          :meth:`Settings._validate_mb9_v2_1_1_shadow`.
+        - ``SCORING_V2_1_1_SHADOW_DAYS == 0`` → False (off, default).
+        - Sinon : check ``_is_shadow_active(version="v2.1.1", ...)``.
+
+        Cf. spec MB.9 + CLAUDE.md §Anti-toxic M15.
+        """
+        cfg = self._settings
+        if cfg.scoring_version != "v2.1":
+            return False
+        if cfg.scoring_v2_1_1_shadow_days <= 0:
+            return False
+        return await self._is_shadow_active(
+            shadow_version="v2.1.1",
+            shadow_days=cfg.scoring_v2_1_1_shadow_days,
+        )
 
     async def _collect_metrics_v2_batch(
         self,
