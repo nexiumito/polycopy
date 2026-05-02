@@ -63,11 +63,11 @@ async def test_single_id_one_batch() -> None:
 @respx.mock
 @pytest.mark.parametrize(
     ("n_ids", "expected_batches"),
-    [(49, 1), (50, 1), (51, 2)],
+    [(24, 1), (25, 1), (26, 2)],
 )
 async def test_boundary_batch_sizes(n_ids: int, expected_batches: int) -> None:
-    """Limites autour de :data:`_BATCH_SIZE_CONDITION_IDS`=50."""
-    assert _BATCH_SIZE_CONDITION_IDS == 50  # garde-fou si la constante bouge
+    """Limites autour de :data:`_BATCH_SIZE_CONDITION_IDS`=25 (Bug #7 fix J+3)."""
+    assert _BATCH_SIZE_CONDITION_IDS == 25  # garde-fou si la constante bouge
 
     cids = [_cid(i) for i in range(n_ids)]
 
@@ -89,8 +89,8 @@ async def test_boundary_batch_sizes(n_ids: int, expected_batches: int) -> None:
 
 
 @respx.mock
-async def test_large_list_200_ids_four_batches() -> None:
-    """200 IDs → 4 batches de 50 → dict de 200 clés, toutes résolues."""
+async def test_large_list_200_ids_eight_batches() -> None:
+    """200 IDs → 8 batches de 25 → dict de 200 clés, toutes résolues (Bug #7 fix J+3)."""
     cids = [_cid(i) for i in range(200)]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -106,7 +106,7 @@ async def test_large_list_200_ids_four_batches() -> None:
         resolver = MarketCategoryResolver(http)
         result = await resolver.resolve_batch(cids)
 
-    assert route.call_count == 4
+    assert route.call_count == 8
     assert len(result) == 200
     assert set(result.keys()) == set(cids)
     assert all(v == "Crypto" for v in result.values())
@@ -121,8 +121,8 @@ async def test_partial_failure_middle_batch_414(
     Cids des batches 1 & 3 résolus, cids du batch 2 → ``_OTHER_CATEGORY``
     mais **pas cachés** (retry au prochain cycle).
     """
-    cids = [_cid(i) for i in range(150)]  # 3 batches de 50
-    batch2_cids = set(cids[50:100])
+    cids = [_cid(i) for i in range(75)]  # 3 batches de 25 (Bug #7 fix J+3)
+    batch2_cids = set(cids[25:50])
 
     call_index = {"n": 0}
 
@@ -144,12 +144,12 @@ async def test_partial_failure_middle_batch_414(
         result = await resolver.resolve_batch(cids)
 
         assert route.call_count == 3
-        assert len(result) == 150
+        assert len(result) == 75
         # Batches 1 & 3 : catégorie propre.
-        for cid in cids[:50] + cids[100:]:
+        for cid in cids[:25] + cids[50:]:
             assert result[cid] == "Politics"
         # Batch 2 : fallback "other".
-        for cid in cids[50:100]:
+        for cid in cids[25:50]:
             assert result[cid] == "other"
 
         # Warning structlog émis pour batch_index=1 (rendu sur stdout via
@@ -162,10 +162,10 @@ async def test_partial_failure_middle_batch_414(
         for cid in batch2_cids:
             assert cid not in resolver._cache  # noqa: SLF001
         # Les cids des batches OK sont en cache.
-        for cid in cids[:50] + cids[100:]:
+        for cid in cids[:25] + cids[50:]:
             assert resolver._cache[cid] == "Politics"  # noqa: SLF001
 
-        # Second appel : seul le batch 2 doit être re-fetché (50 IDs, 1 batch).
+        # Second appel : seul le batch 2 doit être re-fetché (25 IDs, 1 batch).
         # Remock proprement : désormais tout succède.
         route.reset()
         route.mock(
@@ -179,18 +179,21 @@ async def test_partial_failure_middle_batch_414(
         result2 = await resolver.resolve_batch(cids)
 
     assert route.call_count == 1  # uniquement le batch précédemment failed
-    # Les 100 déjà cachés gardent leur catégorie d'origine, les 50 recyclés → "Sports".
-    for cid in cids[:50] + cids[100:]:
+    # Les 50 déjà cachés gardent leur catégorie d'origine, les 25 recyclés → "Sports".
+    for cid in cids[:25] + cids[50:]:
         assert result2[cid] == "Politics"
-    for cid in cids[50:100]:
+    for cid in cids[25:50]:
         assert result2[cid] == "Sports"
 
 
 @respx.mock
 async def test_cache_hit_skips_fetch() -> None:
-    """50 cids en cache + 50 nouveaux → 1 seul appel réseau pour les 50 nouveaux."""
-    cached_cids = [_cid(i) for i in range(50)]
-    new_cids = [_cid(i) for i in range(50, 100)]
+    """25 cids en cache + 25 nouveaux → 1 seul appel réseau pour les 25 nouveaux.
+
+    Bug #7 fix J+3 : taille de batch alignée sur :data:`_BATCH_SIZE_CONDITION_IDS`=25.
+    """
+    cached_cids = [_cid(i) for i in range(25)]
+    new_cids = [_cid(i) for i in range(25, 50)]
 
     def handler(request: httpx.Request) -> httpx.Response:
         batch = request.url.params["condition_ids"].split(",")
@@ -203,16 +206,16 @@ async def test_cache_hit_skips_fetch() -> None:
 
     async with httpx.AsyncClient() as http:
         resolver = MarketCategoryResolver(http)
-        # Warm-up : cache les 50 premiers (1 batch).
+        # Warm-up : cache les 25 premiers (1 batch).
         first = await resolver.resolve_batch(cached_cids)
-        assert len(first) == 50
+        assert len(first) == 25
         assert route.call_count == 1
 
-        # Mix cache + nouveaux : seul le batch des 50 nouveaux doit partir.
+        # Mix cache + nouveaux : seul le batch des 25 nouveaux doit partir.
         mixed = await resolver.resolve_batch(cached_cids + new_cids)
 
     assert route.call_count == 2  # warm-up + 1 seul batch pour les nouveaux
-    assert len(mixed) == 100
+    assert len(mixed) == 50
     assert all(mixed[c] == "Tech" for c in cached_cids + new_cids)
     # Le 2e appel réseau ne contient que les cids neufs (pas les cachés).
     second_call_batch = set(

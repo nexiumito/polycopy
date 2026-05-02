@@ -71,10 +71,12 @@ _GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 _GAMMA_TIMEOUT = 15.0
 
 # Taille max d'un batch envoyé à Gamma ``/markets?condition_ids=<csv>``. Chaque
-# ``condition_id`` fait 66 chars (``0x`` + 64 hex) ; 50 IDs → URL ~3.3 KB, bien
-# sous le seuil ~8 KB des serveurs HTTP standards (nginx default). Au-delà :
-# 414 URI Too Long.
-_BATCH_SIZE_CONDITION_IDS = 50
+# ``condition_id`` fait 66 chars (``0x`` + 64 hex) ; 25 IDs → URL ~1.7 KB, sous
+# le seuil ~2 KB de Cloudflare devant Polymarket Gamma (Bug #7 fix J+3 :
+# batch=50 produisait des URL ~3.3 KB qui déclenchaient HTTP 414 occasionnels
+# sur batches denses). Coût : +1 round-trip par batch de 50 markets,
+# acceptable (1 cycle / 6h).
+_BATCH_SIZE_CONDITION_IDS = 25
 
 
 class MarketCategoryResolver:
