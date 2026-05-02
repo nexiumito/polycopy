@@ -196,25 +196,41 @@ def build_pages_router() -> APIRouter:
         sf: SFDep,
         settings: STDep,
     ) -> HTMLResponse:
-        """Onglet M12 — comparaison v1|v2|delta_rank + cutover status.
+        """Onglet M12 + M21 — comparaison pilot|shadow|delta_rank + cutover.
 
         Read-only strict (pas d'endpoint write). Le bouton "Validate v2 & flip"
         du template n'exécute pas le flip (respect invariant dashboard M4.5
         read-only) — il affiche la commande ``.env`` à appliquer manuellement.
 
         M19 MH.8 : enrichi avec stability metric (std(score) sur N=10 cycles)
-        + badge dispatch 🟢/🟡/🔴/⏳ + cutover panel inchangé.
+        + badge dispatch 🟢/🟡/🔴/⏳.
+
+        M21 MN.3 : versions détectées dynamiquement via
+        ``detect_comparison_versions(sf, settings=settings)``. Page rend en
+        single-version mode si ``shadow_version is None``. La stability M19
+        MH.8 reste calculée sur la version pilote (``version=pilot_version``).
         """
-        rows = await queries.list_scoring_comparison(sf, limit=200)
+        pilot_version, shadow_version = await queries.detect_comparison_versions(
+            sf,
+            settings=settings,
+        )
+        rows = await queries.list_scoring_comparison(
+            sf,
+            pilot_version=pilot_version,
+            shadow_version=shadow_version,
+            limit=200,
+        )
         aggregates = await queries.scoring_comparison_aggregates(
             sf,
+            pilot_version=pilot_version,
+            shadow_version=shadow_version,
             shadow_days=settings.scoring_v2_shadow_days,
             cutover_ready=settings.scoring_v2_cutover_ready,
         )
         stability = await queries.compute_scoring_stability_for_pool(
             sf,
             window=10,
-            version="v2.1",
+            version=pilot_version,
         )
         return _render(
             request,
@@ -222,7 +238,8 @@ def build_pages_router() -> APIRouter:
             {
                 "rows": rows,
                 "aggregates": aggregates,
-                "pilot_version": settings.scoring_version,
+                "pilot_version": pilot_version,
+                "shadow_version": shadow_version,
                 "shadow_days_config": settings.scoring_v2_shadow_days,
                 "stability": stability,
                 "stability_window": 10,
