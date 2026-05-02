@@ -68,6 +68,7 @@ de procédures pull / reset / cutover M14 → M15 → M16.
 | Spec | Brief | Titre | Statut | Notes |
 |---|---|---|---|---|
 | **M19** | [MH](../next/MH.md) | Dashboard UX polish + consistency (render_address copy button, format_size_precise 4-tier, format_usd unified, approve 24h, KPI tooltips, win rate break-even, scoring stability, gain max side-aware, N+1 fix, fee_drag column) | ✅ shipped 2026-04-27 | 11 commits MH.1 → MH.11 mergés sur main. Tests : ~50 unit M19 verts + 1541 unit régression verts. Aucune migration Alembic (head reste 0010). Aucune nouvelle dep CDN (Tailwind 3.4.16 / HTMX 2.0.4 / Chart.js 4.4.7 / Lucide 0.469.0 strict). Audit findings résolus : L-004, L-005, L-027, M-008, M-010, M-011, I-008. Cf. spec [`M19-dashboard-ux-polish.md`](M19-dashboard-ux-polish.md). |
+| **M21** | MN (dérivé de [`todo.md §16`](../todo.md#L934)) | Scoring comparison page generic refactor (`/traders/scoring` v1/v2 hardcodé → versions arbitraires détectées dynamiquement via `detect_comparison_versions(sf, settings, window_days=30)` ; pilot = `Settings.scoring_version`, shadow = 2ᵉ version la plus fréquente trader_scores fenêtre 30j ; fallback single-version mode si shadow=None ; templates dynamiques + sidebar `Scoring comparison`) | ✅ shipped 2026-05-02 | 6 commits MN.1 → MN.6 (+ 1 style ruff format) mergés sur main. Tests : 4 unit nouveaux (MN.1×2, MN.5, MN.6×2) + 8 M12 adaptés (versions explicites) + 319 dashboard verts (M12 + M19 MH.8/MH.9 régressions préservées). Aucune migration Alembic (head reste 0010). Aucune nouvelle dep CDN. ScoringComparisonRow étendu avec alias génériques `score_pilot`/`score_shadow`/`rank_pilot_*`/`rank_shadow_*` ; legacy `score_v1`/`score_v2`/`rank_v1*`/`rank_v2*` préservés 1 release (drop M22+). Cf. spec [`M21-scoring-comparison-page-generic-refactor.md`](M21-scoring-comparison-page-generic-refactor.md). |
 
 ---
 
@@ -79,15 +80,20 @@ synthèse deep-search §40 items + 4 sessions bug A-D.
 | # | Brief | Spec à produire | Priorité | Charge | Prérequis | Bloque |
 |---|---|---|---|---|---|---|
 | 1 | [MK](../next/MK.md) (ex-`ME` renommé 2026-04-27) | M20 Pipeline latency phase 1b (WSS market detection p50 13s → 2-4s) | 🟠 P2 | M (3-4j) | aucun | (améliore MF) |
-| 2 | [MG](../next/MG.md) | M?? CLV + Kelly + Kyle's λ + latency tolerance scoring factors | 🟠 P2 | M (3-4j) | M14 | (optionnel pour MF) |
-| 3 | [MF](../next/MF.md) | M?? Wash detection (Sirolly) + Mitts-Ofir composite — v2.2-DISCRIMINATING capstone | 🟠 P2 | L (6-8j) | M14 + M15 + **30j data** | — |
-| 4 | [MI](../next/MI.md) | M?? Ops hygiene (shutdown lent, setup script, Goldsky Starter free) | 🟡 P3 | M (2-3j) | aucun | — |
-| 5 | [MJ](../next/MJ.md) | M?? (opt) MEV Private Mempool instrumentation | 🟢 P4 | S-M (1-3j) | M11 | — |
+| 2 | MO (à créer, dérivé de [`todo.md §17`](../todo.md#L989)) | M22 Discovery candidate pool rebalance (holders quota ≥60% + tri lexicographique source_priority — fix biais intra-day 49% wallets <7j observé J+3) | 🟡 P3 | M (3-4j) | aucun | (à ship post-cutover J+30 pour ne pas contaminer test 30j en cours) |
+| 3 | [MG](../next/MG.md) | M?? CLV + Kelly + Kyle's λ + latency tolerance scoring factors | 🟠 P2 | M (3-4j) | M14 | (optionnel pour MF) |
+| 4 | [MF](../next/MF.md) | M?? Wash detection (Sirolly) + Mitts-Ofir composite — v2.2-DISCRIMINATING capstone | 🟠 P2 | L (6-8j) | M14 + M15 + **30j data** | — |
+| 5 | [MI](../next/MI.md) | M?? Ops hygiene (shutdown lent, setup script, Goldsky Starter free) | 🟡 P3 | M (2-3j) | aucun | — |
+| 6 | [MJ](../next/MJ.md) | M?? (opt) MEV Private Mempool instrumentation | 🟢 P4 | S-M (1-3j) | M11 | — |
 
 **Numérotation** : M18 a été consommé par la migration V2 (urgent, hors
-séquence) ; M19 par MH (dashboard UX polish, shipped 2026-04-27 soir).
-Le prochain spec à produire (MK / latency) prend M20. Les suivants se
-numérotent dans l'ordre temporel de production.
+séquence) ; M19 par MH (dashboard UX polish, shipped 2026-04-27 soir) ;
+**M21 par MN (scoring comparison refactor, shipped 2026-05-02)**. Le
+prochain spec à produire (MK / latency) prend M20. **M22** pour MO
+(pool rebalance — todo §17, observé empiriquement J+3 test 30j
+2026-05-02 : 49% du pool < 7j active après hot-fix
+`DISCOVERY_TOP_MARKETS_FOR_HOLDERS=50`). Les suivants se numérotent
+dans l'ordre temporel de production.
 
 **Légende priorité** :
 - 🔥 **P1** : débloque le test business (déjà shippé avec M14/M15/M16)
@@ -109,6 +115,13 @@ numérotent dans l'ordre temporel de production.
 
 **Semaines 3-4 — slack + UX polish** :
 - **MH (M19)** : UX polish dashboard ✅ shipped 2026-04-27 soir.
+- **MN (M21)** : scoring comparison page refactor (dette M12) ✅ shipped
+  2026-05-02 — débloque la décision cutover v2.1 → v2.1.1 à J+30
+  (page `/traders/scoring` désormais générique sur 2 versions arbitraires
+  détectées dynamiquement via `detect_comparison_versions`).
+- **MO (M22)** : pool rebalance — à ship **post-cutover J+30 ou en même
+  temps que le cutover** pour éviter de contaminer le data-generating
+  process du test 30j scoring v2.1 en cours.
 - **MI** : ops hygiene (shutdown graceful, Goldsky free tier).
 
 **Semaines 5-6 — MF capstone v2.2-DISCRIMINATING** :
