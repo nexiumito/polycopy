@@ -32,15 +32,19 @@ def _settings(**overrides: Any) -> Settings:
 async def test_traders_scoring_page_renders_empty_when_no_scores(
     session_factory: Any,
 ) -> None:
-    """Page GET /traders/scoring avec DB vide → rendu sans erreur."""
+    """Page GET /traders/scoring avec DB vide → rendu sans erreur.
+
+    M21 MN.6 : Settings default scoring_version="v1" + DB vide → shadow=None
+    → single-version mode. Empty row message dynamique avec le pilot detected.
+    """
     app = build_app(session_factory, _settings())
     with TestClient(app) as client:
         resp = client.get("/traders/scoring")
     assert resp.status_code == 200
     assert "Scoring comparison" in resp.text
-    assert "M12" in resp.text
-    # Cas pool vide : message fallback présent.
-    assert "Aucun score v1 ou v2 persisté" in resp.text
+    assert "M12+M21" in resp.text
+    # Cas pool vide single-version mode : message fallback dynamique.
+    assert "Aucun score v1 persisté" in resp.text
 
 
 @pytest.mark.asyncio
@@ -49,7 +53,7 @@ async def test_traders_scoring_page_renders_v1_only_rows(
     target_trader_repo: TargetTraderRepository,
     trader_score_repo: TraderScoreRepository,
 ) -> None:
-    """Wallets avec score v1 seul (shadow pas encore démarré) → table partielle."""
+    """Wallets avec score v1 seul (single-version mode) → table partielle."""
     t = await target_trader_repo.insert_shadow("0xaaa")
     await trader_score_repo.insert(
         TraderScoreDTO(
@@ -61,14 +65,16 @@ async def test_traders_scoring_page_renders_v1_only_rows(
             metrics_snapshot={},
         ),
     )
-    app = build_app(session_factory, _settings())
+    app = build_app(session_factory, _settings(scoring_version="v1"))
     with TestClient(app) as client:
         resp = client.get("/traders/scoring")
     assert resp.status_code == 200
-    # Wallet affiché (wallet tronqué : "0xaaa..." pour affichage compact).
+    # Wallet affiché.
     assert "0xaaa" in resp.text
-    # Score v1 présent, v2 absent → "—".
+    # Score pilot présent.
     assert "0.650" in resp.text
+    # Heading M21.
+    assert "M12+M21" in resp.text
 
 
 @pytest.mark.asyncio
@@ -77,8 +83,13 @@ async def test_scoring_comparison_query_with_v1_and_v2(
     target_trader_repo: TargetTraderRepository,
     trader_score_repo: TraderScoreRepository,
 ) -> None:
-    """Query retourne des rows avec rank v1/v2 + delta_rank calculés."""
-    # Seed 3 wallets avec scores v1 et v2 "croisés" (delta_rank non trivial).
+    """Query retourne des rows avec rank pilot/shadow + delta_rank calculés.
+
+    M21 MN.6 : passe versions explicites en params ; consomme alias génériques
+    rank_pilot_pool / rank_shadow_pool (les legacy rank_v1/rank_v2 restent
+    populés en parallèle pour rétrocompat).
+    """
+    # Seed 3 wallets avec scores v1 et v2.1 "croisés" (delta_rank non trivial).
     for wallet, s1, s2 in [
         ("0xaaa", 0.9, 0.5),
         ("0xbbb", 0.5, 0.9),
@@ -106,14 +117,22 @@ async def test_scoring_comparison_query_with_v1_and_v2(
             ),
         )
 
-    rows = await dashboard_queries.list_scoring_comparison(session_factory, limit=10)
+    rows = await dashboard_queries.list_scoring_comparison(
+        session_factory,
+        pilot_version="v1",
+        shadow_version="v2.1",
+        limit=10,
+    )
     assert len(rows) == 3
-    # Wallet "0xbbb" : rank_v1=3 (score 0.5 plus bas), rank_v2=1 (score 0.9)
-    # → delta_rank = 3 - 1 = +2 (gagne 2 places en v2).
+    # Wallet "0xbbb" : rank pilot=3 (score 0.5 plus bas), rank shadow=1
+    # (score 0.9) → delta_rank = 3 - 1 = +2 (gagne 2 places en shadow).
     bbb = next(r for r in rows if r.wallet_address == "0xbbb")
+    assert bbb.rank_pilot_pool == 3
+    assert bbb.rank_shadow_pool == 1
+    assert bbb.delta_rank == 2
+    # Legacy aliases populés pour rétrocompat (drop M22+).
     assert bbb.rank_v1 == 3
     assert bbb.rank_v2 == 1
-    assert bbb.delta_rank == 2
 
 
 @pytest.mark.asyncio
@@ -152,6 +171,8 @@ async def test_scoring_comparison_aggregates_spearman_computed(
 
     agg = await dashboard_queries.scoring_comparison_aggregates(
         session_factory,
+        pilot_version="v1",
+        shadow_version="v2.1",
         shadow_days=14,
         cutover_ready=False,
     )
@@ -181,6 +202,8 @@ async def test_scoring_comparison_aggregates_none_spearman_below_3(
     )
     agg = await dashboard_queries.scoring_comparison_aggregates(
         session_factory,
+        pilot_version="v1",
+        shadow_version="v2.1",
         shadow_days=14,
         cutover_ready=False,
     )
@@ -192,13 +215,44 @@ async def test_scoring_comparison_aggregates_none_spearman_below_3(
 @pytest.mark.asyncio
 async def test_cutover_ready_flag_passed_through_from_settings(
     session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
 ) -> None:
-    """``SCORING_V2_CUTOVER_READY`` du Settings remonte à la page."""
-    app = build_app(session_factory, _settings(scoring_v2_cutover_ready=True))
+    """``SCORING_V2_CUTOVER_READY`` du Settings remonte à la page.
+
+    M21 MN.6 : seed 1 row v1 (pilot=v1) + 1 row v2.1 (shadow détecté) sinon
+    le bloc cutover est masqué (single-version mode → l'assertion sur
+    "Cutover ready flag" échouerait).
+    """
+    t = await target_trader_repo.insert_shadow("0xaaa")
+    await trader_score_repo.insert(
+        TraderScoreDTO(
+            target_trader_id=t.id,
+            wallet_address="0xaaa",
+            score=0.5,
+            scoring_version="v1",
+            low_confidence=False,
+            metrics_snapshot={},
+        ),
+    )
+    await trader_score_repo.insert(
+        TraderScoreDTO(
+            target_trader_id=t.id,
+            wallet_address="0xaaa",
+            score=0.6,
+            scoring_version="v2.1",
+            low_confidence=False,
+            metrics_snapshot={},
+        ),
+    )
+    app = build_app(
+        session_factory,
+        _settings(scoring_version="v1", scoring_v2_cutover_ready=True),
+    )
     with TestClient(app) as client:
         resp = client.get("/traders/scoring")
     assert resp.status_code == 200
-    # Template affiche "Cutover ready flag: True".
+    # Template affiche "Cutover ready flag: True" dans le bloc cutover (dual mode).
     assert "Cutover ready flag" in resp.text
 
 
@@ -206,13 +260,17 @@ async def test_cutover_ready_flag_passed_through_from_settings(
 async def test_sidebar_link_present_in_base_template(
     session_factory: Any,
 ) -> None:
-    """Base template contient le lien sidebar ``/traders/scoring``."""
+    """Base template contient le lien sidebar ``/traders/scoring``.
+
+    M21 MN.4 : le label sidebar a été générifié de "Scoring v1/v2" à
+    "Scoring comparison" (cohérent refactor multi-version).
+    """
     app = build_app(session_factory, _settings())
     with TestClient(app) as client:
         resp = client.get("/home")
     assert resp.status_code == 200
     assert "/traders/scoring" in resp.text
-    assert "Scoring v1/v2" in resp.text
+    assert "Scoring comparison" in resp.text
 
 
 @pytest.mark.asyncio
@@ -411,6 +469,8 @@ async def test_spearman_uses_intersection_ranks_not_pool_ranks(
 
     agg = await dashboard_queries.scoring_comparison_aggregates(
         session_factory,
+        pilot_version="v1",
+        shadow_version="v2.1",
         shadow_days=14,
         cutover_ready=False,
     )
@@ -466,9 +526,100 @@ async def test_shadow_days_elapsed_calculated_from_first_v2_row(
 
     agg = await dashboard_queries.scoring_comparison_aggregates(
         session_factory,
+        pilot_version="v1",
+        shadow_version="v2.1",
         shadow_days=14,
         cutover_ready=False,
     )
     assert agg.shadow_days_elapsed is not None
     assert agg.shadow_days_elapsed == 5
     assert agg.shadow_days_remaining == 9
+
+
+@pytest.mark.asyncio
+async def test_dashboard_scoring_render_with_v2_1_only_pilot(
+    session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
+) -> None:
+    """M21 MN.6 — pool v2.1 only → page rend en single-version mode.
+
+    Cas test 30j actuel : `SCORING_VERSION=v2.1`, seul v2.1 calculé en prod.
+    Headers dynamiques `Score V2.1` présents, `Score V2` (legacy hardcoded)
+    absent, bloc cutover masqué (shadow=None).
+    """
+    t = await target_trader_repo.insert_shadow("0xaaa")
+    await trader_score_repo.insert(
+        TraderScoreDTO(
+            target_trader_id=t.id,
+            wallet_address="0xaaa",
+            score=0.65,
+            scoring_version="v2.1",
+            low_confidence=False,
+            metrics_snapshot={},
+        ),
+    )
+    app = build_app(session_factory, _settings(scoring_version="v2.1"))
+    with TestClient(app) as client:
+        resp = client.get("/traders/scoring")
+    assert resp.status_code == 200
+    # Header dynamique pilote uniquement (pas de shadow header).
+    assert "Score V2.1" in resp.text
+    # Single-version mode : bloc Cutover status masqué (shadow=None) + pas
+    # de heading "delta_rank" (apparaît uniquement quand shadow_version set).
+    assert "delta_rank" not in resp.text
+    # Wallet rendu + score formatté.
+    assert "0xaaa" in resp.text
+    assert "0.650" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_scoring_v2_1_vs_v2_1_1_shadow(
+    session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
+) -> None:
+    """M21 MN.6 — pool v2.1 (pilot) + v2.1.1 (shadow) → comparaison dynamique.
+
+    Headers dynamiques `Score V2.1` + `Score V2.1.1` + label cutover dédié
+    "Préparation cutover v2.1.1" (branche conditionnelle MN.4).
+    """
+    for wallet, s_pilot, s_shadow in [
+        ("0xaaa", 0.9, 0.85),
+        ("0xbbb", 0.6, 0.65),
+        ("0xccc", 0.4, 0.45),
+    ]:
+        t = await target_trader_repo.insert_shadow(wallet)
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s_pilot,
+                scoring_version="v2.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s_shadow,
+                scoring_version="v2.1.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+    app = build_app(session_factory, _settings(scoring_version="v2.1"))
+    with TestClient(app) as client:
+        resp = client.get("/traders/scoring")
+    assert resp.status_code == 200
+    # Headers dynamiques (pilot + shadow).
+    assert "Score V2.1" in resp.text
+    assert "Score V2.1.1" in resp.text
+    # Bloc cutover dédié (label conditionnel pour le couple v2.1+v2.1.1).
+    assert "Préparation cutover v2.1.1" in resp.text
+    # Wallets affichés.
+    assert "0xaaa" in resp.text
+    assert "0xbbb" in resp.text
+    assert "0xccc" in resp.text
