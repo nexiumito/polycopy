@@ -51,22 +51,24 @@ _NET_EXPOSURE_MIN: float = 0.10
 
 
 def check_cash_pnl(metrics: TraderMetricsV2) -> GateResult:
-    """Gate 1 : ``cash_pnl_90d > 0``.
+    """Gate 1 : ``cash_pnl_90d >= 0``.
 
     Reichenbach-Walther : 70 % des traders perdent → filtre trivial très
-    efficace.
+    efficace. Bug #5 fix (J+3) : strict ``>`` rejetait les wallets break-even
+    (``cash_pnl_90d == 0.0`` exact, 71 wallets observés sur 3j de prod). Les
+    sans-trades sont déjà filtrés par ``trade_count_min`` en amont.
     """
     observed = float(metrics.cash_pnl_90d)
-    passed = observed > _CASH_PNL_MIN
+    passed = observed >= _CASH_PNL_MIN
     return GateResult(
         gate_name="cash_pnl_positive",
         passed=passed,
         observed_value=observed,
         threshold=_CASH_PNL_MIN,
         reason=(
-            f"cash_pnl_90d:{observed:.2f} > {_CASH_PNL_MIN}"
+            f"cash_pnl_90d:{observed:.2f} >= {_CASH_PNL_MIN}"
             if passed
-            else f"cash_pnl_90d:{observed:.2f} <= {_CASH_PNL_MIN}"
+            else f"cash_pnl_90d:{observed:.2f} < {_CASH_PNL_MIN}"
         ),
     )
 

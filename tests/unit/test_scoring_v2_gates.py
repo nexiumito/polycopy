@@ -70,8 +70,18 @@ def test_gate_cash_pnl_passes_when_positive() -> None:
     assert result.gate_name == "cash_pnl_positive"
 
 
-def test_gate_cash_pnl_fails_when_zero_or_negative() -> None:
-    assert check_cash_pnl(_metrics(cash_pnl_90d=0.0)).passed is False
+def test_gate_cash_pnl_passes_when_break_even() -> None:
+    """Bug #5 fix (J+3, 2026-05-02) : cash_pnl_90d == 0.0 doit passer.
+
+    Le strict ``> 0`` rejetait 71 wallets break-even sur 3j de prod, sub-optimal
+    (les sans-trades sont déjà filtrés par ``trade_count_min`` en amont).
+    """
+    result = check_cash_pnl(_metrics(cash_pnl_90d=0.0))
+    assert result.passed is True
+    assert result.gate_name == "cash_pnl_positive"
+
+
+def test_gate_cash_pnl_fails_when_negative() -> None:
     result = check_cash_pnl(_metrics(cash_pnl_90d=-50.0))
     assert result.passed is False
     assert "-50" in result.reason
