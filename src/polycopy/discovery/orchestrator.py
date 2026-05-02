@@ -345,11 +345,20 @@ class DiscoveryOrchestrator:
                     log.debug("gate_rejected_pilot_skip", wallet=wallet)
                     continue
 
-                # --- v1 path (intact, signature M5) -------------------------
-                score_v1_value, low_conf = compute_score(
-                    metrics,
-                    settings=self._settings,
-                )
+                # --- v1 path : skip quand pilote v2.1 (fix Bug #2) ----------
+                # Le registre `compute_score()` dispatch via
+                # `settings.scoring_version` ; en v2.1 pilote, le wrapper v2
+                # reçoit un `TraderMetrics` v1 et log un warning systémique
+                # `scoring_v2_wrong_metrics_type` pour chaque wallet. On
+                # court-circuite : v1 inutile quand v2.1 pilote.
+                if is_v2_1_pilot:
+                    score_v1_value = 0.0
+                    low_conf = False
+                else:
+                    score_v1_value, low_conf = compute_score(
+                        metrics,
+                        settings=self._settings,
+                    )
 
                 # Version pilote = écrire target_traders.score (colonne
                 # overwrite M5) + la row trader_scores pilote.
@@ -364,54 +373,6 @@ class DiscoveryOrchestrator:
                     pilot_version = "v1"
 
                 current = existing_by_wallet.get(wallet)
-
-                # Persist v1 row si trader existe et pas rejeté par v2 en
-                # mode pilote v1 (shadow mode = v1 garde sa trace).
-                if current is not None:
-                    await score_repo.insert(
-                        TraderScoreDTO(
-                            target_trader_id=current.id,
-                            wallet_address=wallet,
-                            score=score_v1_value,
-                            scoring_version="v1",
-                            low_confidence=low_conf,
-                            metrics_snapshot=metrics.model_dump(mode="json"),
-                        ),
-                    )
-                    # Shadow v2 : double-write trader_scores row v2 pour audit.
-                    if (
-                        v2_breakdown is not None
-                        and metrics_v2 is not None
-                        and score_v2_value is not None
-                    ):
-                        await score_repo.insert(
-                            TraderScoreDTO(
-                                target_trader_id=current.id,
-                                wallet_address=wallet,
-                                score=score_v2_value,
-                                scoring_version="v2.1",
-                                low_confidence=False,
-                                metrics_snapshot={
-                                    "base": metrics.model_dump(mode="json"),
-                                    "v2_raw": v2_breakdown.raw.model_dump(
-                                        mode="json",
-                                    ),
-                                    "v2_normalized": v2_breakdown.normalized.model_dump(
-                                        mode="json",
-                                    ),
-                                    "brier_baseline_pool": (v2_breakdown.brier_baseline_pool),
-                                },
-                            ),
-                        )
-                        v2_scored_count += 1
-                    # target_traders.score (colonne overwrite M5) reflète la
-                    # version pilote.
-                    await target_repo.update_score(
-                        wallet,
-                        score=pilot_score,
-                        scoring_version=pilot_version,
-                        scored_at=cycle_at,
-                    )
 
                 scoring = ScoringResult(
                     wallet_address=wallet,
@@ -431,6 +392,10 @@ class DiscoveryOrchestrator:
                     int(metrics_v2.trade_count_90d) if metrics_v2 is not None else None
                 )
                 days_active = int(metrics_v2.days_active) if metrics_v2 is not None else None
+                # DecisionEngine : peut créer le target_trader (insert_shadow)
+                # pour les décisions discovered_shadow / promote_active /
+                # revived_shadow. On le re-fetch après pour récupérer l'ID
+                # (Bug #3 fix).
                 decision = await decision_engine.decide(
                     scoring,
                     current,
@@ -438,6 +403,69 @@ class DiscoveryOrchestrator:
                     trade_count_90d=trade_count_90d,
                     days_active=days_active,
                 )
+
+                # Bug #3 fix : re-fetch `target_trader_id` pour les wallets
+                # fraîchement créés par DecisionEngine. Sans ça, on ne pouvait
+                # jamais écrire trader_scores au 1er cycle d'un wallet
+                # (`current is None` → ancien `if current is not None` skippait
+                # tout). DB vide → 100% nouveaux → trader_scores reste vide.
+                target_trader_id: int | None = current.id if current is not None else None
+                if target_trader_id is None and decision.decision in (
+                    "discovered_shadow",
+                    "promote_active",
+                    "revived_shadow",
+                ):
+                    fresh = await target_repo.get(wallet)
+                    target_trader_id = fresh.id if fresh is not None else None
+
+                # Append-only trader_scores : insérer v1 row (sauf si pilote
+                # v2.1 où c'est inutile, fix Bug #2) + v2.1 shadow/pilot row
+                # (si v2 calculé). target_traders.score (colonne overwrite M5)
+                # reflète la version pilote.
+                if target_trader_id is not None:
+                    if not is_v2_1_pilot:
+                        await score_repo.insert(
+                            TraderScoreDTO(
+                                target_trader_id=target_trader_id,
+                                wallet_address=wallet,
+                                score=score_v1_value,
+                                scoring_version="v1",
+                                low_confidence=low_conf,
+                                metrics_snapshot=metrics.model_dump(mode="json"),
+                            ),
+                        )
+                    if (
+                        v2_breakdown is not None
+                        and metrics_v2 is not None
+                        and score_v2_value is not None
+                    ):
+                        await score_repo.insert(
+                            TraderScoreDTO(
+                                target_trader_id=target_trader_id,
+                                wallet_address=wallet,
+                                score=score_v2_value,
+                                scoring_version="v2.1",
+                                low_confidence=False,
+                                metrics_snapshot={
+                                    "base": metrics.model_dump(mode="json"),
+                                    "v2_raw": v2_breakdown.raw.model_dump(
+                                        mode="json",
+                                    ),
+                                    "v2_normalized": v2_breakdown.normalized.model_dump(
+                                        mode="json",
+                                    ),
+                                    "brier_baseline_pool": (v2_breakdown.brier_baseline_pool),
+                                },
+                            ),
+                        )
+                        v2_scored_count += 1
+                    await target_repo.update_score(
+                        wallet,
+                        score=pilot_score,
+                        scoring_version=pilot_version,
+                        scored_at=cycle_at,
+                    )
+
                 await self._persist_event(
                     event_repo,
                     decision,
