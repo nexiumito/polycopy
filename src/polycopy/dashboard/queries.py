@@ -1645,9 +1645,7 @@ async def scoring_comparison_aggregates(
         shadow_version=shadow_version,
         limit=_MAX_LIMIT,
     )
-    with_both = [
-        r for r in rows if r.score_pilot is not None and r.score_shadow is not None
-    ]
+    with_both = [r for r in rows if r.score_pilot is not None and r.score_shadow is not None]
 
     median_delta: float | None = None
     spearman: float | None = None
@@ -1668,26 +1666,24 @@ async def scoring_comparison_aggregates(
         # rank_shadow_pool restent pool-wide côté UI — seul le calcul de ρ
         # utilise les ranks locaux.
         pilot_sorted = sorted(
-            with_both, key=lambda r: r.score_pilot or 0.0, reverse=True,
+            with_both,
+            key=lambda r: r.score_pilot or 0.0,
+            reverse=True,
         )
-        local_rank_pilot = {
-            r.wallet_address: i + 1 for i, r in enumerate(pilot_sorted)
-        }
+        local_rank_pilot = {r.wallet_address: i + 1 for i, r in enumerate(pilot_sorted)}
         shadow_sorted = sorted(
-            with_both, key=lambda r: r.score_shadow or 0.0, reverse=True,
+            with_both,
+            key=lambda r: r.score_shadow or 0.0,
+            reverse=True,
         )
-        local_rank_shadow = {
-            r.wallet_address: i + 1 for i, r in enumerate(shadow_sorted)
-        }
+        local_rank_shadow = {r.wallet_address: i + 1 for i, r in enumerate(shadow_sorted)}
         spearman = _spearman_rank(
             [float(local_rank_pilot[r.wallet_address]) for r in with_both],
             [float(local_rank_shadow[r.wallet_address]) for r in with_both],
         )
 
     top10_pilot = {
-        r.wallet_address
-        for r in rows
-        if r.rank_pilot_pool is not None and r.rank_pilot_pool <= 10
+        r.wallet_address for r in rows if r.rank_pilot_pool is not None and r.rank_pilot_pool <= 10
     }
     top10_shadow = {
         r.wallet_address
