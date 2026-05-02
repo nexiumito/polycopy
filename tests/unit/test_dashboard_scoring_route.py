@@ -294,6 +294,61 @@ def test_spearman_rank_function_edge_cases() -> None:
 
 
 @pytest.mark.asyncio
+async def test_spearman_and_top10_delta_paramétré_on_v2_1_v2_1_1(
+    session_factory: Any,
+    target_trader_repo: TargetTraderRepository,
+    trader_score_repo: TraderScoreRepository,
+) -> None:
+    """M21 MN.5 — Spearman + top-N delta sur 2 versions arbitraires (v2.1 vs v2.1.1).
+
+    Garde-fou : la généralisation MN.2 propage correctement les versions
+    explicites jusqu'au calcul Spearman et au top-10 delta. Le pure
+    ``_spearman_rank`` reste intact (versioning sacré algo).
+
+    Seed : 3 wallets avec scores parfaitement concordants (rangs identiques)
+    → ρ = 1.0. Top-10 delta = 0 (mêmes wallets dans le top-10).
+    """
+    for wallet, s_pilot, s_shadow in [
+        ("0xaaa", 0.9, 0.8),
+        ("0xbbb", 0.7, 0.6),
+        ("0xccc", 0.5, 0.4),
+    ]:
+        t = await target_trader_repo.insert_shadow(wallet)
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s_pilot,
+                scoring_version="v2.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+        await trader_score_repo.insert(
+            TraderScoreDTO(
+                target_trader_id=t.id,
+                wallet_address=wallet,
+                score=s_shadow,
+                scoring_version="v2.1.1",
+                low_confidence=False,
+                metrics_snapshot={},
+            ),
+        )
+
+    agg = await dashboard_queries.scoring_comparison_aggregates(
+        session_factory,
+        pilot_version="v2.1",
+        shadow_version="v2.1.1",
+        shadow_days=14,
+        cutover_ready=False,
+    )
+    assert agg.wallets_compared == 3
+    assert agg.spearman_rank == pytest.approx(1.0)
+    # Tous wallets in both top-10 → top10_delta = 0.
+    assert agg.top10_delta == 0
+
+
+@pytest.mark.asyncio
 async def test_spearman_uses_intersection_ranks_not_pool_ranks(
     session_factory: Any,
     target_trader_repo: TargetTraderRepository,
