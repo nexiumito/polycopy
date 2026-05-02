@@ -89,6 +89,43 @@ stale resteront mais sans impact fonctionnel — append-only).
 **Calendrier impact** : redémarre les compteurs J0 du test 30j à 2026-05-02
 post-patch. Décision cutover v2.1.1 décalée à **2026-06-01**.
 
+### 🐛 BUG FIXES appliqués J+3 (2026-05-02 soir) — Pipeline scoring
+
+**Bugs identifiés via audit Plan systémique** post-bug `days_active` :
+
+- **Bug #3 (CRITIQUE)** : `trader_scores` n'était jamais peuplée car
+  `score_repo.insert()` gardé par `if current is not None`. DB vide
+  → 100% nouveaux → 0 row écrite. Patch : re-fetch `target_trader_id`
+  via `target_repo.get(wallet)` après `decision_engine.decide()` pour
+  récupérer l'ID des wallets fraîchement créés par `insert_shadow()`.
+- **Bug #2** : `compute_score()` dispatchait via registry sur
+  `settings.scoring_version="v2.1"` → wrapper v2 recevait `TraderMetrics`
+  v1 → warning `scoring_v2_wrong_metrics_type` systémique (1 par wallet
+  par cycle). Patch : skip v1 path quand `is_v2_1_pilot=True`.
+- **Bug #5** : gate `cash_pnl_positive` strict `> 0` rejetait break-even
+  (cash_pnl_90d == 0.0 exact). 71 wallets observés rejetés à tort sur 3j.
+  Patch : `>= 0`.
+- **Bug #7** : `gamma_categories_batch_failed` HTTP 414 URI Too Long
+  (Cloudflare ~2KB). Patch : `_BATCH_SIZE_CONDITION_IDS` 50 → 25
+  (URL ~1.7KB safe, +1 round-trip par batch de 50 markets).
+- **Bug #4 (hot-fix)** : pool source biaisé intra-day (`/trades?takerOnly=true`
+  domine vs `/holders` matures). Hot-fix config uniquement :
+  `DISCOVERY_TOP_MARKETS_FOR_HOLDERS=20 → 50` (ramène ~1000 holders matures).
+  ⚠️ **Action manuelle requise sur la machine prod** : éditer le `.env`
+  local avant le restart (`.env` est gitignored, le `.env.example` est
+  commité pour documenter).
+
+**Refactor reporté** : module dédié **MK-pool-rebalance** pour rebalance
+holders/trades dans le pool. Cf. §17.
+
+**Tests ajoutés** : [tests/unit/test_orchestrator_score_persistence.py](../tests/unit/test_orchestrator_score_persistence.py)
+— 3 tests non-régression (DB vide → row v2.1 écrite, v2_scored counter,
+gate rejected → no row).
+
+**Calendrier impact** : ces 4 bugs étaient bloquants pour le test 30j
+(aucun wallet ACTIVE atteint en 3j). Reset des compteurs J0 à 2026-05-02
+post-restart user. Décision cutover v2.1.1 décalée à **2026-06-01**.
+
 ### Limitations UX connues (non bloquantes)
 
 - **Dashboard `/traders/scoring`** : page M12 (`v1` vs `v2` hardcodés) **sera
@@ -946,6 +983,42 @@ selon ce qui est shippé en premier.
 
 **Workaround pendant le test 30j** : utiliser `/traders` + `/performance`
 + requêtes SQL directes sur `trader_scores`.
+
+---
+
+## §17. Refactor pool source biaisé (MK-pool-rebalance, M20+)
+
+**Constat 2026-05-02** : `CandidatePoolBuilder` consomme `/trades?takerOnly=true`
+(jeunes/intra-day) + `/holders?market=...` (matures). Le tri par
+`initial_signal = appearances + log10(max_amount)` favorise les wallets
+`/trades` à hautes répétitions (bots intra-day). Pas de quota explicite
+par source.
+
+**Symptôme observé** : 100% des candidats avec `days_active < 7` (sur 862
+rejets observés). Aucun wallet mature ne ressortait dans le pool top-100
+malgré ~400 holders fetchés.
+
+**Hot-fix temporaire (J+3, 2026-05-02)** : `DISCOVERY_TOP_MARKETS_FOR_HOLDERS=20 → 50`
+ramène ~1000 holders matures (au lieu de 400). Améliore le ratio mais
+n'élimine pas le biais structurel (le tri par `initial_signal` reste
+favorable aux multi-trades intra-day).
+
+**Scope refactor MK** :
+
+1. Quota minimal : `holders ≥ 60% du pool` après tri.
+2. Ou pondérer `initial_signal` par source (`*1.5` pour holders).
+3. Ou tri lexicographique : `(source_priority, initial_signal)` avec
+   `holders > global_trades`.
+4. Ajouter logging `pool_composition` au boot/cycle pour audit
+   (`n_holders`, `n_trades`, `n_dedup`).
+
+**Tests à ajouter** :
+
+- `test_pool_builder_respects_holders_quota_min`
+- `test_pool_builder_logs_composition_per_source`
+
+**Priorité** : moyenne. Le hot-fix résout 70% du problème. Refactor
+nécessaire avant d'ajouter de nouvelles sources (Goldsky, leaderboard).
 
 ---
 
