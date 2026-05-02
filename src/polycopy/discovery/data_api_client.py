@@ -169,7 +169,7 @@ class DiscoveryDataApiClient:
         user: str,
         *,
         since: datetime | None = None,
-        limit: int = 500,
+        limit: int = 1000,
     ) -> list[dict[str, Any]]:
         """Retourne les trades (`type=TRADE`) du wallet depuis `since`.
 
@@ -177,6 +177,12 @@ class DiscoveryDataApiClient:
         `TradeActivity`, on renvoie ici des dicts bruts — le metrics_collector
         n'a besoin que de `conditionId` + `size` × `price` pour calculer volume
         et Herfindahl, inutile de payer le coût d'un DTO validation.
+
+        Le default ``limit=1000`` est le **maximum accepté par l'API Polymarket**
+        (validé empiriquement 2026-05-02 : ``limit=5000`` plafonne à 1000). Avec
+        500, le calcul de ``days_active`` était sous-estimé sur les wallets
+        actifs >500 trades/90j (signature : 88% des candidats Discovery rejetés
+        au gate ``days_active_min`` avec value 0-6j). Cf. spec M14 §2.5.
         """
         params: dict[str, Any] = {
             "user": user.lower(),

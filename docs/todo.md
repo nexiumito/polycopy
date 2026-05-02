@@ -50,6 +50,45 @@ Ordre recommandé. Garde ce fichier à jour ou raye au fur et à mesure.
 - Premiers cycles Discovery : `gate_rejected` élevé (~90%) cohérent
   `COLD_START_MODE=true` qui rejette toujours <20 trades 90j.
 
+### 🐛 BUG FIX appliqué J+3 (2026-05-02) — `days_active` sous-estimé
+
+**Symptôme observé** : 12 cycles Discovery en 3 jours, **0 wallet ACTIVE** dans
+le pool. 90% des candidats rejetés au gate `days_active_min`. Distribution des
+``value`` : 88% entre 0-6j, **0 wallet ≥7j parmi 862 rejets**.
+
+**Cause racine** : [src/polycopy/discovery/data_api_client.py:172](src/polycopy/discovery/data_api_client.py#L172)
+hardcodait `limit=500` dans `get_activity_trades()`. L'API Polymarket
+`/activity?user=...` retourne les **N derniers trades** indépendamment du
+`start` timestamp. Pour un wallet actif (>500 trades/90j), les 500 derniers
+couvraient seulement 5-7j → `days_active` sous-estimé → rejet systématique
+au gate 7j (cold-start).
+
+**Validation expérimentale** (2026-05-02 sur wallets `kept` du pool stale) :
+
+```
+limit=500  → returned=500 (range ~7j, days_active≈5)
+limit=1000 → returned=1000 (range ~38j, days_active≈15-33)
+limit=5000 → returned=1000 (API plafonne à 1000)
+```
+
+**Fix appliqué** : default `limit=500` → `limit=1000` (max API). Diff
+strictement additif, aucun caller ne passait `limit` explicite. Reset DB
+non nécessaire (`target_traders` était vide ; les events `gate_rejected`
+stale resteront mais sans impact fonctionnel — append-only).
+
+**Dette technique laissée** :
+- Aucun test unitaire ne couvrait `_compute_days_active` ni la window de
+  fetch. À ajouter en MF/MK : `test_metrics_collector_v2_days_active_window_full`.
+- Pour les wallets ultra-actifs (>1000 trades/90j), `days_active` peut
+  encore être sous-estimé. Solution propre = pagination via `start` décroissant.
+  Pas urgent (edge case, signature non observée dans le pool actuel).
+- 71 wallets rejetés au gate `cash_pnl_positive` avec `value ≥ 0` —
+  probable strict `> 0` qui rejette `value == 0.0` exact. Sub-optimal mais
+  minor. À documenter comme finding pour MF/MK.
+
+**Calendrier impact** : redémarre les compteurs J0 du test 30j à 2026-05-02
+post-patch. Décision cutover v2.1.1 décalée à **2026-06-01**.
+
 ### Limitations UX connues (non bloquantes)
 
 - **Dashboard `/traders/scoring`** : page M12 (`v1` vs `v2` hardcodés) **sera
