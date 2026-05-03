@@ -984,6 +984,61 @@ selon ce qui est shippé en premier.
 **Workaround pendant le test 30j** : utiliser `/traders` + `/performance`
 + requêtes SQL directes sur `trader_scores`.
 
+### Sous-tâche connexe : fix régression `scoring_v2_wrong_metrics_type`
+
+**Détecté en run live 2026-04-29** (3 occurrences/cycle dans logs WARNING
+dès boot avec `SCORING_VERSION=v2.1`). Concorde avec ce refactor parce que
+les deux touchent la même couche `trader_scores` + la même page.
+
+**Cause** : [orchestrator.py:349](../src/polycopy/discovery/orchestrator.py#L349)
+appelle `compute_score(metrics, settings=self._settings)` pour la row
+shadow `scoring_version="v1"`. Mais quand `SCORING_VERSION=v2.1`, le
+registry lookup `SCORING_VERSIONS_REGISTRY[settings.scoring_version]`
+retourne `_compute_score_v2_wrapper` qui reçoit du legacy
+`TraderMetrics` (au lieu du `TraderMetricsV2` attendu) → log warning +
+retourne `0.0`. Toutes les rows `trader_scores.scoring_version="v1"`
+écrites post-flip v2.1 ont donc `score=0.0` (corrompues).
+
+**Impact** :
+- ✅ Décision live intacte (pilote v2.1 calculé séparément ligne 338
+  avec le bon `TraderMetricsV2`).
+- ❌ Audit trail v1 = bruit (toutes les rows v1 à 0.0 post-flip).
+- ⚠️ Conséquence pour §16 : si le refactor v2.1 vs v2.1.1 (cas
+  attendu post J+30) **n'utilise pas v1**, le bug est cosmétique et
+  peut être laissé pour M20+ sans bloquer. Si le refactor garde une
+  comparaison contre v1 legacy (pré-flip historique), il faut fixer
+  d'abord.
+
+**Fix proposé** (~10 lignes + 1 test, M19.1 hotfix candidat) :
+
+1. Exposer `compute_score_v1` public dans
+   [src/polycopy/discovery/scoring/v1.py](../src/polycopy/discovery/scoring/v1.py)
+   (rename `_compute_score_v1` → `compute_score_v1`).
+2. Dans `orchestrator.py:349`, bypass registry pour la row shadow v1 :
+   ```python
+   from polycopy.discovery.scoring.v1 import compute_score_v1
+   ...
+   if metrics.resolved_positions_count < self._settings.scoring_min_closed_markets:
+       score_v1_value, low_conf = 0.0, True
+   else:
+       score_v1_value, low_conf = compute_score_v1(metrics), False
+   ```
+3. Test non-régression `test_v1_shadow_row_correct_when_pilot_v2_1` :
+   set `SCORING_VERSION="v2.1"`, run un cycle avec un wallet ayant
+   `resolved_positions_count >= scoring_min_closed_markets` et metrics
+   non-zero, asserter que la row trader_scores écrite avec
+   `scoring_version="v1"` a `score > 0.0`.
+4. Vérifier post-fix : `tail -f ~/.polycopy/logs/polycopy.log | grep
+   scoring_v2_wrong_metrics_type` ne retourne plus rien sur 2 cycles.
+
+**Pas de migration DB** : les rows v1=0.0 historiques (entre flip v2.1
+et fix) restent en place — acceptable (le `/traders/scoring`
+refactoré peut les filtrer par `scored_at >= fix_date` ou les ignorer
+si la nouvelle paire est `(v2.1, v2.1.1)`).
+
+**Cadence suggérée** : M19.1 standalone (~30 min de travail), avant
+le démarrage du module M20 qui contiendra §16 lui-même.
+
 ---
 
 ## §17. Refactor pool source biaisé (MK-pool-rebalance, M20+)
