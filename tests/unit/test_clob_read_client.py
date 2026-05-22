@@ -62,3 +62,32 @@ async def test_get_midpoint_retries_on_429() -> None:
             mid = await client.get_midpoint("123")
     assert mid == 0.42
     assert route.call_count == 2
+
+
+async def test_get_midpoint_does_not_retry_404() -> None:
+    """Régression 2026-05-22 : un 404 (marché résolu) ne doit PAS être retenté.
+
+    Avant, tenacity retentait tout ``HTTPStatusError`` 5× avec backoff
+    (~15 s par position résolue) → ``get_state`` gelait sur un backlog de
+    centaines de positions résolues, et le snapshot PnL ne s'écrivait jamais.
+    """
+    with respx.mock(base_url="https://clob.polymarket.com") as mock:
+        route = mock.get("/midpoint").mock(
+            return_value=httpx.Response(404, json={"error": "no book"}),
+        )
+        async with httpx.AsyncClient() as http:
+            client = ClobReadClient(http)
+            mid = await client.get_midpoint("dead_token")
+    assert mid is None
+    assert route.call_count == 1  # une seule requête, aucun retry
+
+
+async def test_get_midpoint_does_not_retry_400() -> None:
+    """Tout 4xx (client error) est non-transitoire → pas de retry."""
+    with respx.mock(base_url="https://clob.polymarket.com") as mock:
+        route = mock.get("/midpoint").mock(return_value=httpx.Response(400))
+        async with httpx.AsyncClient() as http:
+            client = ClobReadClient(http)
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.get_midpoint("bad")
+    assert route.call_count == 1

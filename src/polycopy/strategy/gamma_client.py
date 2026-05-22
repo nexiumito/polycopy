@@ -58,6 +58,11 @@ class GammaApiClient:
     BASE_URL = "https://gamma-api.polymarket.com"
     DEFAULT_TIMEOUT = 10.0
     CACHE_TTL = timedelta(seconds=60)
+    # Cap conservateur du batch ``condition_ids`` : ~50 × 69 chars ≈ 3,5 KB
+    # d'URL, bien sous la limite serveur (~8 KB → 414 URI Too Long au-delà).
+    # Régression audit 2026-05-22 : 566 condition_ids en un seul GET = URL
+    # ~39 KB → 414 → le cycle de résolution M8 plantait à chaque tick.
+    CONDITION_IDS_BATCH_SIZE = 50
 
     def __init__(
         self,
@@ -115,12 +120,25 @@ class GammaApiClient:
     ) -> list[MarketMetadata]:
         """Batch fetch ``GET /markets?condition_ids=<csv>`` (M8 resolution).
 
-        Pas de cache (les états ``closed`` changent au fil de l'eau et le
-        cycle de polling M8 est de 30 min). Skip silencieusement les marchés
-        dont le payload Gamma ne parse pas.
+        Découpe la requête en lots de ``CONDITION_IDS_BATCH_SIZE`` pour ne
+        jamais dépasser la limite de longueur d'URL serveur (414 URI Too Long
+        au-delà de ~8 KB). Pas de cache (les états ``closed`` changent au fil
+        de l'eau et le cycle de polling M8 est de 30 min). Skip silencieusement
+        les marchés dont le payload Gamma ne parse pas.
         """
         if not condition_ids:
             return []
+        markets: list[MarketMetadata] = []
+        for start in range(0, len(condition_ids), self.CONDITION_IDS_BATCH_SIZE):
+            batch = condition_ids[start : start + self.CONDITION_IDS_BATCH_SIZE]
+            markets.extend(await self._fetch_markets_batch(batch))
+        return markets
+
+    async def _fetch_markets_batch(
+        self,
+        condition_ids: list[str],
+    ) -> list[MarketMetadata]:
+        """Un seul ``GET /markets`` pour un lot de condition_ids (≤ batch size)."""
         response = await self._http.get(
             f"{self.BASE_URL}/markets",
             params={"condition_ids": ",".join(condition_ids)},

@@ -10,7 +10,7 @@ import structlog
 from tenacity import (
     before_sleep_log,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -20,6 +20,24 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 _tenacity_log = logging.getLogger(__name__)
+
+
+def _is_retryable_clob_error(exc: BaseException) -> bool:
+    """Ne retry que les erreurs **transitoires** : réseau, 429, 5xx.
+
+    Un 404 sur ``/midpoint`` = orderbook absent (marché résolu) = **permanent** :
+    le retry serait inutile et catastrophiquement lent (5 tentatives × backoff
+    exponentiel ≈ 15 s par position résolue). Régression observée 2026-05-22 :
+    avec un backlog de centaines de positions résolues, ``get_state`` (qui price
+    chaque position open) gelait pendant des dizaines de minutes par tick. Idem
+    pour tout autre 4xx (client error → pas transitoire).
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    return False
 
 
 class ClobReadClient:
@@ -62,7 +80,7 @@ class ClobReadClient:
         return float(raw)
 
     @retry(
-        retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+        retry=retry_if_exception(_is_retryable_clob_error),
         wait=wait_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(5),
         before_sleep=before_sleep_log(_tenacity_log, logging.WARNING),

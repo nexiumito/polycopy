@@ -31,6 +31,7 @@ from polycopy.storage.repositories import MyPositionRepository
 
 if TYPE_CHECKING:
     from polycopy.config import Settings
+    from polycopy.storage.models import MyPosition
     from polycopy.strategy.clob_read_client import ClobReadClient
 
 log = structlog.get_logger(__name__)
@@ -67,23 +68,23 @@ class VirtualWalletStateReader:
         positions = await self._positions_repo.list_open_virtual()
         unrealized = 0.0
         exposure = 0.0
+        priced_any = False
+        unpriceable: list[MyPosition] = []
         for pos in positions:
             mid = await self._safe_get_midpoint(pos.asset_id)
             if mid is None:
                 # M17 MD.4 : fallback sur le last_known frais si dispo.
                 last_known = self._fetch_last_known(pos.asset_id)
                 if last_known is None:
-                    age = self._last_known_age_seconds(pos.asset_id)
-                    log.warning(
-                        "virtual_wallet_midpoint_stale_last_known",
-                        asset_id=pos.asset_id,
-                        last_known_age_seconds=age,
-                    )
-                    raise MidpointUnavailableError(
-                        asset_id=pos.asset_id,
-                        last_known_age_seconds=age,
-                    )
+                    # Ni prix live ni cache frais. On NE lève PAS tout de
+                    # suite : une seule position injoignable (marché résolu →
+                    # 404 permanent sur /midpoint) ne doit pas geler tout le
+                    # snapshot (régression audit 2026-05-22 : PnL figé 11j).
+                    # Décision différée après la boucle (cf. _handle_unpriceable).
+                    unpriceable.append(pos)
+                    continue
                 mid = last_known
+                priced_any = True
                 log.info(
                     "virtual_wallet_using_last_known_mid",
                     asset_id=pos.asset_id,
@@ -92,9 +93,12 @@ class VirtualWalletStateReader:
             else:
                 # M17 MD.4 : refresh write-through cache uniquement sur fetch OK.
                 self._record_last_known(pos.asset_id, mid)
+                priced_any = True
             current_value = pos.size * mid
             unrealized += current_value - pos.size * pos.avg_price
             exposure += current_value
+        if unpriceable:
+            exposure += self._handle_unpriceable(unpriceable, priced_any=priced_any)
         realized = await self._positions_repo.sum_realized_pnl_virtual()
         # M17 MD.5 : source unique post-deprecation. Le validator Pydantic
         # MD.5 reroute `DRY_RUN_VIRTUAL_CAPITAL_USD` legacy vers
@@ -115,6 +119,51 @@ class VirtualWalletStateReader:
             available_capital_usd=total_usdc - exposure,
             open_positions_count=len(positions),
         )
+
+    def _handle_unpriceable(
+        self,
+        unpriceable: list[MyPosition],
+        *,
+        priced_any: bool,
+    ) -> float:
+        """Décide du sort des positions sans prix live ni cache frais.
+
+        Distingue deux situations que M17 MD.4 confondait (régression audit
+        2026-05-22 : PnL gelé 11 jours par une seule position sur marché
+        résolu, qui faisait abandonner tout le snapshot à chaque tick) :
+
+        - **Aucune** position valorisable (``priced_any=False``) → vraie panne
+          CLOB globale → ``MidpointUnavailableError`` (intention MD.4 préservée :
+          le writer skip le snapshot pour ne pas corrompre la baseline de
+          drawdown contre un creux artificiel — audit C-004).
+        - **Au moins une** position valorisée → le CLOB est up, donc les
+          injoignables sont des marchés résolus (404 permanent sur /midpoint).
+          On les marque à plat (``avg_price`` → latent 0) et on retourne leur
+          cost basis pour l'exposure. Le ``DryRunResolutionWatcher`` les fermera
+          au prochain cycle avec le vrai ``realized_pnl``. Direction sûre kill
+          switch : le total n'est jamais sous-évalué (drawdown jamais surévalué).
+
+        Retourne le cost basis à ajouter à l'exposure (0 si on raise).
+        """
+        if not priced_any:
+            first = unpriceable[0]
+            age = self._last_known_age_seconds(first.asset_id)
+            log.warning(
+                "virtual_wallet_midpoint_stale_last_known",
+                asset_id=first.asset_id,
+                last_known_age_seconds=age,
+                unpriceable_count=len(unpriceable),
+            )
+            raise MidpointUnavailableError(
+                asset_id=first.asset_id,
+                last_known_age_seconds=age,
+            )
+        log.warning(
+            "virtual_wallet_positions_marked_flat",
+            count=len(unpriceable),
+            asset_ids=[p.asset_id for p in unpriceable[:10]],
+        )
+        return sum(pos.size * pos.avg_price for pos in unpriceable)
 
     async def _safe_get_midpoint(self, asset_id: str) -> float | None:
         """Fetch midpoint en absorbant les erreurs réseau / 404 (warning + skip)."""

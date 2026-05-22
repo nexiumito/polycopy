@@ -110,3 +110,51 @@ async def test_get_market_retries_on_429() -> None:
             result = await client.get_market("0xc")
     assert result is None
     assert route.call_count == 2
+
+
+# --- Régression 414 URI Too Long (audit 2026-05-22) ------------------------
+
+
+async def test_get_markets_by_condition_ids_batches_requests() -> None:
+    """>50 condition_ids → plusieurs GET, chacun ≤ batch size, sans doublon.
+
+    Avant : un seul GET avec 566 condition_ids → URL ~39 KB → 414 → le cycle
+    de résolution M8 plantait à chaque tick.
+    """
+    captured: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=[])
+
+    cond_ids = [f"0x{i:064x}" for i in range(120)]
+    with respx.mock(base_url="https://gamma-api.polymarket.com") as mock:
+        mock.get("/markets").mock(side_effect=_handler)
+        async with httpx.AsyncClient() as http:
+            client = GammaApiClient(http)
+            await client.get_markets_by_condition_ids(cond_ids)
+    # 120 / 50 = 3 requêtes (50 + 50 + 20).
+    assert len(captured) == 3
+    seen: list[str] = []
+    for req in captured:
+        batch = req.url.params["condition_ids"].split(",")
+        assert len(batch) <= GammaApiClient.CONDITION_IDS_BATCH_SIZE
+        seen.extend(batch)
+    assert set(seen) == set(cond_ids)
+    assert len(seen) == len(cond_ids)
+
+
+async def test_get_markets_by_condition_ids_aggregates_batches(
+    sample_gamma_market: dict[str, Any],
+) -> None:
+    """Les marchés de chaque lot sont agrégés dans la liste retournée."""
+    cond_ids = [f"0x{i:064x}" for i in range(120)]
+    with respx.mock(base_url="https://gamma-api.polymarket.com") as mock:
+        mock.get("/markets").mock(
+            return_value=httpx.Response(200, json=[sample_gamma_market]),
+        )
+        async with httpx.AsyncClient() as http:
+            client = GammaApiClient(http)
+            markets = await client.get_markets_by_condition_ids(cond_ids)
+    # 3 lots × 1 marché chacun = 3 marchés agrégés.
+    assert len(markets) == 3

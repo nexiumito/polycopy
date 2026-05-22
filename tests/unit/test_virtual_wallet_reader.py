@@ -234,3 +234,49 @@ async def test_pnl_writer_skips_snapshot_on_midpoint_unavailable(
     repo = PnlSnapshotRepository(session_factory)
     latest = await repo.get_latest()
     assert latest is None
+
+
+# --- Régression PnL gelé 2026-05-22 : 1 position résolue ne gèle plus tout ---
+
+
+async def test_resolved_position_marked_flat_when_clob_up(
+    session_factory: async_sessionmaker[AsyncSession],
+    my_position_repo: MyPositionRepository,
+) -> None:
+    """Une position injoignable (marché résolu → midpoint None) ne doit PAS
+    geler tout le snapshot tant qu'au moins une autre position se price.
+
+    Régression de l'audit 2026-05-22 : une seule position sur marché résolu
+    levait ``MidpointUnavailableError``, faisant skipper le snapshot à chaque
+    tick → PnL figé 11 jours. Désormais elle est marquée à plat (``avg_price``,
+    latent 0) tant que le CLOB répond pour au moins une position.
+    """
+    await my_position_repo.upsert_virtual(
+        condition_id="0xa",
+        asset_id="A",
+        side="BUY",
+        size_filled=10.0,
+        fill_price=0.4,
+    )
+    await my_position_repo.upsert_virtual(
+        condition_id="0xb",
+        asset_id="B",
+        side="BUY",
+        size_filled=20.0,
+        fill_price=0.6,
+    )
+    clob_read = AsyncMock(spec=ClobReadClient)
+
+    def _mid(asset_id: str) -> float | None:
+        # B = marché résolu : /midpoint renvoie None (404, plus d'orderbook).
+        return 0.5 if asset_id == "A" else None
+
+    clob_read.get_midpoint.side_effect = _mid
+    reader = VirtualWalletStateReader(session_factory, clob_read, _settings())
+    state = await reader.get_state()
+    # A pricé : exposure 10×0.5=5, latent +1. B à plat : exposure 20×0.6=12, latent 0.
+    assert state.open_positions_count == 2
+    assert state.total_position_value_usd == pytest.approx(17.0, abs=1e-9)
+    total = state.total_position_value_usd + state.available_capital_usd
+    # capital 1000 + realized 0 + latent (+1 sur A, 0 sur B) = 1001.
+    assert total == pytest.approx(1001.0, abs=1e-9)
