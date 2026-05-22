@@ -112,14 +112,15 @@ async def test_get_market_retries_on_429() -> None:
     assert route.call_count == 2
 
 
-# --- Régression 414 URI Too Long (audit 2026-05-22) ------------------------
+# --- Régression résolution M8 (audit 2026-05-22) ---------------------------
 
 
-async def test_get_markets_by_condition_ids_batches_requests() -> None:
-    """>50 condition_ids → plusieurs GET, chacun ≤ batch size, sans doublon.
+async def test_get_markets_by_condition_ids_uses_repeated_params_batched() -> None:
+    """Params RÉPÉTÉS (jamais de comma-join), lots ≤ batch size, double passage.
 
-    Avant : un seul GET avec 566 condition_ids → URL ~39 KB → 414 → le cycle
-    de résolution M8 plantait à chaque tick.
+    Deux régressions live 2026-05-22, toutes deux silencieuses (Gamma → []) :
+    (1) le comma-join ``condition_ids=A,B`` est ignoré ; (2) le filtre par
+    défaut exclut les marchés fermés → 2e passage ``closed=true``.
     """
     captured: list[httpx.Request] = []
 
@@ -133,28 +134,40 @@ async def test_get_markets_by_condition_ids_batches_requests() -> None:
         async with httpx.AsyncClient() as http:
             client = GammaApiClient(http)
             await client.get_markets_by_condition_ids(cond_ids)
-    # 120 / 50 = 3 requêtes (50 + 50 + 20).
-    assert len(captured) == 3
-    seen: list[str] = []
+    # 3 lots (50+50+20) × 2 passages (ouverts + fermés) = 6 requêtes.
+    assert len(captured) == 6
     for req in captured:
-        batch = req.url.params["condition_ids"].split(",")
-        assert len(batch) <= GammaApiClient.CONDITION_IDS_BATCH_SIZE
-        seen.extend(batch)
-    assert set(seen) == set(cond_ids)
-    assert len(seen) == len(cond_ids)
+        values = req.url.params.get_list("condition_ids")
+        assert len(values) <= GammaApiClient.CONDITION_IDS_BATCH_SIZE
+        assert all("," not in v for v in values)  # jamais de comma-join
+    # 3 requêtes filtrent closed=true, 3 sont le passage "ouverts" (sans closed).
+    assert sum(r.url.params.get("closed") == "true" for r in captured) == 3
+    open_seen: list[str] = []
+    for r in captured:
+        if "closed" not in r.url.params:
+            open_seen.extend(r.url.params.get_list("condition_ids"))
+    assert set(open_seen) == set(cond_ids)
 
 
-async def test_get_markets_by_condition_ids_aggregates_batches(
+async def test_get_markets_by_condition_ids_includes_closed_markets(
     sample_gamma_market: dict[str, Any],
 ) -> None:
-    """Les marchés de chaque lot sont agrégés dans la liste retournée."""
-    cond_ids = [f"0x{i:064x}" for i in range(120)]
+    """Le 2e passage ``closed=true`` ramène les marchés résolus (exclus du
+    filtre par défaut) — sans lui le watcher de résolution ne voit jamais de
+    marché ``closed=true`` à fermer. Fusion par condition_id."""
+    open_mkt = {**sample_gamma_market, "conditionId": "0xOPEN", "closed": False}
+    closed_mkt = {**sample_gamma_market, "conditionId": "0xCLOSED", "closed": True}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("closed") == "true":
+            return httpx.Response(200, json=[closed_mkt])
+        return httpx.Response(200, json=[open_mkt])
+
     with respx.mock(base_url="https://gamma-api.polymarket.com") as mock:
-        mock.get("/markets").mock(
-            return_value=httpx.Response(200, json=[sample_gamma_market]),
-        )
+        mock.get("/markets").mock(side_effect=_handler)
         async with httpx.AsyncClient() as http:
             client = GammaApiClient(http)
-            markets = await client.get_markets_by_condition_ids(cond_ids)
-    # 3 lots × 1 marché chacun = 3 marchés agrégés.
-    assert len(markets) == 3
+            markets = await client.get_markets_by_condition_ids(["0xOPEN", "0xCLOSED"])
+    by_cid = {m.condition_id: m for m in markets}
+    assert by_cid["0xOPEN"].closed is False
+    assert by_cid["0xCLOSED"].closed is True

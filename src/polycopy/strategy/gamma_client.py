@@ -118,30 +118,57 @@ class GammaApiClient:
         self,
         condition_ids: list[str],
     ) -> list[MarketMetadata]:
-        """Batch fetch ``GET /markets?condition_ids=<csv>`` (M8 resolution).
+        """Batch fetch ``GET /markets`` par condition_ids (M8 resolution).
 
-        Découpe la requête en lots de ``CONDITION_IDS_BATCH_SIZE`` pour ne
-        jamais dépasser la limite de longueur d'URL serveur (414 URI Too Long
-        au-delà de ~8 KB). Pas de cache (les états ``closed`` changent au fil
-        de l'eau et le cycle de polling M8 est de 30 min). Skip silencieusement
-        les marchés dont le payload Gamma ne parse pas.
+        Deux pièges Gamma confirmés live 2026-05-22 (tous deux faisaient
+        renvoyer ``[]`` silencieusement → résolution M8 inopérante) :
+
+        1. Gamma exige des **paramètres répétés** (``condition_ids=A&condition_ids=B``)
+           — le comma-join (``condition_ids=A,B``) est interprété comme un seul id
+           invalide et ne matche rien.
+        2. Le filtre par défaut **exclut les marchés fermés** ; or le watcher de
+           résolution a précisément besoin des marchés ``closed=true``. On
+           interroge donc à la fois les ouverts (défaut) et les fermés
+           (``closed=true``) et on fusionne par condition_id.
+
+        Découpe en lots de ``CONDITION_IDS_BATCH_SIZE`` pour borner la longueur
+        d'URL (414 URI Too Long au-delà de ~8 KB). Pas de cache (les états
+        ``closed`` changent au fil de l'eau, cycle M8 de 30 min). Skip
+        silencieusement les marchés dont le payload Gamma ne parse pas.
         """
         if not condition_ids:
             return []
-        markets: list[MarketMetadata] = []
+        by_cid: dict[str, MarketMetadata] = {}
         for start in range(0, len(condition_ids), self.CONDITION_IDS_BATCH_SIZE):
             batch = condition_ids[start : start + self.CONDITION_IDS_BATCH_SIZE]
-            markets.extend(await self._fetch_markets_batch(batch))
-        return markets
+            # `None` = filtre Gamma par défaut (marchés ouverts), `True` = fermés.
+            for closed in (None, True):
+                for market in await self._fetch_markets_batch(batch, closed=closed):
+                    by_cid[market.condition_id] = market
+        return list(by_cid.values())
 
     async def _fetch_markets_batch(
         self,
         condition_ids: list[str],
+        *,
+        closed: bool | None = None,
     ) -> list[MarketMetadata]:
-        """Un seul ``GET /markets`` pour un lot de condition_ids (≤ batch size)."""
+        """Un seul ``GET /markets`` pour un lot (≤ batch size), params répétés.
+
+        ``closed`` : ``None`` n'ajoute pas le filtre (défaut Gamma = ouverts),
+        ``True``/``False`` force ``closed=true``/``false``.
+        """
+        params: list[tuple[str, str | int | float | bool | None]] = [
+            ("condition_ids", cid) for cid in condition_ids
+        ]
+        # `limit` explicite ≥ taille du lot : évite une troncature par la
+        # pagination par défaut de Gamma (1 marché par condition_id).
+        params.append(("limit", str(len(condition_ids))))
+        if closed is not None:
+            params.append(("closed", "true" if closed else "false"))
         response = await self._http.get(
             f"{self.BASE_URL}/markets",
-            params={"condition_ids": ",".join(condition_ids)},
+            params=params,
             timeout=self.DEFAULT_TIMEOUT,
         )
         response.raise_for_status()
